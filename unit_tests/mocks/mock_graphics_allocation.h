@@ -1,40 +1,41 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/memory_manager/graphics_allocation.h"
 
-namespace OCLRT {
+namespace NEO {
 class MockGraphicsAllocation : public GraphicsAllocation {
-    using GraphicsAllocation::GraphicsAllocation;
-
   public:
-    MockGraphicsAllocation(void *buffer, size_t sizeIn) : GraphicsAllocation(buffer, sizeIn) {
+    using GraphicsAllocation::GraphicsAllocation;
+    using GraphicsAllocation::objectNotResident;
+    using GraphicsAllocation::objectNotUsed;
+    using GraphicsAllocation::usageInfos;
+
+    MockGraphicsAllocation()
+        : MockGraphicsAllocation(true) {}
+
+    MockGraphicsAllocation(bool multiOsContextCapable)
+        : GraphicsAllocation(AllocationType::UNKNOWN, nullptr, 0u, 0, MemoryPool::MemoryNull, multiOsContextCapable) {}
+
+    MockGraphicsAllocation(void *buffer, size_t sizeIn)
+        : GraphicsAllocation(AllocationType::UNKNOWN, buffer, castToUint64(buffer), 0llu, sizeIn, MemoryPool::MemoryNull, false) {}
+
+    MockGraphicsAllocation(void *buffer, uint64_t gpuAddr, size_t sizeIn)
+        : GraphicsAllocation(AllocationType::UNKNOWN, buffer, gpuAddr, 0llu, sizeIn, MemoryPool::MemoryNull, false) {}
+
+    void resetInspectionIds() {
+        for (auto &usageInfo : usageInfos) {
+            usageInfo.inspectionId = 0u;
+        }
     }
-    void resetInspectionId() {
-        this->inspectionId = 0;
-    }
+
     void overrideMemoryPool(MemoryPool::Type pool) {
         this->memoryPool = pool;
     }
 };
-} // namespace OCLRT
+} // namespace NEO

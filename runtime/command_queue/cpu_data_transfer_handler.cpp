@@ -1,35 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
+#include "runtime/event/event.h"
 #include "runtime/event/event_builder.h"
 #include "runtime/helpers/get_info.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/mem_obj/image.h"
 
-namespace OCLRT {
+namespace NEO {
 void *CommandQueue::cpuDataTransferHandler(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &retVal) {
     MapInfo unmapInfo;
     Event *outEventObj = nullptr;
@@ -64,7 +51,7 @@ void *CommandQueue::cpuDataTransferHandler(TransferProperties &transferPropertie
         *eventsRequest.outEvent = outEventObj;
     }
 
-    TakeOwnershipWrapper<Device> deviceOwnership(*device);
+    auto commandStreamReceieverOwnership = getCommandStreamReceiver().obtainUniqueOwnership();
     TakeOwnershipWrapper<CommandQueue> queueOwnership(*this);
 
     auto blockQueue = false;
@@ -81,7 +68,6 @@ void *CommandQueue::cpuDataTransferHandler(TransferProperties &transferPropertie
         (transferProperties.cmdType == CL_COMMAND_MAP_BUFFER ||
          transferProperties.cmdType == CL_COMMAND_MAP_IMAGE ||
          transferProperties.cmdType == CL_COMMAND_UNMAP_MEM_OBJECT)) {
-
         // Pass size and offset only. Unblocked command will call transferData(size, offset) method
         enqueueBlockedMapUnmapOperation(eventsRequest.eventWaitList,
                                         static_cast<size_t>(eventsRequest.numEventsInWaitList),
@@ -94,7 +80,7 @@ void *CommandQueue::cpuDataTransferHandler(TransferProperties &transferPropertie
     }
 
     queueOwnership.unlock();
-    deviceOwnership.unlock();
+    commandStreamReceieverOwnership.unlock();
 
     // read/write buffers are always blocking
     if (!blockQueue || transferProperties.blocking) {
@@ -142,11 +128,11 @@ void *CommandQueue::cpuDataTransferHandler(TransferProperties &transferPropertie
             }
             break;
         case CL_COMMAND_READ_BUFFER:
-            memcpy_s(transferProperties.ptr, transferProperties.size[0], ptrOffset(transferProperties.memObj->getCpuAddressForMemoryTransfer(), transferProperties.offset[0]), transferProperties.size[0]);
+            memcpy_s(transferProperties.ptr, transferProperties.size[0], transferProperties.getCpuPtrForReadWrite(), transferProperties.size[0]);
             eventCompleted = true;
             break;
         case CL_COMMAND_WRITE_BUFFER:
-            memcpy_s(ptrOffset(transferProperties.memObj->getCpuAddressForMemoryTransfer(), transferProperties.offset[0]), transferProperties.size[0], transferProperties.ptr, transferProperties.size[0]);
+            memcpy_s(transferProperties.getCpuPtrForReadWrite(), transferProperties.size[0], transferProperties.ptr, transferProperties.size[0]);
             eventCompleted = true;
             break;
         case CL_COMMAND_MARKER:
@@ -158,7 +144,7 @@ void *CommandQueue::cpuDataTransferHandler(TransferProperties &transferPropertie
         if (outEventObj) {
             outEventObj->setEndTimeStamp();
             outEventObj->updateTaskCount(this->taskCount);
-            outEventObj->flushStamp->setStamp(this->flushStamp->peekStamp());
+            outEventObj->flushStamp->replaceStampObject(this->flushStamp->getStampReference());
             if (eventCompleted) {
                 outEventObj->setStatus(CL_COMPLETE);
             } else {
@@ -204,4 +190,4 @@ void CommandQueue::providePerformanceHint(TransferProperties &transferProperties
         context->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_BAD_INTEL, CL_ENQUEUE_WRITE_BUFFER_REQUIRES_COPY_DATA, static_cast<cl_mem>(transferProperties.memObj), transferProperties.ptr);
     }
 }
-} // namespace OCLRT
+} // namespace NEO

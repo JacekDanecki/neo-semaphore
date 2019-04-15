@@ -1,40 +1,28 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/device/device.h"
 #include "runtime/os_interface/os_interface.h"
+#include "runtime/platform/platform.h"
 #include "runtime/program/kernel_info.h"
 #include "runtime/source_level_debugger/source_level_debugger.h"
 #include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/libult/source_level_debugger_library.h"
+#include "unit_tests/helpers/execution_environment_helper.h"
+#include "unit_tests/helpers/variable_backup.h"
 #include "unit_tests/libult/create_command_stream.h"
+#include "unit_tests/libult/source_level_debugger_library.h"
 #include "unit_tests/mocks/mock_source_level_debugger.h"
-#include "runtime/platform/platform.h"
 
 #include <gtest/gtest.h>
+
 #include <memory>
 #include <string>
 
-using namespace OCLRT;
+using namespace NEO;
 using std::string;
 using std::unique_ptr;
 
@@ -327,6 +315,64 @@ TEST(SourceLevelDebugger, givenKernelDebuggerLibraryActiveWhenNotifyKernelDebugD
     EXPECT_STREQ(info.name.c_str(), interceptor.kernelDebugDataArgIn.kernelName);
 }
 
+TEST(SourceLevelDebugger, givenNoVisaWhenNotifyKernelDebugDataIsCalledThenDebuggerLibraryFunctionIsNotCalled) {
+    DebuggerLibraryRestorer restorer;
+
+    DebuggerLibraryInterceptor interceptor;
+    DebuggerLibrary::setLibraryAvailable(true);
+    DebuggerLibrary::setDebuggerActive(true);
+    DebuggerLibrary::injectDebuggerLibraryInterceptor(&interceptor);
+
+    MockSourceLevelDebugger debugger;
+    char isa[8];
+    char dbgIsa[10];
+
+    KernelInfo info;
+    info.debugData.genIsa = dbgIsa;
+    info.debugData.vIsa = nullptr;
+    info.debugData.genIsaSize = sizeof(dbgIsa);
+    info.debugData.vIsaSize = 0;
+
+    info.name = "debugKernel";
+
+    SKernelBinaryHeaderCommon kernelHeader;
+    kernelHeader.KernelHeapSize = sizeof(isa);
+    info.heapInfo.pKernelHeader = &kernelHeader;
+    info.heapInfo.pKernelHeap = isa;
+
+    debugger.notifyKernelDebugData(&info);
+    EXPECT_FALSE(interceptor.kernelDebugDataCalled);
+}
+
+TEST(SourceLevelDebugger, givenNoGenIsaWhenNotifyKernelDebugDataIsCalledThenDebuggerLibraryFunctionIsNotCalled) {
+    DebuggerLibraryRestorer restorer;
+
+    DebuggerLibraryInterceptor interceptor;
+    DebuggerLibrary::setLibraryAvailable(true);
+    DebuggerLibrary::setDebuggerActive(true);
+    DebuggerLibrary::injectDebuggerLibraryInterceptor(&interceptor);
+
+    MockSourceLevelDebugger debugger;
+    char isa[8];
+    char visa[12];
+
+    KernelInfo info;
+    info.debugData.genIsa = nullptr;
+    info.debugData.vIsa = visa;
+    info.debugData.genIsaSize = 0;
+    info.debugData.vIsaSize = sizeof(visa);
+
+    info.name = "debugKernel";
+
+    SKernelBinaryHeaderCommon kernelHeader;
+    kernelHeader.KernelHeapSize = sizeof(isa);
+    info.heapInfo.pKernelHeader = &kernelHeader;
+    info.heapInfo.pKernelHeap = isa;
+
+    debugger.notifyKernelDebugData(&info);
+    EXPECT_FALSE(interceptor.kernelDebugDataCalled);
+}
+
 TEST(SourceLevelDebugger, givenKernelDebuggerLibraryNotActiveWhenNotifyKernelDebugDataIsCalledThenDebuggerLibraryFunctionIsNotCalled) {
     DebuggerLibraryRestorer restorer;
 
@@ -442,10 +488,14 @@ TEST(SourceLevelDebugger, givenKernelDebuggerLibraryActiveWhenDeviceImplIsCreate
         DebuggerLibrary::setDebuggerActive(true);
         DebuggerLibrary::injectDebuggerLibraryInterceptor(&interceptor);
 
-        overrideCommandStreamReceiverCreation = true;
+        VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, true);
 
-        // Device::create must be used to create correct OS memory manager
-        unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<Device>(platformDevices[0]));
+        HardwareInfo *hwInfo = nullptr;
+        ExecutionEnvironment *executionEnvironment = getExecutionEnvironmentImpl(hwInfo);
+
+        hwInfo->capabilityTable.instrumentationEnabled = true;
+        unique_ptr<MockDevice> device(Device::create<MockDevice>(&hwInfo[0], executionEnvironment, 0));
+
         ASSERT_NE(nullptr, device->getCommandStreamReceiver().getOSInterface());
 
         EXPECT_TRUE(interceptor.newDeviceCalled);
@@ -462,7 +512,7 @@ TEST(SourceLevelDebugger, givenKernelDebuggerLibraryNotActiveWhenDeviceIsCreated
     DebuggerLibrary::setDebuggerActive(false);
     DebuggerLibrary::injectDebuggerLibraryInterceptor(&interceptor);
 
-    unique_ptr<MockDevice> device(DeviceHelper<>::create());
+    unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
     EXPECT_EQ(nullptr, device->getSourceLevelDebugger());
     EXPECT_FALSE(interceptor.initCalled);
@@ -478,15 +528,14 @@ TEST(SourceLevelDebugger, givenTwoDevicesWhenSecondIsCreatedThenNotCreatingNewSo
         DebuggerLibrary::setDebuggerActive(true);
         DebuggerLibrary::injectDebuggerLibraryInterceptor(&interceptor);
 
-        std::unique_ptr<ExecutionEnvironment> executionEnvironment(new ExecutionEnvironment);
-        executionEnvironment->incRefInternal();
+        ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
 
-        std::unique_ptr<Device> device1(Device::create<OCLRT::Device>(nullptr, executionEnvironment.get()));
+        std::unique_ptr<Device> device1(Device::create<NEO::MockDevice>(nullptr, executionEnvironment, 0u));
         EXPECT_NE(nullptr, executionEnvironment->memoryManager);
         EXPECT_TRUE(interceptor.initCalled);
 
         interceptor.initCalled = false;
-        std::unique_ptr<Device> device2(Device::create<OCLRT::Device>(nullptr, executionEnvironment.get()));
+        std::unique_ptr<Device> device2(Device::create<NEO::MockDevice>(nullptr, executionEnvironment, 1u));
         EXPECT_NE(nullptr, executionEnvironment->memoryManager);
         EXPECT_FALSE(interceptor.initCalled);
     }
@@ -499,10 +548,10 @@ TEST(SourceLevelDebugger, givenMultipleDevicesWhenTheyAreCreatedTheyAllReuseTheS
         DebuggerLibrary::setLibraryAvailable(true);
         DebuggerLibrary::setDebuggerActive(true);
 
-        auto executionEnvironment = new ExecutionEnvironment;
-        std::unique_ptr<Device> device1(Device::create<OCLRT::Device>(nullptr, executionEnvironment));
+        ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+        std::unique_ptr<Device> device1(Device::create<NEO::MockDevice>(nullptr, executionEnvironment, 0u));
         auto sourceLevelDebugger = device1->getSourceLevelDebugger();
-        std::unique_ptr<Device> device2(Device::create<OCLRT::Device>(nullptr, executionEnvironment));
+        std::unique_ptr<Device> device2(Device::create<NEO::MockDevice>(nullptr, executionEnvironment, 1u));
         EXPECT_EQ(sourceLevelDebugger, device2->getSourceLevelDebugger());
     }
 }

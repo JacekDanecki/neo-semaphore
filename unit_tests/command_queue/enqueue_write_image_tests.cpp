@@ -1,34 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/built_ins/builtins_dispatch_builder.h"
-#include "reg_configs_common.h"
+#include "runtime/memory_manager/allocations_list.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "test.h"
 #include "unit_tests/command_queue/enqueue_write_image_fixture.h"
 #include "unit_tests/gen_common/gen_commands_common_validation.h"
+#include "unit_tests/helpers/unit_test_helper.h"
 #include "unit_tests/mocks/mock_builtin_dispatch_info_builder.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include "reg_configs_common.h"
+
+using namespace NEO;
 
 HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, gpgpuWalker) {
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
@@ -104,19 +92,19 @@ HWTEST_F(EnqueueWriteImageTest, addsIndirectData) {
     auto sshBefore = pSSH->getUsed();
 
     EnqueueWriteImageHelper<>::enqueueWriteImage(pCmdQ, dstImage, EnqueueWriteImageTraits::blocking);
-    EXPECT_NE(dshBefore, pDSH->getUsed());
+    EXPECT_TRUE(UnitTestHelper<FamilyType>::evaluateDshUsage(dshBefore, pDSH->getUsed(), nullptr));
     EXPECT_NE(iohBefore, pIOH->getUsed());
     EXPECT_NE(sshBefore, pSSH->getUsed());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, loadRegisterImmediateL3CNTLREG) {
+HWTEST_F(EnqueueWriteImageTest, loadRegisterImmediateL3CNTLREG) {
     enqueueWriteImage<FamilyType>();
     validateL3Programming<FamilyType>(cmdList, itorWalker);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, WhenEnqueueIsDoneThenStateBaseAddressIsProperlyProgrammed) {
     enqueueWriteImage<FamilyType>();
-    validateStateBaseAddress<FamilyType>(this->pDevice->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
+    validateStateBaseAddress<FamilyType>(this->pCmdQ->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
                                          pDSH, pIOH, pSSH, itorPipelineSelect, itorWalker, cmdList, 0llu);
 }
 
@@ -172,14 +160,14 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, interfaceDescriptorData) {
     EXPECT_NE(kernelStartPointer, interfaceDescriptorData.getBindingTablePointer());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, surfaceState) {
+HWTEST_F(EnqueueWriteImageTest, surfaceState) {
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
 
     enqueueWriteImage<FamilyType>();
 
     // BufferToImage kernel uses BTI=1 for destSurface
     uint32_t bindingTableIndex = 1;
-    const auto &surfaceState = getSurfaceState<FamilyType>(bindingTableIndex);
+    const auto &surfaceState = getSurfaceState<FamilyType>(&pCmdQ->getIndirectHeap(IndirectHeap::SURFACE_STATE, 0), bindingTableIndex);
 
     // EnqueueWriteImage uses  multi-byte copies depending on per-pixel-size-in-bytes
     const auto &imageDesc = dstImage->getImageDesc();
@@ -190,10 +178,10 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, surfaceState) {
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_FORMAT_R32_UINT, surfaceState.getSurfaceFormat());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_HORIZONTAL_ALIGNMENT_HALIGN_4, surfaceState.getSurfaceHorizontalAlignment());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_VERTICAL_ALIGNMENT_VALIGN_4, surfaceState.getSurfaceVerticalAlignment());
-    EXPECT_EQ(reinterpret_cast<uint64_t>(dstImage->getCpuAddress()), surfaceState.getSurfaceBaseAddress());
+    EXPECT_EQ(dstImage->getGraphicsAllocation()->getGpuAddress(), surfaceState.getSurfaceBaseAddress());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteImageTest, pipelineSelect) {
+HWTEST_F(EnqueueWriteImageTest, pipelineSelect) {
     enqueueWriteImage<FamilyType>();
     int numCommands = getNumberOfPipelineSelectsThatEnablePipelineSelect<FamilyType>();
     EXPECT_EQ(1, numCommands);
@@ -213,17 +201,17 @@ HWTEST_F(EnqueueWriteImageTest, GivenImage1DarrayWhenReadWriteImageIsCalledThenH
 
     EnqueueWriteImageHelper<>::enqueueWriteImage(pCmdQ, dstImage2, CL_FALSE, origin, region);
 
-    auto memoryManager = pCmdQ->getDevice().getMemoryManager();
+    auto &csr = pCmdQ->getCommandStreamReceiver();
 
-    auto temporaryAllocation1 = memoryManager->graphicsAllocations.peekHead();
+    auto temporaryAllocation1 = csr.getTemporaryAllocations().peekHead();
     ASSERT_NE(nullptr, temporaryAllocation1);
 
     EXPECT_EQ(temporaryAllocation1->getUnderlyingBufferSize(), imageSize);
 
-    EnqueueReadImageHelper<>::enqueueReadImage(pCmdQ, dstImage, CL_FALSE, origin, region);
+    EnqueueReadImageHelper<>::enqueueReadImage(pCmdQ, dstImage2, CL_FALSE, origin, region);
     auto temporaryAllocation2 = temporaryAllocation1->next;
     ASSERT_NE(nullptr, temporaryAllocation2);
-    EXPECT_EQ(temporaryAllocation1->getUnderlyingBufferSize(), imageSize);
+    EXPECT_EQ(temporaryAllocation2->getUnderlyingBufferSize(), imageSize);
 
     delete dstImage2;
 }
@@ -237,9 +225,9 @@ HWTEST_F(EnqueueWriteImageTest, GivenImage2DarrayWhenReadWriteImageIsCalledThenH
 
     EnqueueWriteImageHelper<>::enqueueWriteImage(pCmdQ, dstImage2, CL_FALSE, origin, region);
 
-    auto memoryManager = pCmdQ->getDevice().getMemoryManager();
+    auto &csr = pCmdQ->getCommandStreamReceiver();
 
-    auto temporaryAllocation1 = memoryManager->graphicsAllocations.peekHead();
+    auto temporaryAllocation1 = csr.getTemporaryAllocations().peekHead();
     ASSERT_NE(nullptr, temporaryAllocation1);
 
     EXPECT_EQ(temporaryAllocation1->getUnderlyingBufferSize(), imageSize);
@@ -259,61 +247,6 @@ HWTEST_F(EnqueueWriteImageTest, GivenImage1DAndImageShareTheSameStorageWithHostP
     std::unique_ptr<CommandQueue> pCmdOOQ(createCommandQueue(pDevice, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE));
     size_t origin[] = {0, 0, 0};
     size_t region[] = {imageDesc.image_width, 1, 1};
-    void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
-
-    size_t rowPitch = dstImage2->getHostPtrRowPitch();
-    size_t slicePitch = dstImage2->getHostPtrSlicePitch();
-    retVal = pCmdOOQ->enqueueWriteImage(dstImage2.get(),
-                                        CL_FALSE,
-                                        origin,
-                                        region,
-                                        rowPitch,
-                                        slicePitch,
-                                        ptr,
-                                        0,
-                                        nullptr,
-                                        nullptr);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_EQ(pCmdOOQ->taskLevel, 0u);
-}
-
-HWTEST_F(EnqueueWriteImageTest, GivenImage2DAndImageShareTheSameStorageWithHostPtrWhenReadWriteImageIsCalledThenImageIsNotWritten) {
-    cl_int retVal = CL_SUCCESS;
-    std::unique_ptr<Image> dstImage2(Image2dHelper<>::create(context));
-    auto imageDesc = dstImage2->getImageDesc();
-    size_t origin[] = {0, 0, 0};
-    size_t region[] = {imageDesc.image_width, imageDesc.image_height, 1};
-    void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
-
-    size_t rowPitch = dstImage2->getHostPtrRowPitch();
-    size_t slicePitch = dstImage2->getHostPtrSlicePitch();
-    retVal = pCmdQ->enqueueWriteImage(dstImage2.get(),
-                                      CL_FALSE,
-                                      origin,
-                                      region,
-                                      rowPitch,
-                                      slicePitch,
-                                      ptr,
-                                      0,
-                                      nullptr,
-                                      nullptr);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_EQ(pCmdQ->taskLevel, 0u);
-}
-
-HWTEST_F(EnqueueWriteImageTest, GivenImage3DAndImageShareTheSameStorageWithHostPtrWhenReadWriteImageIsCalledThenImageIsNotWritten) {
-    cl_int retVal = CL_SUCCESS;
-    std::unique_ptr<Image> dstImage2(Image3dHelper<>::create(context));
-    auto imageDesc = dstImage2->getImageDesc();
-    std::unique_ptr<CommandQueue> pCmdOOQ(createCommandQueue(pDevice, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE));
-    size_t origin[] = {0, 0, 0};
-    size_t region[] = {imageDesc.image_width, imageDesc.image_height, imageDesc.image_depth};
     void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
 
     size_t rowPitch = dstImage2->getHostPtrRowPitch();
@@ -364,59 +297,51 @@ HWTEST_F(EnqueueWriteImageTest, GivenImage1DArrayAndImageShareTheSameStorageWith
     EXPECT_EQ(pCmdQ->taskLevel, 0u);
 }
 
-HWTEST_F(EnqueueWriteImageTest, GivenImage2DArrayAndImageShareTheSameStorageWithHostPtrWhenReadWriteImageIsCalledThenImageIsNotWritten) {
+HWTEST_F(EnqueueWriteImageTest, GivenSharedContextZeroCopy2DImageWhenEnqueueWriteImageWithMappedPointerIsCalledThenImageIsNotWritten) {
     cl_int retVal = CL_SUCCESS;
-    std::unique_ptr<Image> dstImage2(Image2dArrayHelper<>::create(context));
-    auto imageDesc = dstImage2->getImageDesc();
-    std::unique_ptr<CommandQueue> pCmdOOQ(createCommandQueue(pDevice, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE));
-    size_t origin[] = {0, 0, 0};
-    size_t region[] = {imageDesc.image_width, imageDesc.image_height, imageDesc.image_array_size};
-    void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
-    size_t rowPitch = dstImage2->getHostPtrRowPitch();
-    size_t slicePitch = dstImage2->getHostPtrSlicePitch();
-    retVal = pCmdOOQ->enqueueWriteImage(dstImage2.get(),
-                                        CL_FALSE,
-                                        origin,
-                                        region,
-                                        rowPitch,
-                                        slicePitch,
-                                        ptr,
-                                        0,
-                                        nullptr,
-                                        nullptr);
+    context->isSharedContext = true;
 
-    EXPECT_EQ(CL_SUCCESS, retVal);
+    std::unique_ptr<Image> dstImage(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
+    EXPECT_TRUE(dstImage->isMemObjZeroCopy());
 
-    EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_EQ(pCmdOOQ->taskLevel, 0u);
-}
-
-HWTEST_F(EnqueueWriteImageTest, GivenImage2DAndImageShareTheSameStorageWithHostPtrAndEventsWhenReadWriteImageIsCalledThenImageIsNotWritten) {
-    cl_int retVal = CL_SUCCESS;
-    std::unique_ptr<Image> dstImage2(Image2dHelper<>::create(context));
-    auto imageDesc = dstImage2->getImageDesc();
+    auto imageDesc = dstImage->getImageDesc();
     size_t origin[] = {0, 0, 0};
     size_t region[] = {imageDesc.image_width, imageDesc.image_height, 1};
-    void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
+    void *ptr = dstImage->getCpuAddressForMemoryTransfer();
 
-    size_t rowPitch = dstImage2->getHostPtrRowPitch();
-    size_t slicePitch = dstImage2->getHostPtrSlicePitch();
-    uint32_t taskLevelCmdQ = 17;
-    pCmdQ->taskLevel = taskLevelCmdQ;
+    size_t rowPitch = dstImage->getHostPtrRowPitch();
+    size_t slicePitch = dstImage->getHostPtrSlicePitch();
+    retVal = pCmdQ->enqueueReadImage(dstImage.get(),
+                                     CL_FALSE,
+                                     origin,
+                                     region,
+                                     rowPitch,
+                                     slicePitch,
+                                     ptr,
+                                     0,
+                                     nullptr,
+                                     nullptr);
 
-    uint32_t taskLevelEvent1 = 8;
-    uint32_t taskLevelEvent2 = 19;
-    Event event1(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent1, 4);
-    Event event2(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent2, 10);
+    EXPECT_EQ(CL_SUCCESS, retVal);
 
-    cl_event eventWaitList[] =
-        {
-            &event1,
-            &event2};
-    cl_uint numEventsInWaitList = sizeof(eventWaitList) / sizeof(eventWaitList[0]);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(pCmdQ->taskLevel, 0u);
+}
+
+HWTEST_F(EnqueueWriteImageTest, GivenImage1DThatIsZeroCopyWhenWriteImageWithTheSamePointerAndOutputEventIsPassedThenEventHasCorrectCommandTypeSet) {
+    cl_int retVal = CL_SUCCESS;
+    std::unique_ptr<Image> srcImage(Image1dHelper<>::create(context));
+    auto imageDesc = srcImage->getImageDesc();
+    size_t origin[] = {0, 0, 0};
+    size_t region[] = {imageDesc.image_width, imageDesc.image_height, 1};
+    void *ptr = srcImage->getCpuAddressForMemoryTransfer();
+    size_t rowPitch = srcImage->getHostPtrRowPitch();
+    size_t slicePitch = srcImage->getHostPtrSlicePitch();
+
+    cl_uint numEventsInWaitList = 0;
     cl_event event = nullptr;
 
-    retVal = pCmdQ->enqueueWriteImage(dstImage2.get(),
+    retVal = pCmdQ->enqueueWriteImage(srcImage.get(),
                                       CL_FALSE,
                                       origin,
                                       region,
@@ -424,7 +349,7 @@ HWTEST_F(EnqueueWriteImageTest, GivenImage2DAndImageShareTheSameStorageWithHostP
                                       slicePitch,
                                       ptr,
                                       numEventsInWaitList,
-                                      eventWaitList,
+                                      nullptr,
                                       &event);
 
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -432,107 +357,28 @@ HWTEST_F(EnqueueWriteImageTest, GivenImage2DAndImageShareTheSameStorageWithHostP
     EXPECT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, event);
 
-    auto pEvent = (Event *)event;
-    EXPECT_EQ(19u, pEvent->taskLevel);
-    EXPECT_EQ(19u, pCmdQ->taskLevel);
-    EXPECT_EQ(CL_COMMAND_WRITE_IMAGE, (const int)pEvent->getCommandType());
+    auto pEvent = static_cast<Event *>(event);
+    EXPECT_EQ(static_cast<cl_command_type>(CL_COMMAND_WRITE_IMAGE), pEvent->getCommandType());
 
     pEvent->release();
-}
-
-HWTEST_F(EnqueueWriteImageTest, GivenImage3DAndImageShareTheSameStorageWithHostPtrAndEventsWhenReadWriteImageIsCalledThenImageIsNotWritten) {
-    cl_int retVal = CL_SUCCESS;
-    std::unique_ptr<Image> dstImage2(Image3dHelper<>::create(context));
-    auto imageDesc = dstImage2->getImageDesc();
-    std::unique_ptr<CommandQueue> pCmdOOQ(createCommandQueue(pDevice, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE));
-    size_t origin[] = {0, 0, 0};
-    size_t region[] = {imageDesc.image_width, imageDesc.image_height, imageDesc.image_depth};
-    void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
-
-    size_t rowPitch = dstImage2->getHostPtrRowPitch();
-    size_t slicePitch = dstImage2->getHostPtrSlicePitch();
-
-    uint32_t taskLevelCmdQ = 17;
-    pCmdOOQ->taskLevel = taskLevelCmdQ;
-
-    uint32_t taskLevelEvent1 = 8;
-    uint32_t taskLevelEvent2 = 19;
-    Event event1(pCmdOOQ.get(), CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent1, 4);
-    Event event2(pCmdOOQ.get(), CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent2, 10);
-
-    cl_event eventWaitList[] =
-        {
-            &event1,
-            &event2};
-    cl_uint numEventsInWaitList = sizeof(eventWaitList) / sizeof(eventWaitList[0]);
-    cl_event event = nullptr;
-
-    retVal = pCmdOOQ->enqueueWriteImage(dstImage2.get(),
-                                        CL_FALSE,
-                                        origin,
-                                        region,
-                                        rowPitch,
-                                        slicePitch,
-                                        ptr,
-                                        numEventsInWaitList,
-                                        eventWaitList,
-                                        &event);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, event);
-
-    auto pEvent = (Event *)event;
-    EXPECT_EQ(19u, pEvent->taskLevel);
-    EXPECT_EQ(19u, pCmdOOQ->taskLevel);
-    EXPECT_EQ(CL_COMMAND_WRITE_IMAGE, (const int)pEvent->getCommandType());
-
-    pEvent->release();
-}
-
-HWTEST_F(EnqueueWriteImageTest, GivenNonZeroCopyImage2DAndImageShareTheSameStorageWithHostPtrWhenReadWriteImageIsCalledThenImageIsWritten) {
-    cl_int retVal = CL_SUCCESS;
-    std::unique_ptr<Image> dstImage2(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
-    auto imageDesc = dstImage2->getImageDesc();
-    size_t origin[] = {0, 0, 0};
-    size_t region[] = {imageDesc.image_width, imageDesc.image_height, 1};
-    void *ptr = dstImage2->getCpuAddressForMemoryTransfer();
-
-    size_t rowPitch = dstImage2->getHostPtrRowPitch();
-    size_t slicePitch = dstImage2->getHostPtrSlicePitch();
-    retVal = pCmdQ->enqueueWriteImage(dstImage2.get(),
-                                      CL_FALSE,
-                                      origin,
-                                      region,
-                                      rowPitch,
-                                      slicePitch,
-                                      ptr,
-                                      0,
-                                      nullptr,
-                                      nullptr);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-
-    EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_EQ(pCmdQ->taskLevel, 2u);
 }
 
 typedef EnqueueWriteImageMipMapTest MipMapWriteImageTest;
 
 HWTEST_P(MipMapWriteImageTest, GivenImageWithMipLevelNonZeroWhenReadImageIsCalledThenProperMipLevelIsSet) {
     auto image_type = (cl_mem_object_type)GetParam();
-    auto &origBuilder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(
+    auto &builtIns = *pCmdQ->getDevice().getExecutionEnvironment()->getBuiltIns();
+    auto &origBuilder = builtIns.getBuiltinDispatchInfoBuilder(
         EBuiltInOps::CopyBufferToImage3d,
         pCmdQ->getContext(),
         pCmdQ->getDevice());
 
     // substitute original builder with mock builder
-    auto oldBuilder = BuiltIns::getInstance().setBuiltinDispatchInfoBuilder(
+    auto oldBuilder = builtIns.setBuiltinDispatchInfoBuilder(
         EBuiltInOps::CopyBufferToImage3d,
         pCmdQ->getContext(),
         pCmdQ->getDevice(),
-        std::unique_ptr<OCLRT::BuiltinDispatchInfoBuilder>(new MockBuiltinDispatchInfoBuilder(BuiltIns::getInstance(), &origBuilder)));
+        std::unique_ptr<NEO::BuiltinDispatchInfoBuilder>(new MockBuiltinDispatchInfoBuilder(builtIns, &origBuilder)));
 
     cl_int retVal = CL_SUCCESS;
     cl_image_desc imageDesc = {};
@@ -571,7 +417,10 @@ HWTEST_P(MipMapWriteImageTest, GivenImageWithMipLevelNonZeroWhenReadImageIsCalle
     }
     EXPECT_NE(nullptr, image.get());
 
-    std::unique_ptr<uint32_t[]> ptr = std::unique_ptr<uint32_t[]>(new uint32_t[3]);
+    auto hostPtrSize = Image::calculateHostPtrSize(region, image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(),
+                                                   image->getSurfaceFormatInfo().ImageElementSizeInBytes, image_type);
+    std::unique_ptr<uint32_t[]> ptr = std::unique_ptr<uint32_t[]>(new uint32_t[hostPtrSize]);
+
     retVal = pCmdQ->enqueueWriteImage(image.get(),
                                       CL_FALSE,
                                       origin,
@@ -585,15 +434,15 @@ HWTEST_P(MipMapWriteImageTest, GivenImageWithMipLevelNonZeroWhenReadImageIsCalle
 
     EXPECT_EQ(CL_SUCCESS, retVal);
 
-    auto &mockBuilder = static_cast<MockBuiltinDispatchInfoBuilder &>(BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToImage3d,
-                                                                                                                            pCmdQ->getContext(),
-                                                                                                                            pCmdQ->getDevice()));
+    auto &mockBuilder = static_cast<MockBuiltinDispatchInfoBuilder &>(builtIns.getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToImage3d,
+                                                                                                             pCmdQ->getContext(),
+                                                                                                             pCmdQ->getDevice()));
     auto params = mockBuilder.getBuiltinOpParams();
 
     EXPECT_EQ(expectedMipLevel, params->dstMipLevel);
 
     // restore original builder and retrieve mock builder
-    auto newBuilder = BuiltIns::getInstance().setBuiltinDispatchInfoBuilder(
+    auto newBuilder = builtIns.setBuiltinDispatchInfoBuilder(
         EBuiltInOps::CopyBufferToImage3d,
         pCmdQ->getContext(),
         pCmdQ->getDevice(),

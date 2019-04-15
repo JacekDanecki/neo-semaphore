@@ -1,34 +1,53 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/helpers/kernel_commands.h"
+#include "runtime/mem_obj/buffer.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_kernel.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 using Gen9KernelTest = Test<DeviceFixture>;
 GEN9TEST_F(Gen9KernelTest, givenKernelWhenCanTransformImagesIsCalledThenReturnsTrue) {
     MockKernelWithInternals mockKernel(*pDevice);
     auto retVal = mockKernel.mockKernel->Kernel::canTransformImages();
     EXPECT_TRUE(retVal);
+}
+using Gen9KernelCommandsTest = testing::Test;
+GEN9TEST_F(Gen9KernelCommandsTest, givenGen9PlatformWhenDoBindingTablePrefetchIsCalledThenReturnsTrue) {
+    EXPECT_TRUE(KernelCommandsHelper<FamilyType>::doBindingTablePrefetch());
+}
+
+GEN9TEST_F(Gen9KernelCommandsTest, givenBufferThatIsNotZeroCopyWhenSurfaceStateisSetThenL3IsTurnedOn) {
+    MockContext context;
+
+    auto retVal = CL_SUCCESS;
+    char ptr[16u] = {};
+
+    std::unique_ptr<Buffer> buffer(Buffer::create(
+        &context,
+        CL_MEM_USE_HOST_PTR,
+        16u,
+        ptr,
+        retVal));
+
+    EXPECT_FALSE(buffer->isMemObjZeroCopy());
+
+    using RENDER_SURFACE_STATE = typename SKLFamily::RENDER_SURFACE_STATE;
+    RENDER_SURFACE_STATE surfaceState = {};
+
+    auto gmmHelper = context.getDevice(0)->getExecutionEnvironment()->getGmmHelper();
+    gmmHelper->setSimplifiedMocsTableUsage(true);
+
+    buffer->setArgStateful(&surfaceState, false, false);
+    //make sure proper mocs is selected
+    constexpr uint32_t expectedMocs = GmmHelper::cacheEnabledIndex;
+    EXPECT_EQ(expectedMocs, surfaceState.getMemoryObjectControlStateIndexToMocsTables());
 }

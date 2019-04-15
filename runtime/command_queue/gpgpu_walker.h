@@ -1,46 +1,36 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
 #include "runtime/built_ins/built_ins.h"
-#include "runtime/context/context.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
+#include "runtime/context/context.h"
 #include "runtime/device_queue/device_queue_hw.h"
 #include "runtime/event/hw_timestamps.h"
 #include "runtime/event/perf_counter.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/task_information.h"
+#include "runtime/helpers/timestamp_packet.h"
 #include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/program/kernel_info.h"
+#include "runtime/utilities/tag_allocator.h"
 #include "runtime/utilities/vec.h"
 
-namespace OCLRT {
+namespace NEO {
 
-using WALKER_HANDLE = void *;
+template <typename GfxFamily>
+using WALKER_TYPE = typename GfxFamily::WALKER_TYPE;
+template <typename GfxFamily>
+using MI_STORE_REG_MEM = typename GfxFamily::MI_STORE_REGISTER_MEM_CMD;
 
 constexpr int32_t NUM_ALU_INST_FOR_READ_MODIFY_WRITE = 4;
 
@@ -124,6 +114,9 @@ inline cl_uint computeDimensions(const size_t workItems[3]) {
 template <typename GfxFamily>
 class GpgpuWalkerHelper {
   public:
+    using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
+    using INTERFACE_DESCRIPTOR_DATA = typename GfxFamily::INTERFACE_DESCRIPTOR_DATA;
+
     static void addAluReadModifyWriteRegister(
         LinearStream *pCommandStream,
         uint32_t aluRegister,
@@ -137,100 +130,87 @@ class GpgpuWalkerHelper {
     static size_t getSizeForWADisableLSQCROPERFforOCL(const Kernel *pKernel);
 
     static size_t setGpgpuWalkerThreadData(
-        WALKER_HANDLE pCmdData,
+        WALKER_TYPE<GfxFamily> *walkerCmd,
         const size_t globalOffsets[3],
         const size_t startWorkGroups[3],
         const size_t numWorkGroups[3],
         const size_t localWorkSizesIn[3],
-        uint32_t simd);
+        uint32_t simd,
+        uint32_t workDim,
+        bool localIdsGenerationByRuntime,
+        bool inlineDataProgrammingRequired,
+        const iOpenCL::SPatchThreadPayload &threadPayload);
 
     static void dispatchProfilingCommandsStart(
-        HwTimeStamps &hwTimeStamps,
-        OCLRT::LinearStream *commandStream);
+        TagNode<HwTimeStamps> &hwTimeStamps,
+        NEO::LinearStream *commandStream);
 
     static void dispatchProfilingCommandsEnd(
-        HwTimeStamps &hwTimeStamps,
-        OCLRT::LinearStream *commandStream);
+        TagNode<HwTimeStamps> &hwTimeStamps,
+        NEO::LinearStream *commandStream);
 
     static void dispatchPerfCountersNoopidRegisterCommands(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream,
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream,
         bool start);
 
     static void dispatchPerfCountersReadFreqRegisterCommands(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream,
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream,
         bool start);
 
     static void dispatchPerfCountersGeneralPurposeCounterCommands(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream,
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream,
         bool start);
 
     static void dispatchPerfCountersUserCounterCommands(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream,
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream,
         bool start);
 
     static void dispatchPerfCountersOABufferStateCommands(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream);
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream);
 
     static void dispatchPerfCountersCommandsStart(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream);
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream);
 
     static void dispatchPerfCountersCommandsEnd(
         CommandQueue &commandQueue,
-        OCLRT::HwPerfCounter &hwPerfCounter,
-        OCLRT::LinearStream *commandStream);
+        NEO::HwPerfCounter &hwPerfCounter,
+        NEO::LinearStream *commandStream);
 
-    static void dispatchWalker(
-        CommandQueue &commandQueue,
-        const MultiDispatchInfo &multiDispatchInfo,
-        cl_uint numEventsInWaitList,
-        const cl_event *eventWaitList,
-        KernelOperation **blockedCommandsData,
-        HwTimeStamps *hwTimeStamps,
-        OCLRT::HwPerfCounter *hwPerfCounter,
-        PreemptionMode preemptionMode,
-        bool blockQueue,
-        uint32_t commandType = 0);
-
-    static void dispatchWalker(
-        CommandQueue &commandQueue,
-        const Kernel &kernel,
-        cl_uint workDim,
-        const size_t globalOffsets[3],
-        const size_t workItems[3],
-        const size_t *localWorkSizesIn,
-        cl_uint numEventsInWaitList,
-        const cl_event *eventWaitList,
-        KernelOperation **blockedCommandsData,
-        HwTimeStamps *hwTimeStamps,
-        HwPerfCounter *hwPerfCounter,
-        PreemptionMode preemptionMode,
-        bool blockQueue);
+    static void setupTimestampPacket(
+        LinearStream *cmdStream,
+        WALKER_TYPE<GfxFamily> *walkerCmd,
+        TagNode<TimestampPacket> *timestampPacketNode,
+        TimestampPacket::WriteOperationType writeOperationType);
 
     static void dispatchScheduler(
-        CommandQueue &commandQueue,
+        LinearStream &commandStream,
         DeviceQueueHw<GfxFamily> &devQueueHw,
         PreemptionMode preemptionMode,
         SchedulerKernel &scheduler,
         IndirectHeap *ssh,
         IndirectHeap *dsh);
+
+    static void adjustMiStoreRegMemMode(MI_STORE_REG_MEM<GfxFamily> *storeCmd);
 };
 
 template <typename GfxFamily>
 struct EnqueueOperation {
-    static size_t getTotalSizeRequiredCS(bool reserveProfilingCmdsSpace, bool reservePerfCounters, CommandQueue &commandQueue, const MultiDispatchInfo &multiDispatchInfo);
+    using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
+    static size_t getTotalSizeRequiredCS(uint32_t eventType, const CsrDependencies &csrDeps, bool reserveProfilingCmdsSpace, bool reservePerfCounters, CommandQueue &commandQueue, const MultiDispatchInfo &multiDispatchInfo);
     static size_t getSizeRequiredCS(uint32_t cmdType, bool reserveProfilingCmdsSpace, bool reservePerfCounters, CommandQueue &commandQueue, const Kernel *pKernel);
+    static size_t getSizeRequiredForTimestampPacketWrite();
 
   private:
     static size_t getSizeRequiredCSKernel(bool reserveProfilingCmdsSpace, bool reservePerfCounters, CommandQueue &commandQueue, const Kernel *pKernel);
@@ -244,16 +224,8 @@ LinearStream &getCommandStream(CommandQueue &commandQueue, bool reserveProfiling
 }
 
 template <typename GfxFamily, uint32_t eventType>
-LinearStream &getCommandStream(CommandQueue &commandQueue, bool reserveProfilingCmdsSpace, bool reservePerfCounterCmdsSpace, const MultiDispatchInfo &multiDispatchInfo) {
-    size_t expectedSizeCS = 0;
-    Kernel *parentKernel = multiDispatchInfo.size() > 0 ? multiDispatchInfo.begin()->getKernel() : nullptr;
-    for (auto &dispatchInfo : multiDispatchInfo) {
-        expectedSizeCS += EnqueueOperation<GfxFamily>::getSizeRequiredCS(eventType, reserveProfilingCmdsSpace, reservePerfCounterCmdsSpace, commandQueue, dispatchInfo.getKernel());
-    }
-    if (parentKernel && parentKernel->isParentKernel) {
-        SchedulerKernel &scheduler = BuiltIns::getInstance().getSchedulerKernel(parentKernel->getContext());
-        expectedSizeCS += EnqueueOperation<GfxFamily>::getSizeRequiredCS(eventType, reserveProfilingCmdsSpace, reservePerfCounterCmdsSpace, commandQueue, &scheduler);
-    }
+LinearStream &getCommandStream(CommandQueue &commandQueue, const CsrDependencies &csrDeps, bool reserveProfilingCmdsSpace, bool reservePerfCounterCmdsSpace, const MultiDispatchInfo &multiDispatchInfo, Surface **surfaces, size_t numSurfaces) {
+    size_t expectedSizeCS = EnqueueOperation<GfxFamily>::getTotalSizeRequiredCS(eventType, csrDeps, reserveProfilingCmdsSpace, reservePerfCounterCmdsSpace, commandQueue, multiDispatchInfo);
     return commandQueue.getCS(expectedSizeCS);
 }
 
@@ -270,9 +242,9 @@ IndirectHeap &getIndirectHeap(CommandQueue &commandQueue, const MultiDispatchInf
     }
     // clang-format on
 
-    if (multiDispatchInfo.begin()->getKernel()->isParentKernel) {
+    if (Kernel *parentKernel = multiDispatchInfo.peekParentKernel()) {
         if (heapType == IndirectHeap::SURFACE_STATE) {
-            expectedSize += KernelCommandsHelper<GfxFamily>::template getSizeRequiredForExecutionModel<heapType>(const_cast<const Kernel &>(*(multiDispatchInfo.begin()->getKernel())));
+            expectedSize += KernelCommandsHelper<GfxFamily>::template getSizeRequiredForExecutionModel<heapType>(*parentKernel);
         } else //if (heapType == IndirectHeap::DYNAMIC_STATE || heapType == IndirectHeap::INDIRECT_OBJECT)
         {
             DeviceQueueHw<GfxFamily> *pDevQueue = castToObject<DeviceQueueHw<GfxFamily>>(commandQueue.getContext().getDefaultDeviceQueue());
@@ -287,4 +259,4 @@ IndirectHeap &getIndirectHeap(CommandQueue &commandQueue, const MultiDispatchInf
     return *ih;
 }
 
-} // namespace OCLRT
+} // namespace NEO

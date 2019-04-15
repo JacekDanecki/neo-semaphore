@@ -1,47 +1,34 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/options.h"
 #include "runtime/api/api.h"
+#include "runtime/helpers/options.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/platform/platform.h"
 #include "runtime/sharings/d3d/cl_d3d_api.h"
-#include "runtime/sharings/d3d/d3d_sharing.h"
 #include "runtime/sharings/d3d/d3d_buffer.h"
+#include "runtime/sharings/d3d/d3d_sharing.h"
 #include "runtime/sharings/d3d/d3d_surface.h"
 #include "runtime/sharings/d3d/d3d_texture.h"
-#include "gtest/gtest.h"
-#include "gmock/gmock.h"
+#include "runtime/utilities/arrayref.h"
 #include "test.h"
-#include "unit_tests/mocks/mock_buffer.h"
-#include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/fixtures/platform_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/mocks/mock_buffer.h"
+#include "unit_tests/mocks/mock_command_queue.h"
+#include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_d3d_objects.h"
 #include "unit_tests/mocks/mock_gmm.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
-namespace OCLRT {
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
+namespace NEO {
 template <>
 uint32_t MockD3DSharingFunctions<D3DTypesHelper::D3D10>::getDxgiDescCalled = 0;
 template <>
@@ -71,15 +58,17 @@ class D3DTests : public PlatformFixture, public ::testing::Test {
 
     class MockMM : public OsAgnosticMemoryManager {
       public:
-        GraphicsAllocation *createGraphicsAllocationFromSharedHandle(osHandle handle, bool requireSpecificBitness, bool /*reuseBO*/) override {
-            auto alloc = OsAgnosticMemoryManager::createGraphicsAllocationFromSharedHandle(handle, requireSpecificBitness, false);
-            alloc->gmm = forceGmm;
+        using OsAgnosticMemoryManager::OsAgnosticMemoryManager;
+        GraphicsAllocation *createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness) override {
+            auto alloc = OsAgnosticMemoryManager::createGraphicsAllocationFromSharedHandle(handle, properties, requireSpecificBitness);
+            alloc->setDefaultGmm(forceGmm);
             gmmOwnershipPassed = true;
             return alloc;
         }
         GraphicsAllocation *createGraphicsAllocationFromNTHandle(void *handle) override {
-            auto alloc = OsAgnosticMemoryManager::createGraphicsAllocationFromSharedHandle((osHandle)((UINT_PTR)handle), false, false);
-            alloc->gmm = forceGmm;
+            AllocationProperties properties(0, GraphicsAllocation::AllocationType::UNDECIDED);
+            auto alloc = OsAgnosticMemoryManager::createGraphicsAllocationFromSharedHandle((osHandle)((UINT_PTR)handle), properties, false);
+            alloc->setDefaultGmm(forceGmm);
             gmmOwnershipPassed = true;
             return alloc;
         }
@@ -103,7 +92,7 @@ class D3DTests : public PlatformFixture, public ::testing::Test {
         gmm = MockGmm::queryImgParams(imgInfo).release();
         mockGmmResInfo = reinterpret_cast<NiceMock<MockGmmResourceInfo> *>(gmm->gmmResourceInfo.get());
 
-        mockMM.forceGmm = gmm;
+        mockMM->forceGmm = gmm;
     }
 
     void SetUp() override {
@@ -111,10 +100,11 @@ class D3DTests : public PlatformFixture, public ::testing::Test {
         PlatformFixture::SetUp();
         context = new MockContext(pPlatform->getDevice(0));
         context->forcePreferD3dSharedResources(true);
+        mockMM = std::make_unique<MockMM>(*context->getDevice(0)->getExecutionEnvironment());
 
         mockSharingFcns = new NiceMock<MockD3DSharingFunctions<T>>();
         context->setSharingFunctions(mockSharingFcns);
-        context->setMemoryManager(&mockMM);
+        context->setMemoryManager(mockMM.get());
         cmdQ = new MockCommandQueue(context, context->getDevice(0), 0);
         DebugManager.injectFcn = &mockSharingFcns->mockGetDxgiDesc;
 
@@ -137,7 +127,7 @@ class D3DTests : public PlatformFixture, public ::testing::Test {
     void TearDown() override {
         delete cmdQ;
         delete context;
-        if (!mockMM.gmmOwnershipPassed) {
+        if (!mockMM->gmmOwnershipPassed) {
             delete gmm;
         }
         PlatformFixture::TearDown();
@@ -213,7 +203,7 @@ class D3DTests : public PlatformFixture, public ::testing::Test {
     NiceMock<MockGmmResourceInfo> *mockGmmResInfo = nullptr;
 
     DebugManagerStateRestore *dbgRestore;
-    MockMM mockMM;
+    std::unique_ptr<MockMM> mockMM;
 
     uint8_t d3dMode = 0;
 };
@@ -816,46 +806,46 @@ TYPED_TEST_P(D3DTests, givenInvalidSubresourceWhenCreateTexture3dIsCalledThenFai
 }
 
 TYPED_TEST_P(D3DTests, givenReadonlyFormatWhenLookingForSurfaceFormatThenReturnValidFormat) {
-    EXPECT_GT(numReadOnlySurfaceFormats, 0u);
-    for (size_t i = 0; i < numReadOnlySurfaceFormats; i++) {
+    EXPECT_GT(SurfaceFormats::readOnly().size(), 0u);
+    for (auto &format : SurfaceFormats::readOnly()) {
         // only RGBA, BGRA, RG, R allowed for D3D
-        if (readOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_RGBA ||
-            readOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_BGRA ||
-            readOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_RG ||
-            readOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_R) {
-            auto surfaceFormat = D3DSharing<TypeParam>::findSurfaceFormatInfo(readOnlySurfaceFormats[i].GMMSurfaceFormat, CL_MEM_READ_ONLY);
+        if (format.OCLImageFormat.image_channel_order == CL_RGBA ||
+            format.OCLImageFormat.image_channel_order == CL_BGRA ||
+            format.OCLImageFormat.image_channel_order == CL_RG ||
+            format.OCLImageFormat.image_channel_order == CL_R) {
+            auto surfaceFormat = D3DSharing<TypeParam>::findSurfaceFormatInfo(format.GMMSurfaceFormat, CL_MEM_READ_ONLY);
             ASSERT_NE(nullptr, surfaceFormat);
-            EXPECT_EQ(&readOnlySurfaceFormats[i], surfaceFormat);
+            EXPECT_EQ(&format, surfaceFormat);
         }
     }
 }
 
 TYPED_TEST_P(D3DTests, givenWriteOnlyFormatWhenLookingForSurfaceFormatThenReturnValidFormat) {
-    EXPECT_GT(numWriteOnlySurfaceFormats, 0u);
-    for (size_t i = 0; i < numWriteOnlySurfaceFormats; i++) {
+    EXPECT_GT(SurfaceFormats::writeOnly().size(), 0u);
+    for (auto &format : SurfaceFormats::writeOnly()) {
         // only RGBA, BGRA, RG, R allowed for D3D
-        if (writeOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_RGBA ||
-            writeOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_BGRA ||
-            writeOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_RG ||
-            writeOnlySurfaceFormats[i].OCLImageFormat.image_channel_order == CL_R) {
-            auto surfaceFormat = D3DSharing<TypeParam>::findSurfaceFormatInfo(writeOnlySurfaceFormats[i].GMMSurfaceFormat, CL_MEM_WRITE_ONLY);
+        if (format.OCLImageFormat.image_channel_order == CL_RGBA ||
+            format.OCLImageFormat.image_channel_order == CL_BGRA ||
+            format.OCLImageFormat.image_channel_order == CL_RG ||
+            format.OCLImageFormat.image_channel_order == CL_R) {
+            auto surfaceFormat = D3DSharing<TypeParam>::findSurfaceFormatInfo(format.GMMSurfaceFormat, CL_MEM_WRITE_ONLY);
             ASSERT_NE(nullptr, surfaceFormat);
-            EXPECT_EQ(&writeOnlySurfaceFormats[i], surfaceFormat);
+            EXPECT_EQ(&format, surfaceFormat);
         }
     }
 }
 
 TYPED_TEST_P(D3DTests, givenReadWriteFormatWhenLookingForSurfaceFormatThenReturnValidFormat) {
-    EXPECT_GT(numReadWriteSurfaceFormats, 0u);
-    for (size_t i = 0; i < numReadWriteSurfaceFormats; i++) {
+    EXPECT_GT(SurfaceFormats::readWrite().size(), 0u);
+    for (auto &format : SurfaceFormats::readWrite()) {
         // only RGBA, BGRA, RG, R allowed for D3D
-        if (readWriteSurfaceFormats[i].OCLImageFormat.image_channel_order == CL_RGBA ||
-            readWriteSurfaceFormats[i].OCLImageFormat.image_channel_order == CL_BGRA ||
-            readWriteSurfaceFormats[i].OCLImageFormat.image_channel_order == CL_RG ||
-            readWriteSurfaceFormats[i].OCLImageFormat.image_channel_order == CL_R) {
-            auto surfaceFormat = D3DSharing<TypeParam>::findSurfaceFormatInfo(readWriteSurfaceFormats[i].GMMSurfaceFormat, CL_MEM_READ_WRITE);
+        if (format.OCLImageFormat.image_channel_order == CL_RGBA ||
+            format.OCLImageFormat.image_channel_order == CL_BGRA ||
+            format.OCLImageFormat.image_channel_order == CL_RG ||
+            format.OCLImageFormat.image_channel_order == CL_R) {
+            auto surfaceFormat = D3DSharing<TypeParam>::findSurfaceFormatInfo(format.GMMSurfaceFormat, CL_MEM_READ_WRITE);
             ASSERT_NE(nullptr, surfaceFormat);
-            EXPECT_EQ(&readWriteSurfaceFormats[i], surfaceFormat);
+            EXPECT_EQ(&format, surfaceFormat);
         }
     }
 }
@@ -1277,7 +1267,35 @@ TYPED_TEST_P(D3DTests, inForced32BitAddressingBufferCreatedHas32BitAllocation) {
     auto *allocation = buffer->getGraphicsAllocation();
     EXPECT_NE(nullptr, allocation);
 
-    EXPECT_TRUE(allocation->is32BitAllocation);
+    EXPECT_TRUE(allocation->is32BitAllocation());
+}
+
+TYPED_TEST_P(D3DTests, givenD3DTexture2dWhenOclImageIsCreatedThenSharedImageAllocationTypeIsSet) {
+    this->mockSharingFcns->mockTexture2dDesc.Format = DXGI_FORMAT_P016;
+    EXPECT_CALL(*this->mockSharingFcns, getTexture2dDesc(_, _))
+        .Times(1)
+        .WillOnce(SetArgPointee<0>(this->mockSharingFcns->mockTexture2dDesc));
+
+    auto image = std::unique_ptr<Image>(D3DTexture<TypeParam>::create2d(this->context, reinterpret_cast<D3DTexture2d *>(&this->dummyD3DTexture), CL_MEM_READ_WRITE, 7, nullptr));
+    ASSERT_NE(nullptr, image.get());
+    ASSERT_NE(nullptr, image->getGraphicsAllocation());
+    EXPECT_EQ(GraphicsAllocation::AllocationType::SHARED_IMAGE, image->getGraphicsAllocation()->getAllocationType());
+}
+
+TYPED_TEST_P(D3DTests, givenD3DTexture3dWhenOclImageIsCreatedThenSharedImageAllocationTypeIsSet) {
+    this->mockSharingFcns->mockTexture3dDesc.MiscFlags = D3DResourceFlags::MISC_SHARED;
+
+    EXPECT_CALL(*this->mockSharingFcns, getTexture3dDesc(_, _))
+        .Times(1)
+        .WillOnce(SetArgPointee<0>(this->mockSharingFcns->mockTexture3dDesc));
+    EXPECT_CALL(*this->mockSharingFcns, createTexture3d(_, _, _))
+        .Times(1)
+        .WillOnce(SetArgPointee<0>(reinterpret_cast<D3DTexture3d *>(&this->dummyD3DTextureStaging)));
+
+    auto image = std::unique_ptr<Image>(D3DTexture<TypeParam>::create3d(this->context, reinterpret_cast<D3DTexture3d *>(&this->dummyD3DTexture), CL_MEM_READ_WRITE, 1, nullptr));
+    ASSERT_NE(nullptr, image.get());
+    ASSERT_NE(nullptr, image->getGraphicsAllocation());
+    EXPECT_EQ(GraphicsAllocation::AllocationType::SHARED_IMAGE, image->getGraphicsAllocation()->getAllocationType());
 }
 
 REGISTER_TYPED_TEST_CASE_P(D3DTests,
@@ -1323,7 +1341,9 @@ REGISTER_TYPED_TEST_CASE_P(D3DTests,
                            givenNV12FormatAndOddPlaneWhen2dCreatedThenSetPlaneParams,
                            givenP010FormatAndOddPlaneWhen2dCreatedThenSetPlaneParams,
                            givenP016FormatAndOddPlaneWhen2dCreatedThenSetPlaneParams,
-                           inForced32BitAddressingBufferCreatedHas32BitAllocation);
+                           inForced32BitAddressingBufferCreatedHas32BitAllocation,
+                           givenD3DTexture2dWhenOclImageIsCreatedThenSharedImageAllocationTypeIsSet,
+                           givenD3DTexture3dWhenOclImageIsCreatedThenSharedImageAllocationTypeIsSet);
 
 typedef ::testing::Types<D3DTypesHelper::D3D10, D3DTypesHelper::D3D11> D3DTypes;
 INSTANTIATE_TYPED_TEST_CASE_P(D3DSharingTests, D3DTests, D3DTypes);
@@ -1343,7 +1363,7 @@ TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithUnifiedAuxFlagsWhenCreatingT
     auto image = std::unique_ptr<Image>(D3DTexture<TypeParam>::create2d(this->context, (D3DTexture2d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 4, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(1u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(1u, mockMM->mapAuxGpuVACalled);
     EXPECT_TRUE(gmm->isRenderCompressed);
 }
 
@@ -1355,11 +1375,11 @@ TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithUnifiedAuxFlagsWhenFailOnAux
     mockGmmResInfo->setUnifiedAuxTranslationCapable();
     EXPECT_CALL(*this->mockSharingFcns, getTexture2dDesc(_, _)).Times(1).WillOnce(SetArgPointee<0>(this->mockSharingFcns->mockTexture2dDesc));
 
-    mockMM.mapAuxGpuVaRetValue = false;
+    mockMM->mapAuxGpuVaRetValue = false;
     auto image = std::unique_ptr<Image>(D3DTexture<TypeParam>::create2d(this->context, (D3DTexture2d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 4, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(1u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(1u, mockMM->mapAuxGpuVACalled);
     EXPECT_FALSE(gmm->isRenderCompressed);
 }
 
@@ -1375,7 +1395,7 @@ TYPED_TEST_P(D3DAuxTests, given2dSharableTextureWithoutUnifiedAuxFlagsWhenCreati
     auto image = std::unique_ptr<Image>(D3DTexture<TypeParam>::create2d(this->context, (D3DTexture2d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 4, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(0u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(0u, mockMM->mapAuxGpuVACalled);
     EXPECT_FALSE(gmm->isRenderCompressed);
 }
 
@@ -1387,7 +1407,7 @@ TYPED_TEST_P(D3DAuxTests, given2dNonSharableTextureWithUnifiedAuxFlagsWhenCreati
     auto image = std::unique_ptr<Image>(D3DTexture<TypeParam>::create2d(this->context, (D3DTexture2d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 1, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(1u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(1u, mockMM->mapAuxGpuVACalled);
     EXPECT_TRUE(gmm->isRenderCompressed);
 }
 
@@ -1400,7 +1420,7 @@ TYPED_TEST_P(D3DAuxTests, given3dSharableTextureWithUnifiedAuxFlagsWhenCreatingT
     std::unique_ptr<Image> image(D3DTexture<TypeParam>::create3d(this->context, (D3DTexture3d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 1, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(1u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(1u, mockMM->mapAuxGpuVACalled);
     EXPECT_TRUE(gmm->isRenderCompressed);
 }
 
@@ -1410,11 +1430,11 @@ TYPED_TEST_P(D3DAuxTests, given3dSharableTextureWithUnifiedAuxFlagsWhenFailOnAux
     mockGmmResInfo->setUnifiedAuxTranslationCapable();
     EXPECT_CALL(*this->mockSharingFcns, getTexture3dDesc(_, _)).Times(1).WillOnce(SetArgPointee<0>(this->mockSharingFcns->mockTexture3dDesc));
 
-    mockMM.mapAuxGpuVaRetValue = false;
+    mockMM->mapAuxGpuVaRetValue = false;
     std::unique_ptr<Image> image(D3DTexture<TypeParam>::create3d(this->context, (D3DTexture3d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 1, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(1u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(1u, mockMM->mapAuxGpuVACalled);
     EXPECT_FALSE(gmm->isRenderCompressed);
 }
 
@@ -1428,7 +1448,7 @@ TYPED_TEST_P(D3DAuxTests, given3dSharableTextureWithoutUnifiedAuxFlagsWhenCreati
     std::unique_ptr<Image> image(D3DTexture<TypeParam>::create3d(this->context, (D3DTexture3d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 1, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(0u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(0u, mockMM->mapAuxGpuVACalled);
     EXPECT_FALSE(gmm->isRenderCompressed);
 }
 
@@ -1440,7 +1460,7 @@ TYPED_TEST_P(D3DAuxTests, given3dNonSharableTextureWithUnifiedAuxFlagsWhenCreati
     std::unique_ptr<Image> image(D3DTexture<TypeParam>::create3d(this->context, (D3DTexture3d *)&this->dummyD3DTexture, CL_MEM_READ_WRITE, 1, nullptr));
     ASSERT_NE(nullptr, image.get());
 
-    EXPECT_EQ(1u, mockMM.mapAuxGpuVACalled);
+    EXPECT_EQ(1u, mockMM->mapAuxGpuVACalled);
     EXPECT_TRUE(gmm->isRenderCompressed);
 }
 
@@ -1471,7 +1491,252 @@ TEST(D3DSurfaceTest, givenD3DSurfaceWhenInvalidMemObjectIsPassedToValidateUpdate
     MockBuffer buffer;
     UpdateData updateData;
     updateData.memObject = &buffer;
-    auto result = surface->validateUpdateData(&updateData);
+    auto result = surface->validateUpdateData(updateData);
     EXPECT_EQ(CL_INVALID_MEM_OBJECT, result);
 }
-} // namespace OCLRT
+
+static const DXGI_FORMAT DXGIformats[] = {
+    DXGI_FORMAT_R32G32B32A32_TYPELESS,
+    DXGI_FORMAT_R32G32B32A32_FLOAT,
+    DXGI_FORMAT_R32G32B32A32_UINT,
+    DXGI_FORMAT_R32G32B32A32_SINT,
+    DXGI_FORMAT_R32G32B32_TYPELESS,
+    DXGI_FORMAT_R32G32B32_FLOAT,
+    DXGI_FORMAT_R32G32B32_UINT,
+    DXGI_FORMAT_R32G32B32_SINT,
+    DXGI_FORMAT_R16G16B16A16_TYPELESS,
+    DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_FORMAT_R16G16B16A16_UNORM,
+    DXGI_FORMAT_R16G16B16A16_UINT,
+    DXGI_FORMAT_R16G16B16A16_SNORM,
+    DXGI_FORMAT_R16G16B16A16_SINT,
+    DXGI_FORMAT_R32G32_TYPELESS,
+    DXGI_FORMAT_R32G32_FLOAT,
+    DXGI_FORMAT_R32G32_UINT,
+    DXGI_FORMAT_R32G32_SINT,
+    DXGI_FORMAT_R32G8X24_TYPELESS,
+    DXGI_FORMAT_D32_FLOAT_S8X24_UINT,
+    DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS,
+    DXGI_FORMAT_X32_TYPELESS_G8X24_UINT,
+    DXGI_FORMAT_R10G10B10A2_TYPELESS,
+    DXGI_FORMAT_R10G10B10A2_UNORM,
+    DXGI_FORMAT_R10G10B10A2_UINT,
+    DXGI_FORMAT_R11G11B10_FLOAT,
+    DXGI_FORMAT_R8G8B8A8_TYPELESS,
+    DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+    DXGI_FORMAT_R8G8B8A8_UINT,
+    DXGI_FORMAT_R8G8B8A8_SNORM,
+    DXGI_FORMAT_R8G8B8A8_SINT,
+    DXGI_FORMAT_R16G16_TYPELESS,
+    DXGI_FORMAT_R16G16_FLOAT,
+    DXGI_FORMAT_R16G16_UNORM,
+    DXGI_FORMAT_R16G16_UINT,
+    DXGI_FORMAT_R16G16_SNORM,
+    DXGI_FORMAT_R16G16_SINT,
+    DXGI_FORMAT_R32_TYPELESS,
+    DXGI_FORMAT_D32_FLOAT,
+    DXGI_FORMAT_R32_FLOAT,
+    DXGI_FORMAT_R32_UINT,
+    DXGI_FORMAT_R32_SINT,
+    DXGI_FORMAT_R24G8_TYPELESS,
+    DXGI_FORMAT_D24_UNORM_S8_UINT,
+    DXGI_FORMAT_R24_UNORM_X8_TYPELESS,
+    DXGI_FORMAT_X24_TYPELESS_G8_UINT,
+    DXGI_FORMAT_R8G8_TYPELESS,
+    DXGI_FORMAT_R8G8_UNORM,
+    DXGI_FORMAT_R8G8_UINT,
+    DXGI_FORMAT_R8G8_SNORM,
+    DXGI_FORMAT_R8G8_SINT,
+    DXGI_FORMAT_R16_TYPELESS,
+    DXGI_FORMAT_R16_FLOAT,
+    DXGI_FORMAT_D16_UNORM,
+    DXGI_FORMAT_R16_UNORM,
+    DXGI_FORMAT_R16_UINT,
+    DXGI_FORMAT_R16_SNORM,
+    DXGI_FORMAT_R16_SINT,
+    DXGI_FORMAT_R8_TYPELESS,
+    DXGI_FORMAT_R8_UNORM,
+    DXGI_FORMAT_R8_UINT,
+    DXGI_FORMAT_R8_SNORM,
+    DXGI_FORMAT_R8_SINT,
+    DXGI_FORMAT_A8_UNORM,
+    DXGI_FORMAT_R1_UNORM,
+    DXGI_FORMAT_R9G9B9E5_SHAREDEXP,
+    DXGI_FORMAT_R8G8_B8G8_UNORM,
+    DXGI_FORMAT_G8R8_G8B8_UNORM,
+    DXGI_FORMAT_BC1_TYPELESS,
+    DXGI_FORMAT_BC1_UNORM,
+    DXGI_FORMAT_BC1_UNORM_SRGB,
+    DXGI_FORMAT_BC2_TYPELESS,
+    DXGI_FORMAT_BC2_UNORM,
+    DXGI_FORMAT_BC2_UNORM_SRGB,
+    DXGI_FORMAT_BC3_TYPELESS,
+    DXGI_FORMAT_BC3_UNORM,
+    DXGI_FORMAT_BC3_UNORM_SRGB,
+    DXGI_FORMAT_BC4_TYPELESS,
+    DXGI_FORMAT_BC4_UNORM,
+    DXGI_FORMAT_BC4_SNORM,
+    DXGI_FORMAT_BC5_TYPELESS,
+    DXGI_FORMAT_BC5_UNORM,
+    DXGI_FORMAT_BC5_SNORM,
+    DXGI_FORMAT_B5G6R5_UNORM,
+    DXGI_FORMAT_B5G5R5A1_UNORM,
+    DXGI_FORMAT_B8G8R8A8_UNORM,
+    DXGI_FORMAT_B8G8R8X8_UNORM,
+    DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,
+    DXGI_FORMAT_B8G8R8A8_TYPELESS,
+    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+    DXGI_FORMAT_B8G8R8X8_TYPELESS,
+    DXGI_FORMAT_B8G8R8X8_UNORM_SRGB,
+    DXGI_FORMAT_BC6H_TYPELESS,
+    DXGI_FORMAT_BC6H_UF16,
+    DXGI_FORMAT_BC6H_SF16,
+    DXGI_FORMAT_BC7_TYPELESS,
+    DXGI_FORMAT_BC7_UNORM,
+    DXGI_FORMAT_BC7_UNORM_SRGB,
+    DXGI_FORMAT_AYUV,
+    DXGI_FORMAT_Y410,
+    DXGI_FORMAT_Y416,
+    DXGI_FORMAT_NV12,
+    DXGI_FORMAT_P010,
+    DXGI_FORMAT_P016,
+    DXGI_FORMAT_420_OPAQUE,
+    DXGI_FORMAT_YUY2,
+    DXGI_FORMAT_Y210,
+    DXGI_FORMAT_Y216,
+    DXGI_FORMAT_NV11,
+    DXGI_FORMAT_AI44,
+    DXGI_FORMAT_IA44,
+    DXGI_FORMAT_P8,
+    DXGI_FORMAT_A8P8,
+    DXGI_FORMAT_B4G4R4A4_UNORM,
+    DXGI_FORMAT_P208,
+    DXGI_FORMAT_V208,
+    DXGI_FORMAT_V408,
+    DXGI_FORMAT_FORCE_UINT};
+
+template <typename T>
+struct clIntelSharingFormatQueryDX1X : public PlatformFixture, public ::testing::Test {
+    std::vector<DXGI_FORMAT> retrievedFormats;
+    ArrayRef<const DXGI_FORMAT> availableFormats;
+
+    NiceMock<MockD3DSharingFunctions<T>> *mockSharingFcns;
+    MockContext *context;
+    cl_uint numImageFormats;
+    cl_int retVal;
+    size_t retSize;
+
+    void SetUp() override {
+        PlatformFixture::SetUp();
+        context = new MockContext(pPlatform->getDevice(0));
+        mockSharingFcns = new NiceMock<MockD3DSharingFunctions<T>>();
+        context->setSharingFunctions(mockSharingFcns);
+
+        availableFormats = ArrayRef<const DXGI_FORMAT>(DXGIformats);
+        retrievedFormats.assign(availableFormats.size(), DXGI_FORMAT_UNKNOWN);
+    }
+    void TearDown() override {
+        delete context;
+        PlatformFixture::TearDown();
+    }
+};
+
+typedef clIntelSharingFormatQueryDX1X<D3DTypesHelper::D3D10> clIntelSharingFormatQueryDX10;
+typedef clIntelSharingFormatQueryDX1X<D3DTypesHelper::D3D11> clIntelSharingFormatQueryDX11;
+
+TEST_F(clIntelSharingFormatQueryDX10, givenInvalidContextWhenDX10TextureFormatsRequestedThenInvalidContextError) {
+    retVal = clGetSupportedDX10TextureFormatsINTEL(NULL, CL_MEM_READ_WRITE, 0,
+                                                   static_cast<cl_uint>(retrievedFormats.size()),
+                                                   &retrievedFormats[0], &numImageFormats);
+    EXPECT_EQ(CL_INVALID_CONTEXT, retVal);
+}
+
+TEST_F(clIntelSharingFormatQueryDX10, givenValidParametersWhenRequestedDX10TextureFormatsThenTheResultIsASubsetOfKnownFormats) {
+    retVal = clGetSupportedDX10TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,
+                                                   static_cast<cl_uint>(retrievedFormats.size()),
+                                                   &retrievedFormats[0], &numImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    for (cl_uint i = 0; i < numImageFormats; ++i) {
+        EXPECT_NE(std::find(availableFormats.begin(),
+                            availableFormats.end(),
+                            retrievedFormats[i]),
+                  availableFormats.end());
+    }
+}
+
+TEST_F(clIntelSharingFormatQueryDX10, givenValidParametersWhenRequestedDX10TextureFormatsTwiceThenTheResultsAreTheSame) {
+    retVal = clGetSupportedDX10TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,
+                                                   static_cast<cl_uint>(retrievedFormats.size()),
+                                                   &retrievedFormats[0], &numImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    std::vector<DXGI_FORMAT> formatsRetrievedForTheSecondTime(availableFormats.size());
+    cl_uint anotherNumImageFormats;
+    retVal = clGetSupportedDX10TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,
+                                                   static_cast<cl_uint>(formatsRetrievedForTheSecondTime.size()),
+                                                   &formatsRetrievedForTheSecondTime[0], &anotherNumImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    ASSERT_EQ(numImageFormats, anotherNumImageFormats);
+    ASSERT_EQ(memcmp(&retrievedFormats[0], &formatsRetrievedForTheSecondTime[0], numImageFormats * sizeof(DXGI_FORMAT)), 0);
+}
+
+TEST_F(clIntelSharingFormatQueryDX10, givenNullFormatsWhenRequestedDX10TextureFormatsThenNumImageFormatsIsSane) {
+    retVal = clGetSupportedDX10TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    ASSERT_LE(0U, numImageFormats);
+    ASSERT_LE(numImageFormats, static_cast<cl_uint>(availableFormats.size()));
+}
+
+TEST_F(clIntelSharingFormatQueryDX10, givenNullPointersWhenRequestedDX10TextureFormatsThenCLSuccessIsReturned) {
+    retVal = clGetSupportedDX10TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, static_cast<cl_uint>(retrievedFormats.size()), nullptr, nullptr);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+}
+
+TEST_F(clIntelSharingFormatQueryDX11, givenInvalidContextWhenDX11TextureFormatsRequestedThenInvalidContextError) {
+    retVal = clGetSupportedDX11TextureFormatsINTEL(nullptr, CL_MEM_READ_WRITE, 0,
+                                                   static_cast<cl_uint>(retrievedFormats.size()),
+                                                   &retrievedFormats[0], &numImageFormats);
+    EXPECT_EQ(CL_INVALID_CONTEXT, retVal);
+}
+
+TEST_F(clIntelSharingFormatQueryDX11, givenValidParametersWhenRequestedDX11TextureFormatsThenTheResultIsASubsetOfKnownFormats) {
+    retVal = clGetSupportedDX11TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,
+                                                   static_cast<cl_uint>(retrievedFormats.size()),
+                                                   &retrievedFormats[0], &numImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    for (cl_uint i = 0; i < numImageFormats; ++i) {
+        EXPECT_NE(std::find(availableFormats.begin(),
+                            availableFormats.end(),
+                            retrievedFormats[i]),
+                  availableFormats.end());
+    }
+}
+
+TEST_F(clIntelSharingFormatQueryDX11, givenNullFormatsWhenRequestedDX11TextureFormatsThenNumImageFormatsIsSane) {
+    retVal = clGetSupportedDX11TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, 0, nullptr, &numImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    ASSERT_LE(0U, numImageFormats);
+    ASSERT_LE(numImageFormats, static_cast<cl_uint>(availableFormats.size()));
+}
+
+TEST_F(clIntelSharingFormatQueryDX11, givenNullPointersWhenRequestedDX11TextureFormatsThenCLSuccessIsReturned) {
+    retVal = clGetSupportedDX11TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D, static_cast<cl_uint>(retrievedFormats.size()), nullptr, nullptr);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+}
+
+TEST_F(clIntelSharingFormatQueryDX11, givenValidParametersWhenRequestedDX11TextureFormatsTwiceThenTheResultsAreTheSame) {
+    retVal = clGetSupportedDX11TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,
+                                                   static_cast<cl_uint>(retrievedFormats.size()),
+                                                   &retrievedFormats[0], &numImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    std::vector<DXGI_FORMAT> formatsRetrievedForTheSecondTime(availableFormats.size());
+    cl_uint anotherNumImageFormats;
+    retVal = clGetSupportedDX11TextureFormatsINTEL(context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,
+                                                   static_cast<cl_uint>(formatsRetrievedForTheSecondTime.size()),
+                                                   &formatsRetrievedForTheSecondTime[0], &anotherNumImageFormats);
+    ASSERT_EQ(retVal, CL_SUCCESS);
+    ASSERT_EQ(numImageFormats, anotherNumImageFormats);
+    ASSERT_EQ(memcmp(&retrievedFormats[0], &formatsRetrievedForTheSecondTime[0], numImageFormats * sizeof(DXGI_FORMAT)), 0);
+}
+
+} // namespace NEO

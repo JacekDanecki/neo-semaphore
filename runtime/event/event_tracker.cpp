@@ -1,32 +1,16 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/command_queue/command_queue.h"
-#include "runtime/event/event.h"
 #include "runtime/event/event_tracker.h"
-#include "runtime/utilities/iflist.h"
+
+#include "runtime/command_queue/command_queue.h"
 #include "runtime/helpers/cl_helper.h"
 
-namespace OCLRT {
+namespace NEO {
 
 std::unique_ptr<EventsTracker> EventsTracker::globalEvTracker = nullptr;
 
@@ -37,10 +21,6 @@ EventsTracker &EventsTracker::getEventsTracker() {
     if (!EventsTracker::globalEvTracker)
         EventsTracker::globalEvTracker = std::unique_ptr<EventsTracker>{new EventsTracker()};
     return *EventsTracker::globalEvTracker;
-}
-
-void EventsTracker::shutdownGlobalEvTracker() {
-    EventsTracker::globalEvTracker.reset();
 }
 
 std::string EventsTracker::label(Event *node, const EventIdMap &eventsIdMapping) {
@@ -99,7 +79,7 @@ void EventsTracker::dumpNode(Event *node, std::ostream &out, const EventIdMap &e
     std::string eventType = isUserEvent ? "USER_EVENT" : (node->isCurrentCmdQVirtualEvent() ? "---V_EVENT " : "-----EVENT ");
     std::string commandType = "";
     if (isUserEvent == false) {
-        commandType = OCLRT::cmdTypetoString(node->getCommandType());
+        commandType = NEO::cmdTypetoString(node->getCommandType());
     }
 
     static const char *status[] = {
@@ -164,10 +144,6 @@ void EventsTracker::dumpGraph(Event *node, std::ostream &out, CmdqSet &dumpedCmd
     }
 }
 
-IFList<TrackedEvent, true, true> *EventsTracker::getList() {
-    return &trackedEvents;
-}
-
 TrackedEvent *EventsTracker::getNodes() {
     return trackedEvents.detachNodes();
 }
@@ -179,7 +155,7 @@ void EventsTracker::dump() {
     std::string dumpFileName = "eg_"
                                "reg" +
                                std::to_string(reinterpret_cast<uintptr_t>(this)) + "_" + std::to_string(time.time_since_epoch().count()) + ".gv";
-    std::shared_ptr<std::ostream> out = createDumpStream(dumpFileName);
+    auto out = createDumpStream(dumpFileName);
 
     *out << "digraph events_registry_" << this << " {\n";
     *out << "node [shape=record]\n";
@@ -266,9 +242,8 @@ void EventsTracker::notifyTransitionedExecutionStatus() {
     dump();
 }
 
-std::shared_ptr<std::ostream> EventsTracker::createDumpStream(const std::string &filename) {
-    std::shared_ptr<std::fstream> out{new std::fstream(filename, std::ios::binary | std::ios::out)};
-    return out;
+std::unique_ptr<std::ostream> EventsTracker::createDumpStream(const std::string &filename) {
+    return std::make_unique<std::fstream>(filename, std::ios::binary | std::ios::out);
 }
 
-} // namespace OCLRT
+} // namespace NEO

@@ -1,53 +1,43 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/built_ins/sip.h"
 #include "runtime/command_queue/command_queue.h"
-#include "runtime/command_queue/command_queue_hw.h"
+
+#include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/device_queue/device_queue.h"
-#include "runtime/event/event.h"
 #include "runtime/event/event_builder.h"
+#include "runtime/event/user_event.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/array_count.h"
+#include "runtime/helpers/convert_color.h"
 #include "runtime/helpers/get_info.h"
+#include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/ptr_math.h"
+#include "runtime/helpers/queue_helpers.h"
+#include "runtime/helpers/string.h"
+#include "runtime/helpers/surface_formats.h"
+#include "runtime/helpers/timestamp_packet.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/mem_obj/image.h"
-#include "runtime/helpers/surface_formats.h"
-#include "runtime/memory_manager/memory_manager.h"
-#include "runtime/helpers/string.h"
-#include "CL/cl_ext.h"
+#include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/utilities/api_intercept.h"
-#include "runtime/helpers/convert_color.h"
-#include "runtime/helpers/queue_helpers.h"
+#include "runtime/utilities/tag_allocator.h"
+
+#include "CL/cl_ext.h"
+
 #include <map>
 
-namespace OCLRT {
+namespace NEO {
 
 // Global table of create functions
 CommandQueueCreateFunc commandQueueFactory[IGFX_MAX_CORE] = {};
@@ -67,44 +57,36 @@ CommandQueue *CommandQueue::create(Context *context,
 CommandQueue::CommandQueue() : CommandQueue(nullptr, nullptr, 0) {
 }
 
-CommandQueue::CommandQueue(Context *context,
-                           Device *deviceId,
-                           const cl_queue_properties *properties) : taskCount(0),
-                                                                    taskLevel(0),
-                                                                    virtualEvent(nullptr),
-                                                                    context(context),
-                                                                    device(deviceId),
-                                                                    priority(QueuePriority::MEDIUM),
-                                                                    throttle(QueueThrottle::MEDIUM),
-                                                                    perfCountersEnabled(false),
-                                                                    perfCountersConfig(UINT32_MAX),
-                                                                    perfCountersUserRegistersNumber(0),
-                                                                    perfConfigurationData(nullptr),
-                                                                    perfCountersRegsCfgHandle(0),
-                                                                    perfCountersRegsCfgPending(false),
-                                                                    commandStream(nullptr) {
+CommandQueue::CommandQueue(Context *context, Device *deviceId, const cl_queue_properties *properties)
+    : context(context), device(deviceId) {
     if (context) {
         context->incRefInternal();
     }
 
     commandQueueProperties = getCmdQueueProperties<cl_command_queue_properties>(properties);
     flushStamp.reset(new FlushStampTracker(true));
+
+    if (device) {
+        engine = &device->getDefaultEngine();
+        if (getCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+            timestampPacketContainer = std::make_unique<TimestampPacketContainer>();
+        }
+    }
+
+    processProperties(properties);
 }
 
 CommandQueue::~CommandQueue() {
     if (virtualEvent) {
         UNRECOVERABLE_IF(this->virtualEvent->getCommandQueue() != this && this->virtualEvent->getCommandQueue() != nullptr);
-        virtualEvent->setCurrentCmdQVirtualEvent(false);
         virtualEvent->decRefInternal();
     }
 
     if (device) {
-        auto memoryManager = device->getMemoryManager();
-        DEBUG_BREAK_IF(nullptr == memoryManager);
+        auto storageForAllocation = getCommandStreamReceiver().getInternalAllocationStorage();
 
-        if (commandStream && commandStream->getGraphicsAllocation()) {
-            memoryManager->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandStream->getGraphicsAllocation()), REUSABLE_ALLOCATION);
-            commandStream->replaceGraphicsAllocation(nullptr);
+        if (commandStream) {
+            storageForAllocation->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandStream->getGraphicsAllocation()), REUSABLE_ALLOCATION);
         }
         delete commandStream;
 
@@ -116,11 +98,16 @@ CommandQueue::~CommandQueue() {
         }
     }
 
+    timestampPacketContainer.reset();
     //for normal queue, decrement ref count on context
     //special queue is owned by context so ref count doesn't have to be decremented
     if (context && !isSpecialCommandQueue) {
         context->decRefInternal();
     }
+}
+
+CommandStreamReceiver &CommandQueue::getCommandStreamReceiver() const {
+    return *engine->commandStreamReceiver;
 }
 
 uint32_t CommandQueue::getHwTag() const {
@@ -129,13 +116,7 @@ uint32_t CommandQueue::getHwTag() const {
 }
 
 volatile uint32_t *CommandQueue::getHwTagAddress() const {
-    DEBUG_BREAK_IF(!this->device);
-    auto &commandStreamReceiver = device->getCommandStreamReceiver();
-    auto tag_address = commandStreamReceiver.getTagAddress();
-    auto allocation = commandStreamReceiver.getTagAllocation();
-    UNRECOVERABLE_IF(allocation == nullptr);
-    commandStreamReceiver.makeCoherent(*allocation);
-    return tag_address;
+    return getCommandStreamReceiver().getTagAddress();
 }
 
 bool CommandQueue::isCompleted(uint32_t taskCount) const {
@@ -150,7 +131,9 @@ void CommandQueue::waitUntilComplete(uint32_t taskCountToWait, FlushStamp flushS
     DBG_LOG(LogTaskCounts, __FUNCTION__, "Waiting for taskCount:", taskCountToWait);
     DBG_LOG(LogTaskCounts, __FUNCTION__, "Line: ", __LINE__, "Current taskCount:", getHwTag());
 
-    device->getCommandStreamReceiver().waitForTaskCountWithKmdNotifyFallback(taskCountToWait, flushStampToWait, useQuickKmdSleep);
+    bool forcePowerSavingMode = this->throttle == QueueThrottle::LOW;
+
+    getCommandStreamReceiver().waitForTaskCountWithKmdNotifyFallback(taskCountToWait, flushStampToWait, useQuickKmdSleep, forcePowerSavingMode);
 
     DEBUG_BREAK_IF(getHwTag() < taskCountToWait);
     latestTaskCountWaited = taskCountToWait;
@@ -176,7 +159,7 @@ bool CommandQueue::isQueueBlocked() {
                 //at this point we may reset queue TaskCount, since all command previous to this were aborted
                 taskCount = 0;
                 flushStamp->setStamp(0);
-                taskLevel = getDevice().getCommandStreamReceiver().peekTaskLevel();
+                taskLevel = getCommandStreamReceiver().peekTaskLevel();
             }
 
             DebugManager.log(DebugManager.flags.EventsDebugEnable.get(), "isQueueBlocked taskLevel change from", taskLevel, "to new from virtualEvent", this->virtualEvent, "new tasklevel", this->virtualEvent->taskLevel.load());
@@ -211,41 +194,14 @@ uint32_t CommandQueue::getTaskLevelFromWaitList(uint32_t taskLevel,
 
 LinearStream &CommandQueue::getCS(size_t minRequiredSize) {
     DEBUG_BREAK_IF(nullptr == device);
-    auto &commandStreamReceiver = device->getCommandStreamReceiver();
-    auto memoryManager = commandStreamReceiver.getMemoryManager();
-    DEBUG_BREAK_IF(nullptr == memoryManager);
 
     if (!commandStream) {
         commandStream = new LinearStream(nullptr);
     }
 
-    // Make sure we have enough room for any CSR additions
     minRequiredSize += CSRequirements::minCommandQueueCommandStreamSize;
-
-    if (commandStream->getAvailableSpace() < minRequiredSize) {
-        // If not, allocate a new block. allocate full pages
-        minRequiredSize = alignUp(minRequiredSize, MemoryConstants::pageSize);
-
-        auto requiredSize = minRequiredSize + CSRequirements::csOverfetchSize;
-
-        GraphicsAllocation *allocation = memoryManager->obtainReusableAllocation(requiredSize, false).release();
-
-        if (!allocation) {
-            allocation = memoryManager->allocateGraphicsMemory(requiredSize);
-        }
-
-        allocation->setAllocationType(GraphicsAllocation::AllocationType::LINEAR_STREAM);
-
-        // Deallocate the old block, if not null
-        auto oldAllocation = commandStream->getGraphicsAllocation();
-
-        if (oldAllocation) {
-            memoryManager->storeAllocation(std::unique_ptr<GraphicsAllocation>(oldAllocation), REUSABLE_ALLOCATION);
-        }
-        commandStream->replaceBuffer(allocation->getUnderlyingBuffer(), minRequiredSize - CSRequirements::minCommandQueueCommandStreamSize);
-        commandStream->replaceGraphicsAllocation(allocation);
-    }
-
+    constexpr static auto additionalAllocationSize = CSRequirements::minCommandQueueCommandStreamSize + CSRequirements::csOverfetchSize;
+    getCommandStreamReceiver().ensureCommandBufferAllocation(*commandStream, minRequiredSize, additionalAllocationSize);
     return *commandStream;
 }
 
@@ -314,21 +270,6 @@ void CommandQueue::updateFromCompletionStamp(const CompletionStamp &completionSt
     this->taskLevel = completionStamp.taskLevel;
 }
 
-void CommandQueue::flushWaitList(
-    cl_uint numEventsInWaitList,
-    const cl_event *eventWaitList,
-    bool ndRangeKernel) {
-
-    bool isQBlocked = false;
-
-    //as long as queue is blocked we need to stall.
-    if (!isOOQEnabled()) {
-        while ((isQBlocked = isQueueBlocked()))
-            ;
-    }
-    device->getCommandStreamReceiver().flushBatchedSubmissions();
-}
-
 bool CommandQueue::setPerfCountersEnabled(bool perfCountersEnabled, cl_uint configuration) {
     DEBUG_BREAK_IF(device == nullptr);
     if (perfCountersEnabled == this->perfCountersEnabled) {
@@ -383,7 +324,7 @@ cl_int CommandQueue::enqueueWriteMemObjForUnmap(MemObj *memObj, void *mappedPtr,
     if (!unmapInfo.readOnly) {
         if (memObj->peekClMemObjType() == CL_MEM_OBJECT_BUFFER) {
             auto buffer = castToObject<Buffer>(memObj);
-            retVal = enqueueWriteBuffer(buffer, CL_TRUE, unmapInfo.offset[0], unmapInfo.size[0], mappedPtr,
+            retVal = enqueueWriteBuffer(buffer, CL_TRUE, unmapInfo.offset[0], unmapInfo.size[0], mappedPtr, memObj->getMapAllocation(),
                                         eventsRequest.numEventsInWaitList, eventsRequest.eventWaitList, eventsRequest.outEvent);
         } else {
             auto image = castToObjectOrAbort<Image>(memObj);
@@ -392,7 +333,7 @@ cl_int CommandQueue::enqueueWriteMemObjForUnmap(MemObj *memObj, void *mappedPtr,
             UNRECOVERABLE_IF(mipIdx >= 4);
             writeOrigin[mipIdx] = unmapInfo.mipLevel;
             retVal = enqueueWriteImage(image, CL_FALSE, writeOrigin, &unmapInfo.size[0],
-                                       image->getHostPtrRowPitchForMap(unmapInfo.mipLevel), image->getHostPtrSlicePitchForMap(unmapInfo.mipLevel), mappedPtr,
+                                       image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(), mappedPtr,
                                        eventsRequest.numEventsInWaitList, eventsRequest.eventWaitList, eventsRequest.outEvent);
             bool mustCallFinish = true;
             if (!(image->getFlags() & CL_MEM_USE_HOST_PTR)) {
@@ -419,8 +360,12 @@ cl_int CommandQueue::enqueueWriteMemObjForUnmap(MemObj *memObj, void *mappedPtr,
 }
 
 void *CommandQueue::enqueueReadMemObjForMap(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &errcodeRet) {
-    void *returnPtr = ptrOffset(transferProperties.memObj->getBasePtrForMap(),
-                                transferProperties.memObj->calculateOffsetForMapping(transferProperties.offset) + transferProperties.mipPtrOffset);
+    void *basePtr = transferProperties.memObj->getBasePtrForMap();
+    size_t mapPtrOffset = transferProperties.memObj->calculateOffsetForMapping(transferProperties.offset) + transferProperties.mipPtrOffset;
+    if (transferProperties.memObj->peekClMemObjType() == CL_MEM_OBJECT_BUFFER) {
+        mapPtrOffset += transferProperties.memObj->getOffset();
+    }
+    void *returnPtr = ptrOffset(basePtr, mapPtrOffset);
 
     if (!transferProperties.memObj->addMappedPtr(returnPtr, transferProperties.memObj->calculateMappedPtrLength(transferProperties.size),
                                                  transferProperties.mapFlags, transferProperties.size, transferProperties.offset, transferProperties.mipLevel)) {
@@ -430,8 +375,9 @@ void *CommandQueue::enqueueReadMemObjForMap(TransferProperties &transferProperti
 
     if (transferProperties.memObj->peekClMemObjType() == CL_MEM_OBJECT_BUFFER) {
         auto buffer = castToObject<Buffer>(transferProperties.memObj);
-        errcodeRet = enqueueReadBuffer(buffer, transferProperties.blocking, transferProperties.offset[0], transferProperties.size[0], returnPtr,
-                                       eventsRequest.numEventsInWaitList, eventsRequest.eventWaitList, eventsRequest.outEvent);
+        errcodeRet = enqueueReadBuffer(buffer, transferProperties.blocking, transferProperties.offset[0], transferProperties.size[0],
+                                       returnPtr, transferProperties.memObj->getMapAllocation(), eventsRequest.numEventsInWaitList,
+                                       eventsRequest.eventWaitList, eventsRequest.outEvent);
     } else {
         auto image = castToObjectOrAbort<Image>(transferProperties.memObj);
         size_t readOrigin[4] = {transferProperties.offset[0], transferProperties.offset[1], transferProperties.offset[2], 0};
@@ -439,7 +385,7 @@ void *CommandQueue::enqueueReadMemObjForMap(TransferProperties &transferProperti
         UNRECOVERABLE_IF(mipIdx >= 4);
         readOrigin[mipIdx] = transferProperties.mipLevel;
         errcodeRet = enqueueReadImage(image, transferProperties.blocking, readOrigin, &transferProperties.size[0],
-                                      image->getHostPtrRowPitchForMap(transferProperties.mipLevel), image->getHostPtrSlicePitchForMap(transferProperties.mipLevel), returnPtr, eventsRequest.numEventsInWaitList,
+                                      image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(), returnPtr, eventsRequest.numEventsInWaitList,
                                       eventsRequest.eventWaitList, eventsRequest.outEvent);
     }
 
@@ -478,7 +424,7 @@ void *CommandQueue::enqueueMapBuffer(Buffer *buffer, cl_bool blockingMap,
                                      const cl_event *eventWaitList, cl_event *event,
                                      cl_int &errcodeRet) {
 
-    TransferProperties transferProperties(buffer, CL_COMMAND_MAP_BUFFER, mapFlags, blockingMap != CL_FALSE, &offset, &size, nullptr);
+    TransferProperties transferProperties(buffer, CL_COMMAND_MAP_BUFFER, mapFlags, blockingMap != CL_FALSE, &offset, &size, nullptr, false);
     EventsRequest eventsRequest(numEventsInWaitList, eventWaitList, event);
 
     return enqueueMapMemObject(transferProperties, eventsRequest, errcodeRet);
@@ -492,10 +438,9 @@ void *CommandQueue::enqueueMapImage(Image *image, cl_bool blockingMap,
                                     const cl_event *eventWaitList, cl_event *event,
                                     cl_int &errcodeRet) {
     TransferProperties transferProperties(image, CL_COMMAND_MAP_IMAGE, mapFlags, blockingMap != CL_FALSE,
-                                          const_cast<size_t *>(origin), const_cast<size_t *>(region), nullptr);
+                                          const_cast<size_t *>(origin), const_cast<size_t *>(region), nullptr, false);
     EventsRequest eventsRequest(numEventsInWaitList, eventWaitList, event);
 
-    auto returnPtr = enqueueMapMemObject(transferProperties, eventsRequest, errcodeRet);
     if (image->isMemObjZeroCopy() && image->mappingOnCpuAllowed()) {
         GetInfoHelper::set(imageSlicePitch, image->getImageDesc().image_slice_pitch);
         if (image->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY) {
@@ -508,19 +453,18 @@ void *CommandQueue::enqueueMapImage(Image *image, cl_bool blockingMap,
             GetInfoHelper::set(imageRowPitch, image->getImageDesc().image_row_pitch);
         }
     } else {
-        GetInfoHelper::set(imageSlicePitch, image->getHostPtrSlicePitchForMap(transferProperties.mipLevel));
-        GetInfoHelper::set(imageRowPitch, image->getHostPtrRowPitchForMap(transferProperties.mipLevel));
+        GetInfoHelper::set(imageSlicePitch, image->getHostPtrSlicePitch());
+        GetInfoHelper::set(imageRowPitch, image->getHostPtrRowPitch());
     }
     if (Image::hasSlices(image->peekClMemObjType()) == false) {
         GetInfoHelper::set(imageSlicePitch, static_cast<size_t>(0));
     }
-
-    return returnPtr;
+    return enqueueMapMemObject(transferProperties, eventsRequest, errcodeRet);
 }
 
 cl_int CommandQueue::enqueueUnmapMemObject(MemObj *memObj, void *mappedPtr, cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) {
 
-    TransferProperties transferProperties(memObj, CL_COMMAND_UNMAP_MEM_OBJECT, 0, false, nullptr, nullptr, mappedPtr);
+    TransferProperties transferProperties(memObj, CL_COMMAND_UNMAP_MEM_OBJECT, 0, false, nullptr, nullptr, mappedPtr, false);
     EventsRequest eventsRequest(numEventsInWaitList, eventWaitList, event);
 
     return enqueueUnmapMemObject(transferProperties, eventsRequest);
@@ -534,8 +478,6 @@ void CommandQueue::enqueueBlockedMapUnmapOperation(const cl_event *eventWaitList
                                                    MemObjOffsetArray &copyOffset,
                                                    bool readOnly,
                                                    EventBuilder &externalEventBuilder) {
-    auto &commandStreamReceiver = device->getCommandStreamReceiver();
-
     EventBuilder internalEventBuilder;
     EventBuilder *eventBuilder;
     // check if event will be exposed externally
@@ -549,7 +491,7 @@ void CommandQueue::enqueueBlockedMapUnmapOperation(const cl_event *eventWaitList
     }
 
     //store task data in event
-    auto cmd = std::unique_ptr<Command>(new CommandMapUnmap(opType, *memObj, copySize, copyOffset, readOnly, commandStreamReceiver, *this));
+    auto cmd = std::unique_ptr<Command>(new CommandMapUnmap(opType, *memObj, copySize, copyOffset, readOnly, getCommandStreamReceiver(), *this));
     eventBuilder->getEvent()->setCommand(std::move(cmd));
 
     //bind output event with input events
@@ -558,18 +500,16 @@ void CommandQueue::enqueueBlockedMapUnmapOperation(const cl_event *eventWaitList
     eventBuilder->finalize();
 
     if (this->virtualEvent) {
-        this->virtualEvent->setCurrentCmdQVirtualEvent(false);
         this->virtualEvent->decRefInternal();
     }
     this->virtualEvent = eventBuilder->getEvent();
 }
 
 bool CommandQueue::setupDebugSurface(Kernel *kernel) {
-    auto &commandStreamReceiver = device->getCommandStreamReceiver();
-    auto debugSurface = commandStreamReceiver.getDebugSurfaceAllocation();
+    auto debugSurface = getCommandStreamReceiver().getDebugSurfaceAllocation();
 
     if (!debugSurface) {
-        debugSurface = commandStreamReceiver.allocateDebugSurface(SipKernel::maxDbgSurfaceSize);
+        debugSurface = getCommandStreamReceiver().allocateDebugSurface(SipKernel::maxDbgSurfaceSize);
     }
 
     DEBUG_BREAK_IF(!kernel->requiresSshForBuffers());
@@ -583,15 +523,52 @@ bool CommandQueue::setupDebugSurface(Kernel *kernel) {
 }
 
 IndirectHeap &CommandQueue::getIndirectHeap(IndirectHeap::Type heapType, size_t minRequiredSize) {
-    return this->getDevice().getCommandStreamReceiver().getIndirectHeap(heapType, minRequiredSize);
+    return getCommandStreamReceiver().getIndirectHeap(heapType, minRequiredSize);
 }
 
 void CommandQueue::allocateHeapMemory(IndirectHeap::Type heapType, size_t minRequiredSize, IndirectHeap *&indirectHeap) {
-    this->getDevice().getCommandStreamReceiver().allocateHeapMemory(heapType, minRequiredSize, indirectHeap);
+    getCommandStreamReceiver().allocateHeapMemory(heapType, minRequiredSize, indirectHeap);
 }
 
 void CommandQueue::releaseIndirectHeap(IndirectHeap::Type heapType) {
-    this->getDevice().getCommandStreamReceiver().releaseIndirectHeap(heapType);
+    getCommandStreamReceiver().releaseIndirectHeap(heapType);
 }
 
-} // namespace OCLRT
+void CommandQueue::dispatchAuxTranslation(MultiDispatchInfo &multiDispatchInfo, MemObjsForAuxTranslation &memObjsForAuxTranslation,
+                                          AuxTranslationDirection auxTranslationDirection) {
+    if (!multiDispatchInfo.empty()) {
+        multiDispatchInfo.rbegin()->setPipeControlRequired(true);
+    }
+    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, getContext(), getDevice());
+    BuiltinDispatchInfoBuilder::BuiltinOpParams dispatchParams;
+
+    dispatchParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
+    dispatchParams.auxTranslationDirection = auxTranslationDirection;
+
+    builder.buildDispatchInfos(multiDispatchInfo, dispatchParams);
+
+    multiDispatchInfo.rbegin()->setPipeControlRequired(true);
+}
+
+void CommandQueue::obtainNewTimestampPacketNodes(size_t numberOfNodes, TimestampPacketContainer &previousNodes) {
+    auto allocator = getCommandStreamReceiver().getTimestampPacketAllocator();
+
+    previousNodes.swapNodes(*timestampPacketContainer);
+    previousNodes.resolveDependencies(isOOQEnabled());
+
+    DEBUG_BREAK_IF(timestampPacketContainer->peekNodes().size() > 0);
+
+    for (size_t i = 0; i < numberOfNodes; i++) {
+        timestampPacketContainer->add(allocator->getTag());
+    }
+}
+
+size_t CommandQueue::estimateTimestampPacketNodesCount(const MultiDispatchInfo &dispatchInfo) const {
+    size_t nodesCount = dispatchInfo.size();
+    auto mainKernel = dispatchInfo.peekMainKernel();
+    if (mainKernel->requiresCacheFlushCommand(*this)) {
+        nodesCount++;
+    }
+    return nodesCount;
+}
+} // namespace NEO

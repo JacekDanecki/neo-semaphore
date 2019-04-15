@@ -1,34 +1,20 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/os_interface/32bit_memory.h"
 #include "runtime/os_interface/linux/drm_buffer_object.h"
-#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
-#include "drm/i915_drm.h"
 #include "test.h"
+#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
+
+#include "drm/i915_drm.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class TestedBufferObject : public BufferObject {
   public:
@@ -39,9 +25,13 @@ class TestedBufferObject : public BufferObject {
         this->tiling_mode = mode;
     }
 
-    void fillExecObject(drm_i915_gem_exec_object2 &execObject) override {
-        BufferObject::fillExecObject(execObject);
+    void fillExecObject(drm_i915_gem_exec_object2 &execObject, uint32_t drmContextId) override {
+        BufferObject::fillExecObject(execObject, drmContextId);
         execObjectPointerFilled = &execObject;
+    }
+
+    void setSize(size_t size) {
+        this->size = size;
     }
 
     drm_i915_gem_exec_object2 *execObjectPointerFilled = nullptr;
@@ -58,7 +48,6 @@ class DrmBufferObjectFixture {
         ASSERT_NE(nullptr, this->mock);
         bo = new TestedBufferObject(this->mock);
         ASSERT_NE(nullptr, bo);
-        bo->setExecObjectsStorage(execObjectsStorage);
     }
 
     void TearDown() {
@@ -78,7 +67,9 @@ TEST_F(DrmBufferObjectTest, exec) {
     mock->ioctl_expected.total = 1;
     mock->ioctl_res = 0;
 
-    auto ret = bo->exec(0, 0, 0);
+    BufferObject::ResidencyVector residency;
+    drm_i915_gem_exec_object2 execObjectsStorage = {};
+    auto ret = bo->exec(0, 0, 0, false, 1, residency, &execObjectsStorage);
     EXPECT_EQ(mock->ioctl_res, ret);
     EXPECT_EQ(0u, mock->execBuffer.flags);
 }
@@ -86,7 +77,9 @@ TEST_F(DrmBufferObjectTest, exec) {
 TEST_F(DrmBufferObjectTest, exec_ioctlFailed) {
     mock->ioctl_expected.total = 1;
     mock->ioctl_res = -1;
-    EXPECT_THROW(bo->exec(0, 0, 0), std::exception);
+    BufferObject::ResidencyVector residency;
+    drm_i915_gem_exec_object2 execObjectsStorage = {};
+    EXPECT_THROW(bo->exec(0, 0, 0, false, 1, residency, &execObjectsStorage), std::exception);
 }
 
 TEST_F(DrmBufferObjectTest, setTiling_success) {
@@ -109,19 +102,25 @@ TEST_F(DrmBufferObjectTest, setTiling_ioctlFailed) {
     EXPECT_FALSE(ret);
 }
 
-TEST_F(DrmBufferObjectTest, testExecObjectFlags) {
+TEST_F(DrmBufferObjectTest, givenAddressThatWhenSizeIsAddedCrosses32BitBoundaryWhenExecIsCalledThen48BitFlagIsSet) {
     drm_i915_gem_exec_object2 execObject;
 
-#ifdef __x86_64__
     memset(&execObject, 0, sizeof(execObject));
-    bo->setAddress((void *)((uint64_t)1u << 34)); //anything above 4GB
-    bo->fillExecObject(execObject);
+    bo->setAddress(((uint64_t)1u << 32) - 0x1000u);
+    bo->setSize(0x1000);
+    bo->fillExecObject(execObject, 1);
+    //base address + size > size of 32bit address space
     EXPECT_TRUE(execObject.flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS);
-#endif
+}
+
+TEST_F(DrmBufferObjectTest, givenAddressThatWhenSizeIsAddedWithin32BitBoundaryWhenExecIsCalledThen48BitFlagIsNotSet) {
+    drm_i915_gem_exec_object2 execObject;
 
     memset(&execObject, 0, sizeof(execObject));
-    bo->setAddress((void *)((uint64_t)1u << 31)); //anything below 4GB
-    bo->fillExecObject(execObject);
+    bo->setAddress(((uint64_t)1u << 32) - 0x1000u);
+    bo->setSize(0xFFF);
+    bo->fillExecObject(execObject, 1);
+    //base address + size < size of 32bit address space
     EXPECT_FALSE(execObject.flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS);
 }
 
@@ -135,9 +134,9 @@ TEST_F(DrmBufferObjectTest, onPinIoctlFailed) {
     std::unique_ptr<BufferObject> boToPin(new TestedBufferObject(this->mock));
     ASSERT_NE(nullptr, boToPin.get());
 
-    bo->setAddress(buff.get());
+    bo->setAddress(reinterpret_cast<uint64_t>(buff.get()));
     BufferObject *boArray[1] = {boToPin.get()};
-    auto ret = bo->pin(boArray, 1);
+    auto ret = bo->pin(boArray, 1, 1);
     EXPECT_EQ(EINVAL, ret);
 }
 
@@ -147,8 +146,6 @@ TEST(DrmBufferObjectSimpleTest, givenInvalidBoWhenPinIsCalledThenErrorIsReturned
     ASSERT_NE(nullptr, mock.get());
     std::unique_ptr<TestedBufferObject> bo(new TestedBufferObject(mock.get()));
     ASSERT_NE(nullptr, bo.get());
-    drm_i915_gem_exec_object2 execObjectsStorage[3];
-    bo->setExecObjectsStorage(execObjectsStorage);
 
     // fail DRM_IOCTL_I915_GEM_EXECBUFFER2 in pin
     mock->ioctl_res = -1;
@@ -156,11 +153,11 @@ TEST(DrmBufferObjectSimpleTest, givenInvalidBoWhenPinIsCalledThenErrorIsReturned
     std::unique_ptr<BufferObject> boToPin(new TestedBufferObject(mock.get()));
     ASSERT_NE(nullptr, boToPin.get());
 
-    bo->setAddress(buff.get());
+    bo->setAddress(reinterpret_cast<uint64_t>(buff.get()));
     mock->errnoValue = EFAULT;
 
     BufferObject *boArray[1] = {boToPin.get()};
-    auto ret = bo->pin(boArray, 1);
+    auto ret = bo->pin(boArray, 1, 1);
     EXPECT_EQ(EFAULT, ret);
 }
 
@@ -170,8 +167,6 @@ TEST(DrmBufferObjectSimpleTest, givenArrayOfBosWhenPinnedThenAllBosArePinned) {
     ASSERT_NE(nullptr, mock.get());
     std::unique_ptr<TestedBufferObject> bo(new TestedBufferObject(mock.get()));
     ASSERT_NE(nullptr, bo.get());
-    drm_i915_gem_exec_object2 execObjectsStorage[4];
-    bo->setExecObjectsStorage(execObjectsStorage);
     mock->ioctl_res = 0;
 
     std::unique_ptr<TestedBufferObject> boToPin(new TestedBufferObject(mock.get()));
@@ -184,8 +179,8 @@ TEST(DrmBufferObjectSimpleTest, givenArrayOfBosWhenPinnedThenAllBosArePinned) {
 
     BufferObject *array[3] = {boToPin.get(), boToPin2.get(), boToPin3.get()};
 
-    bo->setAddress(buff.get());
-    auto ret = bo->pin(array, 3);
+    bo->setAddress(reinterpret_cast<uint64_t>(buff.get()));
+    auto ret = bo->pin(array, 3, 1);
     EXPECT_EQ(mock->ioctl_res, ret);
     uint32_t bb_end = 0x05000000;
     EXPECT_EQ(buff[0], bb_end);
@@ -196,5 +191,5 @@ TEST(DrmBufferObjectSimpleTest, givenArrayOfBosWhenPinnedThenAllBosArePinned) {
     EXPECT_NE(nullptr, boToPin2->execObjectPointerFilled);
     EXPECT_NE(nullptr, boToPin3->execObjectPointerFilled);
 
-    bo->setAddress(nullptr);
+    bo->setAddress(0llu);
 }

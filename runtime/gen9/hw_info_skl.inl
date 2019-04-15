@@ -1,32 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
-#include "hw_info_skl.h"
 #include "runtime/aub_mem_dump/aub_services.h"
-#include "runtime/helpers/engine_node.h"
 #include "runtime/memory_manager/memory_constants.h"
 
-namespace OCLRT {
+#include "engine_node.h"
+#include "hw_cmds.h"
+#include "hw_info_skl.h"
+
+namespace NEO {
 
 const char *HwMapper<IGFX_SKYLAKE>::abbreviation = "skl";
 
@@ -55,30 +41,35 @@ const PLATFORM SKL::platform = {
     GTTYPE_UNDEFINED};
 
 const RuntimeCapabilityTable SKL::capabilityTable{
-    0,
-    83.333,
-    21,
-    true,
-    true,
-    true,
-    true,
-    true,  // ftrSupportsVmeAvcTextureSampler
-    false, // ftrSupportsVmeAvcPreemption
-    false, // ftrRenderCompressedBuffers
-    false, // ftrRenderCompressedImages
-    PreemptionMode::MidThread,
-    {true, false},
-    &isSimulationSKL,
-    true,
-    true,                           // forceStatelessCompilationFor32Bit
-    {false, 0, false, 0, false, 0}, // KmdNotifyProperties
-    true,                           // ftr64KBpages
-    EngineType::ENGINE_RCS,         // defaultEngineType
-    MemoryConstants::pageSize,      //requiredPreemptionSurfaceSize
-    true,                           // isCore
-    true,                           // sourceLevelDebuggerSupported
-    CmdServicesMemTraceVersion::DeviceValues::Skl,
-    0}; // extraQuantityThreadsPerEU
+    {0, 0, 0, false, false, false},                // kmdNotifyProperties
+    {true, false},                                 // whitelistedRegisters
+    MemoryConstants::max48BitAddress,              // gpuAddressSpace
+    83.333,                                        // defaultProfilingTimerResolution
+    MemoryConstants::pageSize,                     // requiredPreemptionSurfaceSize
+    &isSimulationSKL,                              // isSimulation
+    PreemptionMode::MidThread,                     // defaultPreemptionMode
+    aub_stream::ENGINE_RCS,                        // defaultEngineType
+    0,                                             // maxRenderFrequency
+    21,                                            // clVersionSupport
+    CmdServicesMemTraceVersion::DeviceValues::Skl, // aubDeviceId
+    0,                                             // extraQuantityThreadsPerEU
+    64,                                            // slmSize
+    true,                                          // ftrSupportsFP64
+    true,                                          // ftrSupports64BitMath
+    true,                                          // ftrSvm
+    true,                                          // ftrSupportsCoherency
+    true,                                          // ftrSupportsVmeAvcTextureSampler
+    false,                                         // ftrSupportsVmeAvcPreemption
+    false,                                         // ftrRenderCompressedBuffers
+    false,                                         // ftrRenderCompressedImages
+    true,                                          // ftr64KBpages
+    true,                                          // instrumentationEnabled
+    true,                                          // forceStatelessCompilationFor32Bit
+    true,                                          // isCore
+    true,                                          // sourceLevelDebuggerSupported
+    true,                                          // supportsVme
+    false                                          // supportCacheFlushAfterWalker
+};
 
 const HardwareInfo SKL_1x2x6::hwInfo = {
     &SKL::platform,
@@ -88,7 +79,7 @@ const HardwareInfo SKL_1x2x6::hwInfo = {
     SKL::capabilityTable,
 };
 GT_SYSTEM_INFO SKL_1x2x6::gtSystemInfo = {0};
-void SKL_1x2x6::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void SKL_1x2x6::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 11;
     gtSysInfo->ThreadCount = 11 * SKL::threadsPerEu;
     gtSysInfo->SliceCount = 1;
@@ -117,7 +108,7 @@ const HardwareInfo SKL_1x3x6::hwInfo = {
     SKL::capabilityTable,
 };
 GT_SYSTEM_INFO SKL_1x3x6::gtSystemInfo = {0};
-void SKL_1x3x6::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void SKL_1x3x6::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 17;
     gtSysInfo->ThreadCount = 17 * SKL::threadsPerEu;
     gtSysInfo->SliceCount = 1;
@@ -146,7 +137,7 @@ const HardwareInfo SKL_1x3x8::hwInfo = {
     SKL::capabilityTable,
 };
 GT_SYSTEM_INFO SKL_1x3x8::gtSystemInfo = {0};
-void SKL_1x3x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void SKL_1x3x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 23;
     gtSysInfo->ThreadCount = 23 * SKL::threadsPerEu;
     gtSysInfo->SliceCount = 1;
@@ -175,7 +166,7 @@ const HardwareInfo SKL_2x3x8::hwInfo = {
     SKL::capabilityTable,
 };
 GT_SYSTEM_INFO SKL_2x3x8::gtSystemInfo = {0};
-void SKL_2x3x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void SKL_2x3x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 47;
     gtSysInfo->ThreadCount = 47 * SKL::threadsPerEu;
     gtSysInfo->SliceCount = 2;
@@ -204,7 +195,7 @@ const HardwareInfo SKL_3x3x8::hwInfo = {
     SKL::capabilityTable,
 };
 GT_SYSTEM_INFO SKL_3x3x8::gtSystemInfo = {0};
-void SKL_3x3x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void SKL_3x3x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 71;
     gtSysInfo->ThreadCount = 71 * SKL::threadsPerEu;
     gtSysInfo->SliceCount = 3;
@@ -226,5 +217,25 @@ void SKL_3x3x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
 };
 
 const HardwareInfo SKL::hwInfo = SKL_1x3x8::hwInfo;
-void (*SKL::setupGtSystemInfo)(GT_SYSTEM_INFO *) = SKL_1x3x8::setupGtSystemInfo;
-} // namespace OCLRT
+
+void setupSKLHardwareInfoImpl(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable, const std::string &hwInfoConfig) {
+    if (hwInfoConfig == "1x3x8") {
+        SKL_1x3x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "2x3x8") {
+        SKL_2x3x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "3x3x8") {
+        SKL_3x3x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "1x2x6") {
+        SKL_1x2x6::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "1x3x6") {
+        SKL_1x3x6::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "default") {
+        // Default config
+        SKL_1x3x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else {
+        UNRECOVERABLE_IF(true);
+    }
+}
+
+void (*SKL::setupHardwareInfo)(GT_SYSTEM_INFO *, FeatureTable *, bool, const std::string &) = setupSKLHardwareInfoImpl;
+} // namespace NEO

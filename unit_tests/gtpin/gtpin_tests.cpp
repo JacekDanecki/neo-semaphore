@@ -1,31 +1,16 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/gtpin/gtpin_defs.h"
-#include "runtime/gtpin/gtpin_init.h"
 #include "runtime/gtpin/gtpin_helpers.h"
 #include "runtime/gtpin/gtpin_hw_helper.h"
+#include "runtime/gtpin/gtpin_init.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/basic_math.h"
 #include "runtime/helpers/file_io.h"
@@ -34,6 +19,8 @@
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
+#include "runtime/os_interface/os_context.h"
+#include "test.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
 #include "unit_tests/fixtures/platform_fixture.h"
@@ -44,15 +31,17 @@
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_kernel.h"
-#include "test.h"
+#include "unit_tests/program/program_tests.h"
+
 #include "gtest/gtest.h"
+
 #include <deque>
 #include <vector>
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace gtpin;
 
-namespace OCLRT {
+namespace NEO {
 extern std::deque<gtpinkexec_t> kernelExecQueue;
 }
 
@@ -75,6 +64,7 @@ void OnContextCreate(context_handle_t context, platform_info_t *platformInfo, ig
     currContext = context;
     kernelResources.clear();
     ContextCreateCallbackCount++;
+    *igcInit = reinterpret_cast<igc_init_t *>(0x1234);
 }
 
 void OnContextDestroy(context_handle_t context) {
@@ -131,16 +121,16 @@ void OnCommandBufferComplete(command_buffer_handle_t cb) {
 
 class MockMemoryManagerWithFailures : public OsAgnosticMemoryManager {
   public:
-    using OsAgnosticMemoryManager::OsAgnosticMemoryManager;
+    MockMemoryManagerWithFailures(ExecutionEnvironment &executionEnvironment) : OsAgnosticMemoryManager(executionEnvironment){};
 
-    GraphicsAllocation *allocateGraphicsMemoryInPreferredPool(bool mustBeZeroCopy, bool allocateMemory, bool forcePin, bool uncacheable, const void *hostPtr, size_t size, GraphicsAllocation::AllocationType type) override {
-        if (failAllAllocationsInPreferredPool) {
-            failAllAllocationsInPreferredPool = false;
+    GraphicsAllocation *allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) override {
+        if (failAllAllocationsInDevicePool) {
+            failAllAllocationsInDevicePool = false;
             return nullptr;
         }
-        return OsAgnosticMemoryManager::allocateGraphicsMemoryInPreferredPool(mustBeZeroCopy, allocateMemory, forcePin, uncacheable, hostPtr, size, type);
+        return OsAgnosticMemoryManager::allocateGraphicsMemoryInDevicePool(allocationData, status);
     }
-    bool failAllAllocationsInPreferredPool = false;
+    bool failAllAllocationsInDevicePool = false;
 };
 
 class GTPinFixture : public ContextFixture, public MemoryManagementFixture {
@@ -148,14 +138,16 @@ class GTPinFixture : public ContextFixture, public MemoryManagementFixture {
 
   public:
     void SetUp() override {
+        platformImpl.reset();
         MemoryManagementFixture::SetUp();
         constructPlatform();
         pPlatform = platform();
-        pPlatform->initialize();
-        memoryManager = new MockMemoryManagerWithFailures();
-        ExecutionEnvironment *executionEnvironment = new ExecutionEnvironment;
+        auto executionEnvironment = pPlatform->peekExecutionEnvironment();
+        executionEnvironment->setHwInfo(*platformDevices);
+        memoryManager = new MockMemoryManagerWithFailures(*executionEnvironment);
         executionEnvironment->memoryManager.reset(memoryManager);
-        pDevice = Device::create<MockDevice>(platformDevices[0], executionEnvironment);
+        pPlatform->initialize();
+        pDevice = pPlatform->getDevice(0);
         cl_device_id device = (cl_device_id)pDevice;
         ContextFixture::SetUp(1, &device);
 
@@ -171,16 +163,15 @@ class GTPinFixture : public ContextFixture, public MemoryManagementFixture {
         gtpinCallbacks.onCommandBufferCreate = nullptr;
         gtpinCallbacks.onCommandBufferComplete = nullptr;
 
-        OCLRT::isGTPinInitialized = false;
+        NEO::isGTPinInitialized = false;
         kernelOffset = 0;
     }
 
     void TearDown() override {
         ContextFixture::TearDown();
         platformImpl.reset(nullptr);
-        delete pDevice;
         MemoryManagementFixture::TearDown();
-        OCLRT::isGTPinInitialized = false;
+        NEO::isGTPinInitialized = false;
     }
 
     Platform *pPlatform = nullptr;
@@ -214,7 +205,9 @@ TEST_F(GTPinTests, givenInvalidArgumentsThenGTPinInitFails) {
 }
 
 TEST_F(GTPinTests, givenIncompleteArgumentsThenGTPinInitFails) {
-    uint32_t ver = 0;
+    interface_version_t ver;
+    ver.common = 0;
+    ver.specific = 0;
 
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, &ver);
     EXPECT_EQ(GTPIN_DI_ERROR_INVALID_ARGUMENT, retFromGtPin);
@@ -241,19 +234,24 @@ TEST_F(GTPinTests, givenIncompleteArgumentsThenGTPinInitFails) {
 }
 
 TEST_F(GTPinTests, givenInvalidArgumentsWhenVersionArgumentIsProvidedThenGTPinInitReturnsDriverVersion) {
-    uint32_t ver = 0;
+    interface_version_t ver;
+    ver.common = 0;
+    ver.specific = 0;
 
     retFromGtPin = GTPin_Init(nullptr, nullptr, &ver);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(gtpin::ocl::GTPIN_OCL_INTERFACE_VERSION, ver);
+    EXPECT_EQ(gtpin::ocl::GTPIN_OCL_INTERFACE_VERSION, ver.specific);
+    EXPECT_EQ(gtpin::GTPIN_COMMON_INTERFACE_VERSION, ver.common);
 
     retFromGtPin = GTPin_Init(&gtpinCallbacks, nullptr, &ver);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(gtpin::ocl::GTPIN_OCL_INTERFACE_VERSION, ver);
+    EXPECT_EQ(gtpin::ocl::GTPIN_OCL_INTERFACE_VERSION, ver.specific);
+    EXPECT_EQ(gtpin::GTPIN_COMMON_INTERFACE_VERSION, ver.common);
 
     retFromGtPin = GTPin_Init(nullptr, &driverServices, &ver);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(gtpin::ocl::GTPIN_OCL_INTERFACE_VERSION, ver);
+    EXPECT_EQ(gtpin::ocl::GTPIN_OCL_INTERFACE_VERSION, ver.specific);
+    EXPECT_EQ(gtpin::GTPIN_COMMON_INTERFACE_VERSION, ver.common);
 }
 
 TEST_F(GTPinTests, givenValidAndCompleteArgumentsThenGTPinInitSucceeds) {
@@ -267,10 +265,10 @@ TEST_F(GTPinTests, givenValidAndCompleteArgumentsThenGTPinInitSucceeds) {
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    EXPECT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    EXPECT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    EXPECT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
     isInitialized = gtpinIsGTPinInitialized();
     EXPECT_TRUE(isInitialized);
 }
@@ -284,10 +282,10 @@ TEST_F(GTPinTests, givenValidAndCompleteArgumentsWhenGTPinIsAlreadyInitializedTh
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    EXPECT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    EXPECT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    EXPECT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_ERROR_INSTANCE_ALREADY_CREATED, retFromGtPin);
@@ -305,10 +303,10 @@ TEST_F(GTPinTests, givenInvalidArgumentsThenBufferAllocateFails) {
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    EXPECT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    EXPECT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     retFromGtPin = (*driverServices.bufferAllocate)(nullptr, buffSize, &res);
     EXPECT_NE(GTPIN_DI_SUCCESS, retFromGtPin);
@@ -327,10 +325,10 @@ TEST_F(GTPinTests, givenInvalidArgumentsThenBufferDeallocateFails) {
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    EXPECT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     retFromGtPin = (*driverServices.bufferDeallocate)(nullptr, nullptr);
     EXPECT_NE(GTPIN_DI_SUCCESS, retFromGtPin);
@@ -352,10 +350,10 @@ TEST_F(GTPinTests, givenInvalidArgumentsThenBufferMapFails) {
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    EXPECT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    ASSERT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    EXPECT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    EXPECT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    ASSERT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     uint8_t *mappedPtr;
     retFromGtPin = (*driverServices.bufferMap)(nullptr, nullptr, &mappedPtr);
@@ -378,10 +376,10 @@ TEST_F(GTPinTests, givenInvalidArgumentsThenBufferUnMapFails) {
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    EXPECT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    EXPECT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    ASSERT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    EXPECT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    EXPECT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    ASSERT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     retFromGtPin = (*driverServices.bufferUnMap)(nullptr, nullptr);
     EXPECT_NE(GTPIN_DI_SUCCESS, retFromGtPin);
@@ -419,10 +417,10 @@ TEST_F(GTPinTests, givenValidRequestForHugeMemoryAllocationThenBufferAllocateFai
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     injectFailures(allocBufferFunc);
 }
@@ -439,10 +437,10 @@ TEST_F(GTPinTests, givenValidRequestForMemoryAllocationThenBufferAllocateAndDeal
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     cl_context ctxt = (cl_context)((Context *)pContext);
     retFromGtPin = (*driverServices.bufferAllocate)((gtpin::context_handle_t)ctxt, buffSize, &res);
@@ -465,10 +463,10 @@ TEST_F(GTPinTests, givenValidArgumentsForBufferMapWhenCallSequenceIsCorrectThenB
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    ASSERT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    ASSERT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     cl_context ctxt = (cl_context)((Context *)pContext);
     retFromGtPin = (*driverServices.bufferAllocate)((gtpin::context_handle_t)ctxt, buffSize, &res);
@@ -496,10 +494,10 @@ TEST_F(GTPinTests, givenMissingReturnArgumentForBufferMapWhenCallSequenceIsCorre
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    ASSERT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    ASSERT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     cl_context ctxt = (cl_context)((Context *)pContext);
     retFromGtPin = (*driverServices.bufferAllocate)((gtpin::context_handle_t)ctxt, buffSize, &res);
@@ -525,10 +523,10 @@ TEST_F(GTPinTests, givenValidArgumentsForBufferUnMapWhenCallSequenceIsCorrectThe
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    ASSERT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    ASSERT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    ASSERT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    ASSERT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     cl_context ctxt = (cl_context)((Context *)pContext);
     retFromGtPin = (*driverServices.bufferAllocate)((gtpin::context_handle_t)ctxt, buffSize, &res);
@@ -787,16 +785,6 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenKernelIsExecutedThenGTPinCa
     EXPECT_EQ(prevCount14 + 2, CommandBufferCompleteCallbackCount);
     EXPECT_EQ(prevCount24 + 2, CommandBufferCompleteCallbackCount);
 
-    auto taskCount0 = castToObject<MemObj>(buff10)->getCompletionStamp().taskCount;
-    auto taskCount1 = castToObject<MemObj>(buff11)->getCompletionStamp().taskCount;
-    EXPECT_EQ(1u, taskCount0);
-    EXPECT_EQ(1u, taskCount1);
-
-    taskCount0 = castToObject<MemObj>(buff20)->getCompletionStamp().taskCount;
-    taskCount1 = castToObject<MemObj>(buff21)->getCompletionStamp().taskCount;
-    EXPECT_EQ(2u, taskCount0);
-    EXPECT_EQ(2u, taskCount1);
-
     // Cleanup
     retVal = clReleaseKernel(kernel1);
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -844,7 +832,7 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenKernelWithoutSSHIsUsedThenK
     // Prepare a kernel without SSH
     char binary[1024] = {1, 2, 3, 4, 5, 6, 7, 8, 9, '\0'};
     size_t binSize = 10;
-    Program *pProgram = Program::createFromGenBinary(pContext, &binary[0], binSize, false, &retVal);
+    Program *pProgram = Program::createFromGenBinary(*pDevice->getExecutionEnvironment(), pContext, &binary[0], binSize, false, &retVal);
     ASSERT_NE(nullptr, pProgram);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
@@ -932,7 +920,7 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenKernelWithExecEnvIsUsedThen
     // Prepare a kernel with fake Execution Environment
     char binary[1024] = {1, 2, 3, 4, 5, 6, 7, 8, 9, '\0'};
     size_t binSize = 10;
-    Program *pProgram = Program::createFromGenBinary(pContext, &binary[0], binSize, false, &retVal);
+    Program *pProgram = Program::createFromGenBinary(*pDevice->getExecutionEnvironment(), pContext, &binary[0], binSize, false, &retVal);
     ASSERT_NE(nullptr, pProgram);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
@@ -1499,7 +1487,7 @@ TEST_F(GTPinTests, givenMultipleKernelSubmissionsWhenOneOfGtpinSurfacesIsNullThe
     gtpinNotifyKernelSubmit(pKernel1, pCmdQueue);
     EXPECT_EQ(nullptr, kernelExecQueue[0].gtpinResource);
 
-    CommandStreamReceiver &csr = pCmdQueue->getDevice().getCommandStreamReceiver();
+    CommandStreamReceiver &csr = pCmdQueue->getCommandStreamReceiver();
     gtpinNotifyMakeResident(pKernel1, &csr);
     EXPECT_FALSE(kernelExecQueue[0].isResourceResident);
 
@@ -1683,12 +1671,12 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenKernelIsCreatedThenAllKerne
     cl_mem gtpinBuffer1 = kernelExecQueue[1].gtpinResource;
     auto pBuffer1 = castToObject<Buffer>(gtpinBuffer1);
     GraphicsAllocation *pGfxAlloc1 = pBuffer1->getGraphicsAllocation();
-    CommandStreamReceiver &csr = pCmdQueue->getDevice().getCommandStreamReceiver();
-    EXPECT_FALSE(pGfxAlloc0->isResident());
-    EXPECT_FALSE(pGfxAlloc1->isResident());
+    CommandStreamReceiver &csr = pCmdQueue->getCommandStreamReceiver();
+    EXPECT_FALSE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_FALSE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
     gtpinNotifyMakeResident(pKernel, &csr);
-    EXPECT_TRUE(pGfxAlloc0->isResident());
-    EXPECT_FALSE(pGfxAlloc1->isResident());
+    EXPECT_TRUE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_FALSE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
 
     // Cancel information about second submitted kernel
     kernelExecQueue.pop_back();
@@ -1853,26 +1841,26 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenOneKernelIsSubmittedSeveral
     cl_mem gtpinBuffer1 = kernelExecQueue[1].gtpinResource;
     auto pBuffer1 = castToObject<Buffer>(gtpinBuffer1);
     GraphicsAllocation *pGfxAlloc1 = pBuffer1->getGraphicsAllocation();
-    CommandStreamReceiver &csr = pCmdQueue->getDevice().getCommandStreamReceiver();
+    CommandStreamReceiver &csr = pCmdQueue->getCommandStreamReceiver();
     // Make resident resource of first submitted kernel
-    EXPECT_FALSE(pGfxAlloc0->isResident());
-    EXPECT_FALSE(pGfxAlloc1->isResident());
+    EXPECT_FALSE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_FALSE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
     gtpinNotifyMakeResident(pKernel, &csr);
-    EXPECT_TRUE(pGfxAlloc0->isResident());
-    EXPECT_FALSE(pGfxAlloc1->isResident());
+    EXPECT_TRUE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_FALSE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
     // Make resident resource of second submitted kernel
     gtpinNotifyMakeResident(pKernel, &csr);
-    EXPECT_TRUE(pGfxAlloc0->isResident());
-    EXPECT_TRUE(pGfxAlloc1->isResident());
+    EXPECT_TRUE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_TRUE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
 
     // Verify that correct GT-Pin resource is added to residency list.
     // This simulates enqueuing blocked kernels
     kernelExecQueue[0].isResourceResident = false;
     kernelExecQueue[1].isResourceResident = false;
-    pGfxAlloc0->residencyTaskCount = ObjectNotResident;
-    pGfxAlloc1->residencyTaskCount = ObjectNotResident;
-    EXPECT_FALSE(pGfxAlloc0->isResident());
-    EXPECT_FALSE(pGfxAlloc1->isResident());
+    pGfxAlloc0->releaseResidencyInOsContext(csr.getOsContext().getContextId());
+    pGfxAlloc1->releaseResidencyInOsContext(csr.getOsContext().getContextId());
+    EXPECT_FALSE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_FALSE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
     std::vector<Surface *> residencyVector;
     EXPECT_EQ(0u, residencyVector.size());
     // Add to residency list resource of first submitted kernel
@@ -1881,16 +1869,16 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenOneKernelIsSubmittedSeveral
     // Make resident first resource on residency list
     GeneralSurface *pSurf1 = (GeneralSurface *)residencyVector[0];
     pSurf1->makeResident(csr);
-    EXPECT_TRUE(pGfxAlloc0->isResident());
-    EXPECT_FALSE(pGfxAlloc1->isResident());
+    EXPECT_TRUE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_FALSE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
     // Add to residency list resource of second submitted kernel
     gtpinNotifyUpdateResidencyList(pKernel, &residencyVector);
     EXPECT_EQ(2u, residencyVector.size());
     // Make resident second resource on residency list
     GeneralSurface *pSurf2 = (GeneralSurface *)residencyVector[1];
     pSurf2->makeResident(csr);
-    EXPECT_TRUE(pGfxAlloc0->isResident());
-    EXPECT_TRUE(pGfxAlloc1->isResident());
+    EXPECT_TRUE(pGfxAlloc0->isResident(csr.getOsContext().getContextId()));
+    EXPECT_TRUE(pGfxAlloc1->isResident(csr.getOsContext().getContextId()));
 
     // Cleanup
     delete pSurf1;
@@ -1938,7 +1926,7 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenLowMemoryConditionOccursThe
         // Prepare a program with one kernel having Stateless Private Surface
         char binary[1024] = {1, 2, 3, 4, 5, 6, 7, 8, 9, '\0'};
         size_t binSize = 10;
-        Program *pProgram = Program::createFromGenBinary(pContext, &binary[0], binSize, false, &retVal);
+        Program *pProgram = Program::createFromGenBinary(*pDevice->getExecutionEnvironment(), pContext, &binary[0], binSize, false, &retVal);
         ASSERT_NE(nullptr, pProgram);
         EXPECT_EQ(CL_SUCCESS, retVal);
 
@@ -2007,9 +1995,9 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenLowMemoryConditionOccursThe
             cl_uint numCreatedKernels = 0;
 
             if (nonfailingAllocation != failureIndex) {
-                memoryManager->failAllAllocationsInPreferredPool = true;
+                memoryManager->failAllAllocationsInDevicePool = true;
             }
-            retVal = clCreateKernelsInProgram(pProgram, 0, &kernels[0], &numCreatedKernels);
+            retVal = clCreateKernelsInProgram(pProgram, 2, kernels, &numCreatedKernels);
 
             if (nonfailingAllocation != failureIndex) {
                 if (retVal != CL_SUCCESS) {
@@ -2036,10 +2024,10 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenLowMemoryConditionOccursThe
     gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
     retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
     EXPECT_EQ(GTPIN_DI_SUCCESS, retFromGtPin);
-    ASSERT_EQ(&OCLRT::gtpinCreateBuffer, driverServices.bufferAllocate);
-    ASSERT_EQ(&OCLRT::gtpinFreeBuffer, driverServices.bufferDeallocate);
-    EXPECT_EQ(&OCLRT::gtpinMapBuffer, driverServices.bufferMap);
-    EXPECT_EQ(&OCLRT::gtpinUnmapBuffer, driverServices.bufferUnMap);
+    ASSERT_EQ(&NEO::gtpinCreateBuffer, driverServices.bufferAllocate);
+    ASSERT_EQ(&NEO::gtpinFreeBuffer, driverServices.bufferDeallocate);
+    EXPECT_EQ(&NEO::gtpinMapBuffer, driverServices.bufferMap);
+    EXPECT_EQ(&NEO::gtpinUnmapBuffer, driverServices.bufferUnMap);
 
     injectFailures(allocBufferFunc);
 }
@@ -2257,13 +2245,13 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenOnKernelSubitIsCalledThenCo
     std::unique_ptr<MockContext> context(new MockContext(pDevice));
 
     EXPECT_EQ(CL_SUCCESS, retVal);
-    std::unique_ptr<KernelInfo> pKernelInfo(KernelInfo::create());
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     kernelHeader.SurfaceStateHeapSize = sizeof(surfaceStateHeap);
     pKernelInfo->heapInfo.pSsh = surfaceStateHeap;
     pKernelInfo->heapInfo.pKernelHeader = &kernelHeader;
     pKernelInfo->usesSsh = true;
 
-    std::unique_ptr<MockProgram> pProgramm(new MockProgram(context.get(), false));
+    auto pProgramm = std::make_unique<MockProgram>(*pDevice->getExecutionEnvironment(), context.get(), false);
     std::unique_ptr<MockCommandQueue> cmdQ(new MockCommandQueue(context.get(), pDevice, nullptr));
     std::unique_ptr<MockKernel> pKernel(new MockKernel(pProgramm.get(), *pKernelInfo, *pDevice));
 
@@ -2280,5 +2268,74 @@ TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenOnKernelSubitIsCalledThenCo
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     kernelResources.clear();
+}
+TEST_F(GTPinTests, givenInitializedGTPinInterfaceWhenOnContextCreateIsCalledThenGtpinInitIsSet) {
+    gtpinCallbacks.onContextCreate = OnContextCreate;
+    gtpinCallbacks.onContextDestroy = OnContextDestroy;
+    gtpinCallbacks.onKernelCreate = OnKernelCreate;
+    gtpinCallbacks.onKernelSubmit = OnKernelSubmit;
+    gtpinCallbacks.onCommandBufferCreate = OnCommandBufferCreate;
+    gtpinCallbacks.onCommandBufferComplete = OnCommandBufferComplete;
+    retFromGtPin = GTPin_Init(&gtpinCallbacks, &driverServices, nullptr);
+    auto context = std::make_unique<MockContext>();
+    gtpinNotifyContextCreate(context.get());
+    EXPECT_NE(gtpinGetIgcInit(), nullptr);
+}
+
+TEST_F(ProgramTests, givenGenBinaryWithGtpinInfoWhenProcessGenBinaryCalledThenGtpinInfoIsSet) {
+    cl_int retVal = CL_INVALID_BINARY;
+    char genBin[1024] = {1, 2, 3, 4, 5, 6, 7, 8, 9, '\0'};
+    size_t binSize = 10;
+
+    std::unique_ptr<Program> pProgram(Program::createFromGenBinary(*pDevice->getExecutionEnvironment(), nullptr, &genBin[0], binSize, false, &retVal));
+    EXPECT_NE(nullptr, pProgram.get());
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ((uint32_t)CL_PROGRAM_BINARY_TYPE_EXECUTABLE, (uint32_t)pProgram->getProgramBinaryType());
+
+    cl_device_id deviceId = pContext->getDevice(0);
+    Device *pDevice = castToObject<Device>(deviceId);
+    char *pBin = &genBin[0];
+    retVal = CL_INVALID_BINARY;
+    binSize = 0;
+
+    // Prepare simple program binary containing patch token PATCH_TOKEN_GLOBAL_MEMORY_OBJECT_KERNEL_ARGUMENT
+    SProgramBinaryHeader *pBHdr = (SProgramBinaryHeader *)pBin;
+    pBHdr->Magic = iOpenCL::MAGIC_CL;
+    pBHdr->Version = iOpenCL::CURRENT_ICBE_VERSION;
+    pBHdr->Device = pDevice->getHardwareInfo().pPlatform->eRenderCoreFamily;
+    pBHdr->GPUPointerSizeInBytes = 8;
+    pBHdr->NumberOfKernels = 1;
+    pBHdr->SteppingId = 0;
+    pBHdr->PatchListSize = 0;
+    pBin += sizeof(SProgramBinaryHeader);
+    binSize += sizeof(SProgramBinaryHeader);
+
+    SKernelBinaryHeaderCommon *pKHdr = (SKernelBinaryHeaderCommon *)pBin;
+    pKHdr->CheckSum = 0;
+    pKHdr->ShaderHashCode = 0;
+    pKHdr->KernelNameSize = 8;
+    pKHdr->PatchListSize = 8;
+    pKHdr->KernelHeapSize = 0;
+    pKHdr->GeneralStateHeapSize = 0;
+    pKHdr->DynamicStateHeapSize = 0;
+    pKHdr->SurfaceStateHeapSize = 0;
+    pKHdr->KernelUnpaddedSize = 0;
+    pBin += sizeof(SKernelBinaryHeaderCommon);
+    binSize += sizeof(SKernelBinaryHeaderCommon);
+
+    strcpy(pBin, "TstCopy");
+    pBin += pKHdr->KernelNameSize;
+    binSize += pKHdr->KernelNameSize;
+
+    iOpenCL::SPatchItemHeader *pPatch = (iOpenCL::SPatchItemHeader *)pBin;
+    pPatch->Token = iOpenCL::PATCH_TOKEN_GTPIN_INFO;
+    pPatch->Size = sizeof(iOpenCL::SPatchItemHeader);
+    binSize += sizeof(iOpenCL::SPatchItemHeader);
+    // Decode prepared program binary
+    pProgram->storeGenBinary(&genBin[0], binSize);
+    retVal = pProgram->processGenBinary();
+    auto kernelInfo = pProgram->getKernelInfo("TstCopy");
+    EXPECT_NE(kernelInfo->igcInfoForGtpin, nullptr);
+    ASSERT_EQ(CL_SUCCESS, retVal);
 }
 } // namespace ULT

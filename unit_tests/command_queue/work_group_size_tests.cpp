@@ -1,43 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
 #include "runtime/command_queue/gpgpu_walker.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include "hw_cmds.h"
+#include "patch_shared.h"
 
-struct WorkGroupSizeBase : public DeviceFixture {
+using namespace NEO;
 
-    void SetUp() {
-        DeviceFixture::SetUp();
-    }
-
-    void TearDown() {
-        DeviceFixture::TearDown();
-    }
-
+struct WorkGroupSizeBase {
     template <typename FamilyType>
     size_t computeWalkerWorkItems(typename FamilyType::GPGPU_WALKER &pCmd) {
         typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
@@ -74,7 +52,7 @@ struct WorkGroupSizeBase : public DeviceFixture {
                    (dimZ > 1 ? 1 : 0);
 
         size_t workGroupSize[3];
-        auto maxWorkGroupSize = static_cast<uint32_t>(pDevice->getDeviceInfo().maxWorkGroupSize);
+        auto maxWorkGroupSize = 256u;
         if (DebugManager.flags.EnableComputeWorkSizeND.get()) {
             WorkSizeInfo wsInfo(maxWorkGroupSize, 0u, simdSize, 0u, IGFX_GEN9_CORE, 32u, 0u, false, false);
             computeWorkgroupSizeND(wsInfo, workGroupSize, workItems, dims);
@@ -89,7 +67,6 @@ struct WorkGroupSizeBase : public DeviceFixture {
 
         EXPECT_GT(localWorkItems, 0u);
         EXPECT_LE(localWorkItems, 256u);
-        EXPECT_LE(localWorkItems, pDevice->getDeviceInfo().maxWorkGroupSize);
 
         auto xRemainder = workItems[0] % workGroupSize[0];
         auto yRemainder = workItems[1] % workGroupSize[1];
@@ -102,14 +79,16 @@ struct WorkGroupSizeBase : public DeviceFixture {
 
         //Now setup GPGPU Walker
         typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
-        GPGPU_WALKER pCmd = GPGPU_WALKER::sInit();
+        GPGPU_WALKER pCmd = FamilyType::cmdInitGpgpuWalker;
 
         const size_t workGroupsStart[3] = {0, 0, 0};
         const size_t workGroupsNum[3] = {
             (workItems[0] + workGroupSize[0] - 1) / workGroupSize[0],
             (workItems[1] + workGroupSize[1] - 1) / workGroupSize[1],
             (workItems[2] + workGroupSize[2] - 1) / workGroupSize[2]};
-        GpgpuWalkerHelper<FamilyType>::setGpgpuWalkerThreadData(&pCmd, globalOffsets, workGroupsStart, workGroupsNum, workGroupSize, simdSize);
+        const iOpenCL::SPatchThreadPayload threadPayload = {};
+        GpgpuWalkerHelper<FamilyType>::setGpgpuWalkerThreadData(&pCmd, globalOffsets, workGroupsStart, workGroupsNum,
+                                                                workGroupSize, simdSize, dims, true, false, threadPayload);
 
         //And check if it is programmed correctly
         auto numWorkItems = computeWalkerWorkItems<FamilyType>(pCmd);
@@ -132,13 +111,6 @@ struct WorkGroupSizeBase : public DeviceFixture {
 
 struct WorkGroupSizeChannels : public WorkGroupSizeBase,
                                public ::testing::TestWithParam<std::tuple<uint32_t, size_t>> {
-    void SetUp() override {
-        WorkGroupSizeBase::SetUp();
-    }
-
-    void TearDown() override {
-        WorkGroupSizeBase::TearDown();
-    }
 };
 
 HWCMDTEST_P(IGFX_GEN8_CORE, WorkGroupSizeChannels, allChannelsWithEnableComputeWorkSizeNDDefault) {
@@ -330,13 +302,6 @@ INSTANTIATE_TEST_CASE_P(wgs,
 // ==== ==== ==== ==== ==== ==== ==== ==== ==== ==== ==== ==== ==== ==== ==== ====
 struct WorkGroupSize2D : public WorkGroupSizeBase,
                          public ::testing::TestWithParam<std::tuple<uint32_t, size_t, size_t>> {
-    void SetUp() override {
-        WorkGroupSizeBase::SetUp();
-    }
-
-    void TearDown() override {
-        WorkGroupSizeBase::TearDown();
-    }
 };
 
 HWCMDTEST_P(IGFX_GEN8_CORE, WorkGroupSize2D, XY) {
@@ -363,13 +328,6 @@ struct Region {
 
 struct WorkGroupSizeRegion : public WorkGroupSizeBase,
                              public ::testing::TestWithParam<std::tuple<uint32_t, Region>> {
-    void SetUp() override {
-        WorkGroupSizeBase::SetUp();
-    }
-
-    void TearDown() override {
-        WorkGroupSizeBase::TearDown();
-    }
 };
 
 HWCMDTEST_P(IGFX_GEN8_CORE, WorkGroupSizeRegion, allChannels) {

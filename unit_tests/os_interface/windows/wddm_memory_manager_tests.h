@@ -1,162 +1,124 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
-#include "gtest/gtest.h"
-#include "gmock/gmock.h"
+#include "runtime/os_interface/windows/os_interface.h"
 #include "test.h"
-
-#include "unit_tests/fixtures/gmm_environment_fixture.h"
+#include "unit_tests/helpers/execution_environment_helper.h"
 #include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/mocks/mock_gmm_page_table_mngr.h"
 #include "unit_tests/mocks/mock_gmm.h"
-#include "unit_tests/os_interface/windows/wddm_fixture.h"
+#include "unit_tests/mocks/mock_gmm_page_table_mngr.h"
 #include "unit_tests/os_interface/windows/mock_gdi_interface.h"
 #include "unit_tests/os_interface/windows/mock_wddm_memory_manager.h"
+#include "unit_tests/os_interface/windows/wddm_fixture.h"
+
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
 #include <type_traits>
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace ::testing;
 
-class WddmMemoryManagerFixture : public GmmEnvironmentFixture, public GdiDllFixture {
+class WddmMemoryManagerFixture : public GdiDllFixture {
   public:
     void SetUp() override;
 
     void TearDown() override {
         GdiDllFixture::TearDown();
-        GmmEnvironmentFixture::TearDown();
     }
 
-    template <typename FamiltyType>
-    void SetUpMm() {
-        EXPECT_TRUE(wddm->init<FamiltyType>());
-        uint64_t heap32Base = (uint64_t)(0x800000000000);
-        if (sizeof(uintptr_t) == 4) {
-            heap32Base = 0x1000;
-        }
-        wddm->setHeap32(heap32Base, 1000 * MemoryConstants::pageSize - 1);
-        memoryManager.reset(new (std::nothrow) MockWddmMemoryManager(wddm));
-        //assert we have memory manager
-        ASSERT_NE(nullptr, memoryManager);
-    }
-
+    ExecutionEnvironment *executionEnvironment;
     std::unique_ptr<MockWddmMemoryManager> memoryManager;
-    WddmMock *wddm = nullptr;
+    WddmMock *wddm;
 };
 
 typedef ::Test<WddmMemoryManagerFixture> WddmMemoryManagerTest;
 
-class MockWddmMemoryManagerFixture : public GmmEnvironmentFixture {
+class MockWddmMemoryManagerFixture {
   public:
     void SetUp() {
-        GmmEnvironmentFixture::SetUp();
-        wddm = static_cast<WddmMock *>(Wddm::createWddm(WddmInterfaceVersion::Wddm20));
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
         gdi = new MockGdi();
-        wddm->gdi.reset(gdi);
-    }
 
-    template <typename FamiltyType>
-    void SetUpMm() {
-        EXPECT_TRUE(wddm->init<FamiltyType>());
-        uint64_t heap32Base = (uint64_t)(0x800000000000);
-        if (sizeof(uintptr_t) == 4) {
-            heap32Base = 0x1000;
-        }
+        wddm = static_cast<WddmMock *>(Wddm::createWddm());
+        wddm->gdi.reset(gdi);
+        constexpr uint64_t heap32Base = (is32bit) ? 0x1000 : 0x800000000000;
         wddm->setHeap32(heap32Base, 1000 * MemoryConstants::pageSize - 1);
-        memoryManager.reset(new (std::nothrow) MockWddmMemoryManager(wddm));
-        //assert we have memory manager
-        ASSERT_NE(nullptr, memoryManager);
+        EXPECT_TRUE(wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0])));
+
+        executionEnvironment->osInterface.reset(new OSInterface());
+        executionEnvironment->osInterface->get()->setWddm(wddm);
+
+        memoryManager = std::make_unique<MockWddmMemoryManager>(*executionEnvironment);
+        osContext = memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0],
+                                                              1, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
+
+        osContext->incRefInternal();
     }
 
     void TearDown() {
-        GmmEnvironmentFixture::TearDown();
+        osContext->decRefInternal();
     }
+
+    ExecutionEnvironment *executionEnvironment;
     std::unique_ptr<MockWddmMemoryManager> memoryManager;
     WddmMock *wddm = nullptr;
+    OsContext *osContext = nullptr;
     MockGdi *gdi = nullptr;
 };
 
 typedef ::Test<MockWddmMemoryManagerFixture> WddmMemoryManagerResidencyTest;
 
-class GmockWddm : public Wddm {
+class ExecutionEnvironmentFixture : public ::testing::Test {
   public:
-    using Wddm::device;
-
-    GmockWddm() {
-        virtualAllocAddress = OCLRT::windowsMinAddress;
-    }
-    ~GmockWddm() = default;
-
-    bool virtualFreeWrapper(void *ptr, size_t size, uint32_t flags) {
-        return true;
+    ExecutionEnvironmentFixture() {
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
     }
 
-    void *virtualAllocWrapper(void *inPtr, size_t size, uint32_t flags, uint32_t type) {
-        void *tmp = reinterpret_cast<void *>(virtualAllocAddress);
-        size += MemoryConstants::pageSize;
-        size -= size % MemoryConstants::pageSize;
-        virtualAllocAddress += size;
-        return tmp;
-    }
-    uintptr_t virtualAllocAddress;
-    MOCK_METHOD4(makeResident, bool(D3DKMT_HANDLE *handles, uint32_t count, bool cantTrimFurther, uint64_t *numberOfBytesToTrim));
-    MOCK_METHOD1(createAllocationsAndMapGpuVa, NTSTATUS(OsHandleStorage &osHandles));
-
-    NTSTATUS baseCreateAllocationAndMapGpuVa(OsHandleStorage &osHandles) {
-        return Wddm::createAllocationsAndMapGpuVa(osHandles);
-    }
+    ExecutionEnvironment *executionEnvironment;
 };
 
-class WddmMemoryManagerFixtureWithGmockWddm : public GmmEnvironmentFixture {
+class WddmMemoryManagerFixtureWithGmockWddm : public ExecutionEnvironmentFixture {
   public:
     MockWddmMemoryManager *memoryManager = nullptr;
 
-    void SetUp() {
-        GmmEnvironmentFixture::SetUp();
+    void SetUp() override {
         // wddm is deleted by memory manager
         wddm = new NiceMock<GmockWddm>;
+        executionEnvironment->osInterface = std::make_unique<OSInterface>();
         ASSERT_NE(nullptr, wddm);
-    }
-
-    template <typename FamiltyType>
-    void SetUpMm() {
-        wddm->init<FamiltyType>();
-        memoryManager = new (std::nothrow) MockWddmMemoryManager(wddm);
+        auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]);
+        EXPECT_TRUE(wddm->init(preemptionMode));
+        executionEnvironment->osInterface->get()->setWddm(wddm);
+        osInterface = executionEnvironment->osInterface.get();
+        wddm->init(preemptionMode);
+        memoryManager = new (std::nothrow) MockWddmMemoryManager(*executionEnvironment);
         //assert we have memory manager
         ASSERT_NE(nullptr, memoryManager);
+        osContext = memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0], 1, preemptionMode, false);
+
+        osContext->incRefInternal();
 
         ON_CALL(*wddm, createAllocationsAndMapGpuVa(::testing::_)).WillByDefault(::testing::Invoke(wddm, &GmockWddm::baseCreateAllocationAndMapGpuVa));
     }
-    void TearDown() {
+
+    void TearDown() override {
+        osContext->decRefInternal();
         delete memoryManager;
-        wddm = nullptr;
-        GmmEnvironmentFixture::TearDown();
     }
 
-    NiceMock<GmockWddm> *wddm;
+    NiceMock<GmockWddm> *wddm = nullptr;
+    OSInterface *osInterface;
+    OsContext *osContext;
 };
 
-typedef ::Test<WddmMemoryManagerFixtureWithGmockWddm> WddmMemoryManagerTest2;
+using WddmMemoryManagerTest2 = WddmMemoryManagerFixtureWithGmockWddm;
 
 class BufferWithWddmMemory : public ::testing::Test,
                              public WddmMemoryManagerFixture {
@@ -165,19 +127,6 @@ class BufferWithWddmMemory : public ::testing::Test,
     void SetUp() {
         WddmMemoryManagerFixture::SetUp();
         tmp = context.getMemoryManager();
-    }
-
-    template <typename FamiltyType>
-    void SetUpMm() {
-        EXPECT_TRUE(wddm->init<FamiltyType>());
-        uint64_t heap32Base = (uint64_t)(0x800000000000);
-        if (sizeof(uintptr_t) == 4) {
-            heap32Base = 0x1000;
-        }
-        wddm->setHeap32(heap32Base, 1000 * MemoryConstants::pageSize - 1);
-        memoryManager.reset(new (std::nothrow) MockWddmMemoryManager(wddm));
-        //assert we have memory manager
-        ASSERT_NE(nullptr, memoryManager);
         context.setMemoryManager(memoryManager.get());
         flags = 0;
     }
@@ -197,12 +146,24 @@ class WddmMemoryManagerSimpleTest : public MockWddmMemoryManagerFixture, public 
   public:
     void SetUp() override {
         MockWddmMemoryManagerFixture::SetUp();
-        wddm->initializeWithoutConfiguringAddressSpace();
+        wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     }
     void TearDown() override {
         MockWddmMemoryManagerFixture::TearDown();
     }
 };
 
-using MockWddmMemoryManagerTest = ::Test<GmmEnvironmentFixture>;
+class MockWddmMemoryManagerTest : public ::testing::Test {
+  public:
+    void SetUp() override {
+        executionEnvironment = getExecutionEnvironmentImpl(hwInfo);
+        wddm = new WddmMock();
+        executionEnvironment->osInterface->get()->setWddm(wddm);
+    }
+
+    HardwareInfo *hwInfo;
+    WddmMock *wddm;
+    ExecutionEnvironment *executionEnvironment;
+};
+
 using OsAgnosticMemoryManagerUsingWddmTest = MockWddmMemoryManagerTest;

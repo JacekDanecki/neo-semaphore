@@ -1,47 +1,37 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
-#include "runtime/os_interface/windows/driver_info.h"
-#include "runtime/os_interface/windows/registry_reader.h"
-#include "runtime/os_interface/windows/os_interface.h"
-#include "runtime/memory_manager/os_agnostic_memory_manager.h"
+#include "runtime/command_stream/preemption.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/options.h"
-#include "unit_tests/mocks/mock_device.h"
-#include "unit_tests/mocks/mock_csr.h"
-#include "unit_tests/mocks/mock_wddm20.h"
+#include "runtime/memory_manager/os_agnostic_memory_manager.h"
+#include "runtime/os_interface/windows/driver_info.h"
+#include "runtime/os_interface/windows/os_interface.h"
+#include "runtime/os_interface/windows/registry_reader.h"
+#include "unit_tests/helpers/variable_backup.h"
 #include "unit_tests/libult/create_command_stream.h"
+#include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_device.h"
+#include "unit_tests/mocks/mock_wddm.h"
+#include "unit_tests/os_interface/windows/registry_reader_tests.h"
+
 #include "gtest/gtest.h"
 
-namespace OCLRT {
+#include <memory>
+
+namespace NEO {
 
 extern CommandStreamReceiverCreateFunc commandStreamReceiverFactory[2 * IGFX_MAX_CORE];
 
-CommandStreamReceiver *createMockCommandStreamReceiver(const HardwareInfo &hwInfoIn, bool withAubDump);
+CommandStreamReceiver *createMockCommandStreamReceiver(bool withAubDump, ExecutionEnvironment &executionEnvironment);
 
 class DriverInfoDeviceTest : public ::testing::Test {
   public:
-    static Wddm *wddmMock;
     void SetUp() {
-        wddmMock = nullptr;
         hwInfo = platformDevices[0];
         commandStreamReceiverCreateFunc = commandStreamReceiverFactory[hwInfo->pPlatform->eRenderCoreFamily];
         commandStreamReceiverFactory[hwInfo->pPlatform->eRenderCoreFamily] = createMockCommandStreamReceiver;
@@ -49,26 +39,28 @@ class DriverInfoDeviceTest : public ::testing::Test {
 
     void TearDown() {
         commandStreamReceiverFactory[hwInfo->pPlatform->eRenderCoreFamily] = commandStreamReceiverCreateFunc;
-        delete wddmMock;
     }
 
     CommandStreamReceiverCreateFunc commandStreamReceiverCreateFunc;
     const HardwareInfo *hwInfo;
 };
 
-CommandStreamReceiver *createMockCommandStreamReceiver(const HardwareInfo &hwInfoIn, bool withAubDump) {
-    auto csr = new MockCommandStreamReceiver();
-    OSInterface *osInterface = new OSInterface();
-    DriverInfoDeviceTest::wddmMock = new WddmMock();
-    osInterface->get()->setWddm(DriverInfoDeviceTest::wddmMock);
-    csr->setOSInterface(osInterface);
+CommandStreamReceiver *createMockCommandStreamReceiver(bool withAubDump, ExecutionEnvironment &executionEnvironment) {
+    auto csr = new MockCommandStreamReceiver(executionEnvironment);
+    if (!executionEnvironment.osInterface) {
+        executionEnvironment.osInterface = std::make_unique<OSInterface>();
+        auto wddm = new WddmMock();
+        wddm->init(PreemptionHelper::getDefaultPreemptionMode(*executionEnvironment.getHardwareInfo()));
+        executionEnvironment.osInterface->get()->setWddm(wddm);
+    }
+
+    EXPECT_NE(nullptr, executionEnvironment.osInterface.get());
+    csr->setOSInterface(executionEnvironment.osInterface.get());
     return csr;
 }
 
-Wddm *DriverInfoDeviceTest::wddmMock = nullptr;
-
 TEST_F(DriverInfoDeviceTest, GivenDeviceCreatedWhenCorrectOSInterfaceThenCreateDriverInfo) {
-    overrideCommandStreamReceiverCreation = true;
+    VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, true);
     auto device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(hwInfo);
 
     EXPECT_TRUE(device->hasDriverInfo());
@@ -76,7 +68,7 @@ TEST_F(DriverInfoDeviceTest, GivenDeviceCreatedWhenCorrectOSInterfaceThenCreateD
 }
 
 TEST_F(DriverInfoDeviceTest, GivenDeviceCreatedWithoutCorrectOSInterfaceThenDontCreateDriverInfo) {
-    overrideCommandStreamReceiverCreation = false;
+    VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, false);
     auto device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(hwInfo);
 
     EXPECT_FALSE(device->hasDriverInfo());
@@ -87,7 +79,6 @@ class RegistryReaderMock : public SettingsReader {
   public:
     std::string nameString;
     std::string versionString;
-
     std::string getSetting(const char *settingName, const std::string &value) {
         std::string key(settingName);
         if (key == "HardwareInformation.AdapterString") {
@@ -100,6 +91,7 @@ class RegistryReaderMock : public SettingsReader {
 
     bool getSetting(const char *settingName, bool defaultValue) { return defaultValue; };
     int32_t getSetting(const char *settingName, int32_t defaultValue) { return defaultValue; };
+    const char *appSpecificLocation(const std::string &name) { return name.c_str(); };
 
     bool properNameKey = false;
     bool properVersionKey = false;
@@ -124,5 +116,52 @@ TEST(DriverInfo, GivenDriverInfoWhenThenReturnNonNullptr) {
 
     EXPECT_STREQ(defaultVersion.c_str(), driverVersion.c_str());
     EXPECT_TRUE(registryReaderMock->properVersionKey);
-}
-} // namespace OCLRT
+};
+
+TEST(DriverInfo, givenInitializedOsInterfaceWhenCreateDriverInfoThenReturnDriverInfoWindowsNotNullptr) {
+
+    std::unique_ptr<OSInterface> osInterface(new OSInterface());
+    osInterface->get()->setWddm(Wddm::createWddm());
+    EXPECT_NE(nullptr, osInterface->get()->getWddm());
+
+    std::unique_ptr<DriverInfo> driverInfo(DriverInfo::create(osInterface.get()));
+
+    EXPECT_NE(nullptr, driverInfo);
+};
+
+TEST(DriverInfo, givenNotInitializedOsInterfaceWhenCreateDriverInfoThenReturnDriverInfoWindowsNullptr) {
+
+    std::unique_ptr<OSInterface> osInterface;
+
+    std::unique_ptr<DriverInfo> driverInfo(DriverInfo::create(osInterface.get()));
+
+    EXPECT_EQ(nullptr, driverInfo);
+};
+
+class MockDriverInfoWindows : public DriverInfoWindows {
+
+  public:
+    const char *getRegistryReaderRegKey() {
+        return reader->getRegKey();
+    }
+    TestedRegistryReader *reader;
+
+    static MockDriverInfoWindows *create(std::string path) {
+
+        auto result = new MockDriverInfoWindows();
+        result->reader = new TestedRegistryReader(path);
+        result->setRegistryReader(result->reader);
+
+        return result;
+    };
+};
+
+TEST(DriverInfo, givenInitializedOsInterfaceWhenCreateDriverInfoWindowsThenSetRegistryReaderWithExpectRegKey) {
+    std::string path = "";
+    std::unique_ptr<MockDriverInfoWindows> driverInfo(MockDriverInfoWindows::create(path));
+    std::unique_ptr<TestedRegistryReader> reader(new TestedRegistryReader(path));
+    EXPECT_NE(nullptr, reader);
+    EXPECT_STREQ(driverInfo->getRegistryReaderRegKey(), reader->getRegKey());
+};
+
+} // namespace NEO

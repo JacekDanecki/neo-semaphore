@@ -1,33 +1,40 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 project(igdrcl_tests)
 
 set(TEST_PROJECTS_FOLDER "opencl runtime")
 set(PLATFORM_SPECIFIC_TARGETS_FOLDER "${TEST_PROJECTS_FOLDER}/test platforms")
 
+# disable optimizations for ults
+if(UNIX)
+  string(REPLACE "-O2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+  #disable fortify source as this requires optimization to be on
+  string(REPLACE "-D_FORTIFY_SOURCE=2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O0")
+  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O0")
+endif()
+
+if(WIN32)
+  string(REPLACE "/O2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+  string(REPLACE "/O2" "/Od" CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE})
+  string(REPLACE "/O2" "/Od" CMAKE_C_FLAGS_RELEASE ${CMAKE_C_FLAGS_RELEASE})
+  string(REPLACE "/O2" "/Od" CMAKE_CXX_FLAGS_RELEASEINTERNAL ${CMAKE_CXX_FLAGS_RELEASEINTERNAL})
+  string(REPLACE "/O2" "/Od" CMAKE_C_FLAGS_RELEASEINTERNAL ${CMAKE_C_FLAGS_RELEASEINTERNAL})
+endif()
+
+link_libraries(${ASAN_LIBS} ${TSAN_LIBS})
+
 add_custom_target(unit_tests)
 add_custom_target(run_unit_tests ALL)
 
 set(IGDRCL_SRCS_tests_local
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+  ${CMAKE_CURRENT_SOURCE_DIR}/libult/os_interface.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/tests_configuration.h
   ${CMAKE_CURRENT_SOURCE_DIR}/ult_configuration.cpp
 )
 
@@ -71,10 +78,25 @@ set(NEO_IGDRCL_TESTS__TARGET_OBJECTS
   $<TARGET_OBJECTS:${SCHEDULER_BINARY_LIB_NAME}>
 )
 
+if(DEFINED AUB_STREAM_DIR)
+  add_library (aub_stream_mock_lib OBJECT
+    ${IGDRCL_SOURCE_DIR}/unit_tests/aub_stream_mocks/aub_stream_interface_mock.cpp
+  )
+  list(APPEND NEO_IGDRCL_TESTS__TARGET_OBJECTS
+    $<TARGET_OBJECTS:${AUB_STREAM_PROJECT_NAME}_all_hw>
+    $<TARGET_OBJECTS:aub_stream_mock_lib>
+  )
+else()
+   list(APPEND IGDRCL_SRCS_tests_local ${IGDRCL_SOURCE_DIR}/runtime/aub/aub_stream_interface.cpp)
+endif()
+
 add_executable(igdrcl_tests
   ${NEO_IGDRCL_TESTS__TARGET_OBJECTS}
   ${IGDRCL_SRCS_tests_local}
 )
+
+hide_subdir(gen_common)
+add_subdirectory(gen_common)
 
 if(NOT GTEST_REPEAT)
   set(GTEST_REPEAT 1 CACHE STRING "Google test iterations")
@@ -104,14 +126,19 @@ endif()
 target_link_libraries(igdrcl_tests ${NEO_MOCKABLE_LIB_NAME})
 target_link_libraries(igdrcl_tests igdrcl_mocks)
 
-option(SHOW_VERBOSE_UTESTS_RESULTS "Use the default/verbose test output" ON)
+option(SHOW_VERBOSE_UTESTS_RESULTS "Use the default/verbose test output" OFF)
 
 if(NOT SHOW_VERBOSE_UTESTS_RESULTS)
   set(IGDRCL_TESTS_LISTENER_OPTION "--disable_default_listener")
+else()
+  set(IGDRCL_TESTS_LISTENER_OPTION "--enable_default_listener")
 endif()
 
 target_include_directories(igdrcl_tests PRIVATE
   ${IGDRCL_SOURCE_DIR}/unit_tests/mocks${BRANCH_DIR_SUFFIX}
+  ${ENGINE_NODE_DIR}
+  ${KHRONOS_GL_HEADERS_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_link_libraries(igdrcl_tests gmock-gtest ${IGDRCL_EXTRA_LIBS})
@@ -152,30 +179,30 @@ endif()
 set_target_properties(unit_tests PROPERTIES FOLDER ${TEST_PROJECTS_FOLDER})
 set_target_properties(run_unit_tests PROPERTIES FOLDER ${TEST_PROJECTS_FOLDER})
 
-target_include_directories(igdrcl_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common)
+target_include_directories(igdrcl_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common${BRANCH_DIR_SUFFIX})
 
 if(WIN32)
-  set(cloc_cmd_prefix cloc)
+  set(cloc_cmd_prefix ocloc)
 else()
   if(DEFINED IGDRCL__IGC_LIBRARY_PATH)
-    set(cloc_cmd_prefix LD_LIBRARY_PATH=${IGDRCL__IGC_LIBRARY_PATH} $<TARGET_FILE:cloc>)
+    set(cloc_cmd_prefix LD_LIBRARY_PATH=${IGDRCL__IGC_LIBRARY_PATH} $<TARGET_FILE:ocloc>)
   else()
-    set(cloc_cmd_prefix LD_LIBRARY_PATH=$<TARGET_FILE_DIR:cloc> $<TARGET_FILE:cloc>)
+    set(cloc_cmd_prefix LD_LIBRARY_PATH=$<TARGET_FILE_DIR:ocloc> $<TARGET_FILE:ocloc>)
   endif()
 endif()
 
 function(neo_gen_kernels target platform_name suffix)
   set(outputdir "${TargetDir}/${suffix}/test_files/${NEO_ARCH}/")
-  set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/test_files/")
 
   set(results)
   foreach(filepath ${ARGN})
     get_filename_component(filename ${filepath} NAME)
     get_filename_component(basename ${filepath} NAME_WE)
+    get_filename_component(workdir ${filepath} DIRECTORY)
 
     set(outputpath_base "${outputdir}${basename}_${suffix}")
     set(output_files
-      ${outputpath_base}.bc
+      ${outputpath_base}.spv
       ${outputpath_base}.bin
       ${outputpath_base}.gen
     )
@@ -184,7 +211,7 @@ function(neo_gen_kernels target platform_name suffix)
       OUTPUT ${output_files}
       COMMAND ${cloc_cmd_prefix} -q -file ${filename} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir}
       WORKING_DIRECTORY ${workdir}
-      DEPENDS ${filepath} cloc
+      DEPENDS ${filepath} ocloc
     )
 
     list(APPEND results ${output_files})
@@ -193,32 +220,35 @@ function(neo_gen_kernels target platform_name suffix)
   set_target_properties(${target} PROPERTIES FOLDER "kernels/${suffix}")
 endfunction()
 
-function(neo_gen_kernel_with_options target platform_name suffix filepath)
-  get_filename_component(filename ${filepath} NAME)
-  get_filename_component(basename ${filepath} NAME_WE)
-
-  set(outputdir "${TargetDir}/${suffix}/test_files/${NEO_ARCH}/")
-  set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/test_files/")
-
+function(neo_gen_kernels_with_options target platform_name suffix filepath)
   set(results)
-  foreach(arg ${ARGN})
-    string(REPLACE " " "_" argwospaces ${arg})
+  foreach(filearg ${filepath})
+    get_filename_component(filename ${filearg} NAME)
+    get_filename_component(basename ${filearg} NAME_WE)
+    get_filename_component(base_workdir ${filearg} DIRECTORY)
 
-    set(outputpath_base "${outputdir}/${basename}_${suffix}")
-    set(output_files
-      ${outputpath_base}.bc${argwospaces}
-      ${outputpath_base}.bin${argwospaces}
-      ${outputpath_base}.gen${argwospaces}
-    )
+    set(outputdir "${TargetDir}/${suffix}/test_files/${NEO_ARCH}/")
+    set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/${base_workdir}/")
 
-    add_custom_command(
-      OUTPUT ${output_files}
-      COMMAND ${cloc_cmd_prefix} -q -file ${filename} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir} -options ${arg} -options_name
-      WORKING_DIRECTORY ${workdir}
-      DEPENDS ${filepath} cloc
-    )
+    foreach(arg ${ARGN})
+      string(REPLACE " " "_" argwospaces ${arg})
 
-    list(APPEND results ${output_files})
+      set(outputpath_base "${outputdir}/${basename}_${suffix}")
+      set(output_files
+        ${outputpath_base}.spv${argwospaces}
+        ${outputpath_base}.bin${argwospaces}
+        ${outputpath_base}.gen${argwospaces}
+      )
+
+      add_custom_command(
+        OUTPUT ${output_files}
+        COMMAND ${cloc_cmd_prefix} -q -file ${filename} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir} -options ${arg} -options_name
+        WORKING_DIRECTORY ${workdir}
+        DEPENDS ${filearg} ocloc
+      )
+
+      list(APPEND results ${output_files})
+    endforeach()
   endforeach()
   add_custom_target(${target} DEPENDS ${results} copy_compiler_files)
   set_target_properties(${target} PROPERTIES FOLDER "kernels/${suffix}")
@@ -231,16 +261,17 @@ set(TEST_KERNEL_kernel_debug_enable
 function(neo_gen_kernel_with_kernel_debug_options target platform_name suffix filepath)
   get_filename_component(filename ${filepath} NAME)
   get_filename_component(basename ${filepath} NAME_WE)
+  get_filename_component(base_workdir ${filepath} DIRECTORY)
 
   set(outputdir "${TargetDir}/${suffix}/test_files/${NEO_ARCH}/")
-  set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/test_files/")
+  set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/${base_workdir}/")
 
   set(results)
   string(REPLACE " " "_" argwospaces ${TEST_KERNEL_kernel_debug_enable})
 
   set(outputpath_base "${outputdir}/${argwospaces}_${suffix}")
   set(output_files
-    ${outputpath_base}.bc
+    ${outputpath_base}.spv
     ${outputpath_base}.bin
     ${outputpath_base}.gen
     ${outputpath_base}.dbg
@@ -250,7 +281,7 @@ function(neo_gen_kernel_with_kernel_debug_options target platform_name suffix fi
     OUTPUT ${output_files}
     COMMAND ${cloc_cmd_prefix} -q -file ${filename} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir} -output ${argwospaces} -internal_options ${TEST_KERNEL_kernel_debug_enable} -options "-g"
     WORKING_DIRECTORY ${workdir}
-    DEPENDS ${filepath} cloc
+    DEPENDS ${filepath} ocloc
   )
 
   list(APPEND results ${output_files})
@@ -277,7 +308,7 @@ function(neo_gen_kernel_from_ll target platform_name suffix filepath output_name
     OUTPUT ${output_files}
     COMMAND ${cloc_cmd_prefix} -q -file ${filename} -output ${output_name} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir} -internal_options ${compile_options} -llvm_input
     WORKING_DIRECTORY ${workdir}
-    DEPENDS ${filepath} cloc
+    DEPENDS ${filepath} ocloc
   )
 
   list(APPEND results ${output_files})
@@ -301,6 +332,7 @@ set(TEST_KERNEL_2_0_options
 
 set(TEST_KERNEL_2_0
   test_files/simple_block_kernel.cl
+  test_files/simple_nonuniform.cl
 )
 
 set(TEST_KERNEL_SIP_DEBUG_options
@@ -311,28 +343,11 @@ set(TEST_KERNEL_SIP_DEBUG_LOCAL_options
   "-cl-include-sip-kernel-local-debug -cl-include-sip-csr -cl-set-bti:0"
 )
 
-set(TEST_KERNELS
-  test_files/15895692906525787409.cl
-  test_files/copybuffer.cl
-  test_files/CopyBuffer_simd16.cl
-  test_files/CopyBuffer_simd32.cl
-  test_files/CopyBuffer_simd8.cl
-  test_files/copybuffer_with_header.cl
-  test_files/emptykernel.cl
-  test_files/kernel_data_param.cl
-  test_files/kernel_num_args.cl
-  test_files/media_kernels_backend.cl
-  test_files/media_kernels_frontend.cl
-  test_files/printf.cl
-  test_files/required_work_group.cl
-  test_files/simple_arg_int.cl
-  test_files/simple_kernels.cl
-  test_files/simple_kernels_opts.cl
-  test_files/test_basic_constant.cl
-  test_files/test_basic_kernel_memory_alignment_private.cl
-  test_files/test_constant_memory.cl
-  test_files/vme_kernels.cl
-)
+file(GLOB_RECURSE TEST_KERNELS test_files/*.cl)
+list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/shouldfail.cl")
+list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/simple_block_kernel.cl")
+list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/simple_nonuniform.cl")
+
 function(gen_run_tests_with_appverifier product slices subslices eu_per_ss)
   if(${CMAKE_BUILD_TYPE} STREQUAL "Debug" AND "${IGDRCL_OPTION__BITS}" STREQUAL "64" AND APPVERIFIER_ALLOWED)
     add_custom_command(
@@ -399,7 +414,7 @@ macro(macro_for_each_gen)
 
       if(MSVC OR CMAKE_SIZEOF_VOID_P EQUAL 8)
         neo_gen_kernels(test_kernels_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNELS})
-        neo_gen_kernel_with_options(test_kernel_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNEL} ${TEST_KERNEL_options})
+        neo_gen_kernels_with_options(test_kernel_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNEL} ${TEST_KERNEL_options})
 
         # Temporarily disabled debug kernel generation on gen8
         if(NOT ("${GEN_TYPE_LOWER}" STREQUAL "gen8"))
@@ -425,7 +440,7 @@ macro(macro_for_each_gen)
         # add_dependencies(unit_tests test_kernel_sip_debug_${family_name_with_type})
 
         if(PLATFORM_2_0_LOWER)
-          neo_gen_kernel_with_options(test_kernel_2_0_${family_name_with_type} ${PLATFORM_2_0_LOWER} ${family_name_with_type} ${TEST_KERNEL_2_0} ${TEST_KERNEL_2_0_options})
+          neo_gen_kernels_with_options(test_kernel_2_0_${family_name_with_type} ${PLATFORM_2_0_LOWER} ${family_name_with_type} "${TEST_KERNEL_2_0}" ${TEST_KERNEL_2_0_options})
         endif()
       endif()
     endif()
@@ -435,3 +450,25 @@ endmacro()
 apply_macro_for_each_gen("TESTED")
 add_subdirectories()
 create_project_source_tree(igdrcl_tests ${IGDRCL_SOURCE_DIR}/runtime)
+
+if(MSVC)
+  set(UltPchHeader "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.h")
+  set(UltPchSource "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.cpp")
+  set(UltPchBinary "${CMAKE_CURRENT_BINARY_DIR}/igdrcl_tests_pch.pch")
+
+  set(IGDRCL_SRCS_ult_pch ${UltPchSource} ${UltPchHeader})
+
+  get_target_property(UltSources igdrcl_tests SOURCES)
+
+  set_source_files_properties(${UltSources}
+    PROPERTIES COMPILE_FLAGS "/Yu${UltPchHeader} /FI${UltPchHeader} /Fp${UltPchBinary}"
+    OBJECT_DEPENDS "${UltPchBinary}")
+
+  set_source_files_properties(${UltPchSource}
+    PROPERTIES COMPILE_FLAGS "/Yc${UltPchHeader} /FI${UltPchHeader} /Fp${UltPchBinary}"
+    OBJECT_OUTPUTS "${UltPchBinary}")
+
+  target_sources(igdrcl_tests PRIVATE ${IGDRCL_SRCS_ult_pch})
+endif()
+
+# Dont add any sources below PCH logic. This is to keep PCH dependencies correctly without creating new target

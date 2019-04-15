@@ -1,29 +1,14 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "unit_tests/fixtures/two_walker_fixture.h"
 #include "unit_tests/aub_tests/fixtures/run_kernel_fixture.h"
+#include "unit_tests/fixtures/two_walker_fixture.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 namespace ULT {
 
@@ -189,7 +174,7 @@ SKLTEST_F(AUBRunKernelIntegrateTest, ooqExecution) {
     pCmdQ2 = createCommandQueue(pDevice, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE);
     ASSERT_NE(nullptr, pCmdQ2);
 
-    auto &csr = pCmdQ2->getDevice().getCommandStreamReceiver();
+    auto &csr = pCmdQ2->getCommandStreamReceiver();
     csr.overrideDispatchPolicy(DispatchMode::ImmediateDispatch);
 
     retVal = pCmdQ2->enqueueKernel(
@@ -457,11 +442,11 @@ SKLTEST_F(AUBRunKernelIntegrateTest, deviceSideVme) {
     residualsBuffer->forceDisallowCPUCopy = true;
     shapesBuffer->forceDisallowCPUCopy = true;
 
-    retVal = pCmdQ->enqueueReadBuffer(motionVectorBuffer, true, 0, sizeof(destinationMV), destinationMV, 0, nullptr, nullptr);
+    retVal = pCmdQ->enqueueReadBuffer(motionVectorBuffer, true, 0, sizeof(destinationMV), destinationMV, nullptr, 0, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, retVal);
-    retVal = pCmdQ->enqueueReadBuffer(residualsBuffer, true, 0, sizeof(destinationResiduals), destinationResiduals, 0, nullptr, nullptr);
+    retVal = pCmdQ->enqueueReadBuffer(residualsBuffer, true, 0, sizeof(destinationResiduals), destinationResiduals, nullptr, 0, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, retVal);
-    retVal = pCmdQ->enqueueReadBuffer(shapesBuffer, true, 0, sizeof(destinationShapes), destinationShapes, 0, nullptr, nullptr);
+    retVal = pCmdQ->enqueueReadBuffer(shapesBuffer, true, 0, sizeof(destinationShapes), destinationShapes, nullptr, 0, nullptr, nullptr);
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     // Check if our buffers matches expectations

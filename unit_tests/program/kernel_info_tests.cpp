@@ -1,32 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/program/kernel_info.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
-#include "gtest/gtest.h"
-#include <type_traits>
-#include <memory>
+#include "runtime/program/kernel_info.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+#include <memory>
+#include <type_traits>
+
+using namespace NEO;
 
 TEST(KernelInfo, NonCopyable) {
     EXPECT_FALSE(std::is_move_constructible<KernelInfo>::value);
@@ -39,15 +28,14 @@ TEST(KernelInfo, NonAssignable) {
 }
 
 TEST(KernelInfo, defaultBehavior) {
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     EXPECT_FALSE(pKernelInfo->usesSsh);
     EXPECT_FALSE(pKernelInfo->isValid);
-    delete pKernelInfo;
 }
 
 TEST(KernelInfo, decodeConstantMemoryKernelArgument) {
     uint32_t argumentNumber = 0;
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     SPatchStatelessConstantMemoryObjectKernelArgument arg;
     arg.Token = 0xa;
     arg.Size = 0x20;
@@ -67,13 +55,11 @@ TEST(KernelInfo, decodeConstantMemoryKernelArgument) {
 
     const auto &patchInfo = pKernelInfo->patchInfo;
     EXPECT_EQ(1u, patchInfo.statelessGlobalMemObjKernelArgs.size());
-
-    delete pKernelInfo;
 }
 
 TEST(KernelInfo, decodeGlobalMemoryKernelArgument) {
     uint32_t argumentNumber = 1;
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     SPatchStatelessGlobalMemoryObjectKernelArgument arg;
     arg.Token = 0xb;
     arg.Size = 0x30;
@@ -93,13 +79,11 @@ TEST(KernelInfo, decodeGlobalMemoryKernelArgument) {
 
     const auto &patchInfo = pKernelInfo->patchInfo;
     EXPECT_EQ(1u, patchInfo.statelessGlobalMemObjKernelArgs.size());
-
-    delete pKernelInfo;
 }
 
 TEST(KernelInfo, decodeImageKernelArgument) {
     uint32_t argumentNumber = 1;
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     SPatchImageMemoryObjectKernelArgument arg;
     arg.Token = 0xc;
     arg.Size = 0x20;
@@ -121,13 +105,12 @@ TEST(KernelInfo, decodeImageKernelArgument) {
     //EXPECT_EQ(CL_KERNEL_ARG_ACCESS_READ_WRITE, argInfo.accessQualifier);
     //EXPECT_EQ(CL_KERNEL_ARG_ADDRESS_, argInfo.addressQualifier);
     //EXPECT_EQ(CL_KERNEL_ARG_TYPE_NONE, argInfo.typeQualifier);
-
-    delete pKernelInfo;
 }
 
 TEST(KernelInfoTest, givenKernelInfoWhenCreateKernelAllocationThenCopyWholeKernelHeapToKernelAllocation) {
     KernelInfo kernelInfo;
-    OsAgnosticMemoryManager memoryManager;
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    OsAgnosticMemoryManager memoryManager(executionEnvironment);
     SKernelBinaryHeaderCommon kernelHeader;
     const size_t heapSize = 0x40;
     char heap[heapSize];
@@ -149,12 +132,14 @@ TEST(KernelInfoTest, givenKernelInfoWhenCreateKernelAllocationThenCopyWholeKerne
 
 class MyMemoryManager : public OsAgnosticMemoryManager {
   public:
-    GraphicsAllocation *allocate32BitGraphicsMemory(size_t size, const void *ptr, AllocationOrigin allocationOrigin) override { return nullptr; }
+    using OsAgnosticMemoryManager::OsAgnosticMemoryManager;
+    GraphicsAllocation *allocate32BitGraphicsMemoryImpl(const AllocationData &allocationData) override { return nullptr; }
 };
 
 TEST(KernelInfoTest, givenKernelInfoWhenCreateKernelAllocationAndCannotAllocateMemoryThenReturnsFalse) {
     KernelInfo kernelInfo;
-    MyMemoryManager memoryManager;
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    MyMemoryManager memoryManager(executionEnvironment);
     SKernelBinaryHeaderCommon kernelHeader;
     kernelInfo.heapInfo.pKernelHeader = &kernelHeader;
     auto retVal = kernelInfo.createKernelAllocation(&memoryManager);
@@ -163,7 +148,7 @@ TEST(KernelInfoTest, givenKernelInfoWhenCreateKernelAllocationAndCannotAllocateM
 
 TEST(KernelInfo, decodeGlobalMemObjectKernelArgument) {
     uint32_t argumentNumber = 1;
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     SPatchGlobalMemoryObjectKernelArgument arg;
     arg.Token = 0xb;
     arg.Size = 0x10;
@@ -178,13 +163,11 @@ TEST(KernelInfo, decodeGlobalMemObjectKernelArgument) {
     const auto &argInfo = pKernelInfo->kernelArgInfo[argumentNumber];
     EXPECT_EQ(arg.Offset, argInfo.offsetHeap);
     EXPECT_TRUE(argInfo.isBuffer);
-
-    delete pKernelInfo;
 }
 
 TEST(KernelInfo, decodeSamplerKernelArgument) {
     uint32_t argumentNumber = 1;
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
     SPatchSamplerKernelArgument arg;
 
     arg.ArgumentNumber = argumentNumber;
@@ -204,12 +187,11 @@ TEST(KernelInfo, decodeSamplerKernelArgument) {
     EXPECT_FALSE(argInfo.isImage);
     EXPECT_TRUE(argInfo.isSampler);
     EXPECT_TRUE(pKernelInfo->usesSsh);
-    delete pKernelInfo;
 }
 
 typedef KernelInfo KernelInfo_resolveKernelInfo;
 TEST(KernelInfo_resolveKernelInfo, basicArgument) {
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
 
     pKernelInfo->kernelArgInfo.resize(1);
     auto &kernelArgInfo = pKernelInfo->kernelArgInfo[0];
@@ -223,12 +205,10 @@ TEST(KernelInfo_resolveKernelInfo, basicArgument) {
     EXPECT_EQ(static_cast<cl_kernel_arg_access_qualifier>(CL_KERNEL_ARG_ACCESS_READ_ONLY), kernelArgInfo.accessQualifier);
     EXPECT_EQ(static_cast<cl_kernel_arg_address_qualifier>(CL_KERNEL_ARG_ADDRESS_GLOBAL), kernelArgInfo.addressQualifier);
     EXPECT_EQ(static_cast<cl_kernel_arg_type_qualifier>(CL_KERNEL_ARG_TYPE_RESTRICT), kernelArgInfo.typeQualifier);
-
-    delete pKernelInfo;
 }
 
 TEST(KernelInfo_resolveKernelInfo, complexArgumentType) {
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
 
     pKernelInfo->kernelArgInfo.resize(1);
     auto &kernelArgInfo = pKernelInfo->kernelArgInfo[0];
@@ -242,13 +222,11 @@ TEST(KernelInfo_resolveKernelInfo, complexArgumentType) {
     EXPECT_EQ(static_cast<cl_kernel_arg_access_qualifier>(CL_KERNEL_ARG_ACCESS_READ_ONLY), kernelArgInfo.accessQualifier);
     EXPECT_EQ(static_cast<cl_kernel_arg_address_qualifier>(CL_KERNEL_ARG_ADDRESS_GLOBAL), kernelArgInfo.addressQualifier);
     EXPECT_EQ(static_cast<cl_kernel_arg_type_qualifier>(CL_KERNEL_ARG_TYPE_RESTRICT | CL_KERNEL_ARG_TYPE_CONST), kernelArgInfo.typeQualifier);
-
-    delete pKernelInfo;
 }
 
 TEST(KernelInfo, givenKernelInfoWhenStoreTransformableArgThenArgInfoIsTransformable) {
     uint32_t argumentNumber = 1;
-    std::unique_ptr<KernelInfo> kernelInfo(KernelInfo::create());
+    auto kernelInfo = std::make_unique<KernelInfo>();
     SPatchImageMemoryObjectKernelArgument arg;
     arg.ArgumentNumber = argumentNumber;
     arg.Transformable = true;
@@ -260,7 +238,7 @@ TEST(KernelInfo, givenKernelInfoWhenStoreTransformableArgThenArgInfoIsTransforma
 
 TEST(KernelInfo, givenKernelInfoWhenStoreNonTransformableArgThenArgInfoIsNotTransformable) {
     uint32_t argumentNumber = 1;
-    std::unique_ptr<KernelInfo> kernelInfo(KernelInfo::create());
+    auto kernelInfo = std::make_unique<KernelInfo>();
     SPatchImageMemoryObjectKernelArgument arg;
     arg.ArgumentNumber = argumentNumber;
     arg.Transformable = false;

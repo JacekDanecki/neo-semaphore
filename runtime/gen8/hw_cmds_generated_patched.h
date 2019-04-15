@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -398,4 +383,233 @@ typedef struct tagMI_SEMAPHORE_WAIT {
     }
 } MI_SEMAPHORE_WAIT;
 STATIC_ASSERT(16 == sizeof(MI_SEMAPHORE_WAIT));
+
+typedef struct tagMI_STORE_DATA_IMM {
+    union tagTheStructure {
+        struct tagCommon {
+            uint32_t DwordLength : BITFIELD_RANGE(0, 9);
+            uint32_t Reserved_10 : BITFIELD_RANGE(10, 20);
+            uint32_t StoreQword : BITFIELD_RANGE(21, 21);
+            uint32_t UseGlobalGtt : BITFIELD_RANGE(22, 22);
+            uint32_t MiCommandOpcode : BITFIELD_RANGE(23, 28);
+            uint32_t CommandType : BITFIELD_RANGE(29, 31);
+            uint32_t Reserved_32 : BITFIELD_RANGE(0, 1);
+            uint32_t Address : BITFIELD_RANGE(2, 31);
+            uint32_t AddressHigh : BITFIELD_RANGE(0, 15);
+            uint32_t Reserved_80 : BITFIELD_RANGE(16, 31);
+            uint32_t DataDword0;
+            uint32_t DataDword1;
+        } Common;
+        uint32_t RawData[5];
+    } TheStructure;
+    typedef enum tagDWORD_LENGTH {
+        DWORD_LENGTH_EXCLUDES_DWORD_0_1 = 0x0,
+    } DWORD_LENGTH;
+    typedef enum tagMI_COMMAND_OPCODE {
+        MI_COMMAND_OPCODE_MI_STORE_DATA_IMM = 0x20,
+    } MI_COMMAND_OPCODE;
+    typedef enum tagCOMMAND_TYPE {
+        COMMAND_TYPE_MI_COMMAND = 0x0,
+    } COMMAND_TYPE;
+    typedef enum tagPATCH_CONSTANTS {
+        ADDRESS_BYTEOFFSET = 0x4,
+        ADDRESS_INDEX = 0x1,
+        ADDRESSHIGH_BYTEOFFSET = 0x8,
+        ADDRESSHIGH_INDEX = 0x2,
+    } PATCH_CONSTANTS;
+    inline void init(void) {
+        memset(&TheStructure, 0, sizeof(TheStructure));
+        TheStructure.Common.DwordLength = DWORD_LENGTH_EXCLUDES_DWORD_0_1;
+        TheStructure.Common.MiCommandOpcode = MI_COMMAND_OPCODE_MI_STORE_DATA_IMM;
+        TheStructure.Common.CommandType = COMMAND_TYPE_MI_COMMAND;
+    }
+    static tagMI_STORE_DATA_IMM sInit(void) {
+        MI_STORE_DATA_IMM state;
+        state.init();
+        return state;
+    }
+    inline uint32_t &getRawData(const uint32_t index) {
+        DEBUG_BREAK_IF(index >= 5);
+        return TheStructure.RawData[index];
+    }
+    inline void setDwordLength(const DWORD_LENGTH value) {
+        TheStructure.Common.DwordLength = value;
+    }
+    inline DWORD_LENGTH getDwordLength(void) const {
+        return static_cast<DWORD_LENGTH>(TheStructure.Common.DwordLength);
+    }
+    inline void setStoreQword(const bool value) {
+        TheStructure.Common.StoreQword = value;
+    }
+    inline bool getStoreQword(void) const {
+        return TheStructure.Common.StoreQword;
+    }
+    inline void setUseGlobalGtt(const uint32_t value) {
+        TheStructure.Common.UseGlobalGtt = value;
+    }
+    inline uint32_t getUseGlobalGtt(void) const {
+        return (TheStructure.Common.UseGlobalGtt);
+    }
+    typedef enum tagADDRESS {
+        ADDRESS_BIT_SHIFT = 0x2,
+        ADDRESS_ALIGN_SIZE = 0x4,
+    } ADDRESS;
+    inline void setAddress(const uint64_t value) {
+        setAddressLow(static_cast<uint32_t>(value & 0x0000FFFFFFFFULL));
+        setAddressHigh(static_cast<uint32_t>(value >> 32));
+    }
+    inline uint64_t getAddress(void) const {
+        return (static_cast<uint64_t>(getAddressHigh()) << 32) | static_cast<uint64_t>(getAddressLow());
+    }
+    inline void setAddressLow(const uint32_t value) {
+        TheStructure.Common.Address = value >> ADDRESS_BIT_SHIFT;
+    }
+    inline uint32_t getAddressLow(void) const {
+        return (TheStructure.Common.Address << ADDRESS_BIT_SHIFT);
+    }
+    inline void setAddressHigh(const uint32_t value) {
+        TheStructure.Common.AddressHigh = value;
+    }
+    inline uint32_t getAddressHigh(void) const {
+        return (TheStructure.Common.AddressHigh);
+    }
+    inline void setDataDword0(const uint32_t value) {
+        TheStructure.Common.DataDword0 = value;
+    }
+    inline uint32_t getDataDword0(void) const {
+        return (TheStructure.Common.DataDword0);
+    }
+    inline void setDataDword1(const uint32_t value) {
+        TheStructure.Common.DataDword1 = value;
+    }
+    inline uint32_t getDataDword1(void) const {
+        return (TheStructure.Common.DataDword1);
+    }
+} MI_STORE_DATA_IMM;
+STATIC_ASSERT(20 == sizeof(MI_STORE_DATA_IMM));
+
+typedef struct tagSTATE_SIP {
+    union tagTheStructure {
+        struct tagCommon {
+            uint32_t DwordLength : BITFIELD_RANGE(0, 7);
+            uint32_t Reserved_8 : BITFIELD_RANGE(8, 15);
+            uint32_t _3DCommandSubOpcode : BITFIELD_RANGE(16, 23);
+            uint32_t _3DCommandOpcode : BITFIELD_RANGE(24, 26);
+            uint32_t CommandSubtype : BITFIELD_RANGE(27, 28);
+            uint32_t CommandType : BITFIELD_RANGE(29, 31);
+            uint64_t Reserved_32 : BITFIELD_RANGE(0, 3);
+            uint64_t SystemInstructionPointer : BITFIELD_RANGE(4, 63);
+        } Common;
+        uint32_t RawData[3];
+    } TheStructure;
+    typedef enum tagDWORD_LENGTH {
+        DWORD_LENGTH_DWORD_COUNT_N = 0x1,
+    } DWORD_LENGTH;
+    typedef enum tag_3D_COMMAND_SUB_OPCODE {
+        _3D_COMMAND_SUB_OPCODE_STATE_SIP = 0x2,
+    } _3D_COMMAND_SUB_OPCODE;
+    typedef enum tag_3D_COMMAND_OPCODE {
+        _3D_COMMAND_OPCODE_GFXPIPE_NONPIPELINED = 0x1,
+    } _3D_COMMAND_OPCODE;
+    typedef enum tagCOMMAND_SUBTYPE {
+        COMMAND_SUBTYPE_GFXPIPE_COMMON = 0x0,
+    } COMMAND_SUBTYPE;
+    typedef enum tagCOMMAND_TYPE {
+        COMMAND_TYPE_GFXPIPE = 0x3,
+    } COMMAND_TYPE;
+    typedef enum tagPATCH_CONSTANTS {
+        SYSTEMINSTRUCTIONPOINTER_BYTEOFFSET = 0x4,
+        SYSTEMINSTRUCTIONPOINTER_INDEX = 0x1,
+    } PATCH_CONSTANTS;
+    void init() {
+        memset(&TheStructure, 0, sizeof(TheStructure));
+        TheStructure.Common.DwordLength = DWORD_LENGTH_DWORD_COUNT_N;
+        TheStructure.Common._3DCommandSubOpcode = _3D_COMMAND_SUB_OPCODE_STATE_SIP;
+        TheStructure.Common._3DCommandOpcode = _3D_COMMAND_OPCODE_GFXPIPE_NONPIPELINED;
+        TheStructure.Common.CommandSubtype = COMMAND_SUBTYPE_GFXPIPE_COMMON;
+        TheStructure.Common.CommandType = COMMAND_TYPE_GFXPIPE;
+    }
+    static tagSTATE_SIP sInit() {
+        STATE_SIP state;
+        state.init();
+        return state;
+    }
+    inline uint32_t &getRawData(uint32_t const index) {
+        DEBUG_BREAK_IF(index >= 3);
+        return TheStructure.RawData[index];
+    }
+    typedef enum tagSYSTEMINSTRUCTIONPOINTER {
+        SYSTEMINSTRUCTIONPOINTER_BIT_SHIFT = 0x4,
+        SYSTEMINSTRUCTIONPOINTER_ALIGN_SIZE = 0x10,
+    } SYSTEMINSTRUCTIONPOINTER;
+    inline uint64_t getSystemInstructionPointer() const {
+        return (uint64_t)TheStructure.Common.SystemInstructionPointer << SYSTEMINSTRUCTIONPOINTER_BIT_SHIFT;
+    }
+    inline void setSystemInstructionPointer(uint64_t value) {
+        TheStructure.Common.SystemInstructionPointer = value >> SYSTEMINSTRUCTIONPOINTER_BIT_SHIFT;
+    }
+} STATE_SIP;
+STATIC_ASSERT(12 == sizeof(STATE_SIP));
+typedef struct tagGPGPU_CSR_BASE_ADDRESS {
+    union tagTheStructure {
+        struct tagCommon {
+            uint32_t DwordLength : BITFIELD_RANGE(0, 7);
+            uint32_t Reserved_8 : BITFIELD_RANGE(8, 15);
+            uint32_t _3DCommandSubOpcode : BITFIELD_RANGE(16, 23);
+            uint32_t _3DCommandOpcode : BITFIELD_RANGE(24, 26);
+            uint32_t CommandSubtype : BITFIELD_RANGE(27, 28);
+            uint32_t CommandType : BITFIELD_RANGE(29, 31);
+            uint64_t Reserved_32 : BITFIELD_RANGE(0, 11);
+            uint64_t GpgpuCsrBaseAddress : BITFIELD_RANGE(12, 63);
+        } Common;
+        uint32_t RawData[3];
+    } TheStructure;
+    typedef enum tagDWORD_LENGTH {
+        DWORD_LENGTH_UNNAMED_1 = 0x1,
+    } DWORD_LENGTH;
+    typedef enum tag_3D_COMMAND_SUB_OPCODE {
+        _3D_COMMAND_SUB_OPCODE_GPGPU_CSR_BASE_ADDRESS = 0x4,
+    } _3D_COMMAND_SUB_OPCODE;
+    typedef enum tag_3D_COMMAND_OPCODE {
+        _3D_COMMAND_OPCODE_GFXPIPE_NONPIPELINED = 0x1,
+    } _3D_COMMAND_OPCODE;
+    typedef enum tagCOMMAND_SUBTYPE {
+        COMMAND_SUBTYPE_GFXPIPE_COMMON = 0x0,
+    } COMMAND_SUBTYPE;
+    typedef enum tagCOMMAND_TYPE {
+        COMMAND_TYPE_GFXPIPE = 0x3,
+    } COMMAND_TYPE;
+    typedef enum tagPATCH_CONSTANTS {
+        GPGPUCSRBASEADDRESS_BYTEOFFSET = 0x4,
+        GPGPUCSRBASEADDRESS_INDEX = 0x1,
+    } PATCH_CONSTANTS;
+    inline void init(void) {
+        memset(&TheStructure, 0, sizeof(TheStructure));
+        TheStructure.Common.DwordLength = DWORD_LENGTH_UNNAMED_1;
+        TheStructure.Common._3DCommandSubOpcode = _3D_COMMAND_SUB_OPCODE_GPGPU_CSR_BASE_ADDRESS;
+        TheStructure.Common._3DCommandOpcode = _3D_COMMAND_OPCODE_GFXPIPE_NONPIPELINED;
+        TheStructure.Common.CommandSubtype = COMMAND_SUBTYPE_GFXPIPE_COMMON;
+        TheStructure.Common.CommandType = COMMAND_TYPE_GFXPIPE;
+    }
+    static tagGPGPU_CSR_BASE_ADDRESS sInit(void) {
+        GPGPU_CSR_BASE_ADDRESS state;
+        state.init();
+        return state;
+    }
+    inline uint32_t &getRawData(uint32_t const index) {
+        DEBUG_BREAK_IF(index >= 3);
+        return TheStructure.RawData[index];
+    }
+    typedef enum tagGPGPUCSRBASEADDRESS {
+        GPGPUCSRBASEADDRESS_BIT_SHIFT = 0xC,
+        GPGPUCSRBASEADDRESS_ALIGN_SIZE = 0x1000,
+    } GPGPUCSRBASEADDRESS;
+    inline uint64_t getGpgpuCsrBaseAddress() const {
+        return (uint64_t)TheStructure.Common.GpgpuCsrBaseAddress << GPGPUCSRBASEADDRESS_BIT_SHIFT;
+    }
+    inline void setGpgpuCsrBaseAddress(uint64_t value) {
+        TheStructure.Common.GpgpuCsrBaseAddress = value >> GPGPUCSRBASEADDRESS_BIT_SHIFT;
+    }
+} GPGPU_CSR_BASE_ADDRESS;
+STATIC_ASSERT(12 == sizeof(GPGPU_CSR_BASE_ADDRESS));
 #pragma pack()

@@ -1,32 +1,18 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "runtime/mem_obj/mem_obj.h"
 #include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/helpers/validators.h"
+#include "runtime/mem_obj/buffer.h"
+#include "runtime/mem_obj/mem_obj.h"
 
-namespace OCLRT {
+namespace NEO {
 class Image;
 struct KernelInfo;
 struct SurfaceFormatInfo;
@@ -103,7 +89,7 @@ class Image : public MemObj {
 
     static cl_int validateImageTraits(Context *context, cl_mem_flags flags, const cl_image_format *imageFormat, const cl_image_desc *imageDesc, const void *hostPtr);
 
-    static size_t calculateHostPtrSize(size_t *region, size_t rowPitch, size_t slicePitch, size_t pixelSize, uint32_t imageType);
+    static size_t calculateHostPtrSize(const size_t *region, size_t rowPitch, size_t slicePitch, size_t pixelSize, uint32_t imageType);
 
     static void calculateHostPtrOffset(size_t *imageOffset, const size_t *origin, const size_t *region, size_t rowPitch, size_t slicePitch, uint32_t imageType, size_t bytesPerPixel);
 
@@ -123,6 +109,8 @@ class Image : public MemObj {
     static bool hasSlices(cl_mem_object_type type) {
         return (type == CL_MEM_OBJECT_IMAGE3D) || (type == CL_MEM_OBJECT_IMAGE1D_ARRAY) || (type == CL_MEM_OBJECT_IMAGE2D_ARRAY);
     }
+
+    static bool isCopyRequired(ImageInfo &imgInfo, const void *hostPtr);
 
     cl_int getImageInfo(cl_image_info paramName,
                         size_t paramValueSize,
@@ -175,7 +163,7 @@ class Image : public MemObj {
     void setMipCount(uint32_t mipCountNew) { this->mipCount = mipCountNew; }
 
     static const SurfaceFormatInfo *getSurfaceFormatFromTable(cl_mem_flags flags, const cl_image_format *imageFormat);
-    static bool validateRegionAndOrigin(const size_t *origin, const size_t *region, const cl_image_desc &imgDesc);
+    static cl_int validateRegionAndOrigin(const size_t *origin, const size_t *region, const cl_image_desc &imgDesc);
 
     cl_int writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch);
     void setMcsSurfaceInfo(McsSurfaceInfo &info) { mcsSurfaceInfo = info; }
@@ -185,13 +173,13 @@ class Image : public MemObj {
     virtual void transformImage2dArrayTo3d(void *memory) = 0;
     virtual void transformImage3dTo2dArray(void *memory) = 0;
 
-    virtual size_t getHostPtrRowPitchForMap(uint32_t mipLevel) = 0;
-    virtual size_t getHostPtrSlicePitchForMap(uint32_t mipLevel) = 0;
-
     const bool isTiledImage;
 
     bool hasSameDescriptor(const cl_image_desc &imageDesc) const;
     bool hasValidParentImageFormat(const cl_image_format &imageFormat) const;
+
+    bool isImageFromBuffer() const { return castToObject<Buffer>(static_cast<cl_mem>(associatedMemObject)) ? true : false; }
+    bool isImageFromImage() const { return castToObject<Image>(static_cast<cl_mem>(associatedMemObject)) ? true : false; }
 
   protected:
     Image(Context *context,
@@ -274,12 +262,12 @@ class ImageHw : public Image {
         }
     }
 
-    size_t getHostPtrRowPitchForMap(uint32_t mipLevel) override;
-    size_t getHostPtrSlicePitchForMap(uint32_t mipLevel) override;
     void setImageArg(void *memory, bool setAsMediaBlockImage, uint32_t mipLevel) override;
     void setAuxParamsForMultisamples(RENDER_SURFACE_STATE *surfaceState);
     void setAuxParamsForCCS(RENDER_SURFACE_STATE *surfaceState, Gmm *gmm);
+    void setUnifiedAuxBaseAddress(RENDER_SURFACE_STATE *surfaceState, const Gmm *gmm);
     MOCKABLE_VIRTUAL void setClearColorParams(RENDER_SURFACE_STATE *surfaceState, const Gmm *gmm);
+    MOCKABLE_VIRTUAL void setAuxParamsForMCSCCS(RENDER_SURFACE_STATE *surfaceState, Gmm *gmm);
     void setMediaImageArg(void *memory) override;
     void setMediaSurfaceRotation(void *memory) override;
     void setSurfaceMemoryObjectControlStateIndexToMocsTable(void *memory, uint32_t value) override;
@@ -358,4 +346,4 @@ class ImageHw : public Image {
     }
     typename RENDER_SURFACE_STATE::SURFACE_TYPE surfaceType;
 };
-} // namespace OCLRT
+} // namespace NEO

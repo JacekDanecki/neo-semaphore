@@ -1,37 +1,24 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/helpers/aligned_memory.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/platform/platform.h"
+#include "test.h"
 #include "unit_tests/aub_tests/command_stream/aub_command_stream_fixture.h"
 #include "unit_tests/command_queue/command_enqueue_fixture.h"
-#include "test.h"
 #include "unit_tests/mocks/mock_gmm.h"
+
+#include <memory>
 
 extern GFXCORE_FAMILY renderCoreFamily;
 
-using namespace OCLRT;
+using namespace NEO;
 
 static const unsigned int testImageDimensions = 17;
 auto const elementSize = 4; //sizeof CL_RGBA * CL_UNORM_INT8
@@ -48,7 +35,6 @@ struct AUBCreateImage
     using AUBCommandStreamFixture::SetUp;
 
     void SetUp() override {
-        constructPlatform();
         CommandDeviceFixture::SetUp(cl_command_queue_properties(0));
         CommandStreamFixture::SetUp(pCmdQ);
 
@@ -72,7 +58,6 @@ struct AUBCreateImage
         //delete context;
         CommandStreamFixture::TearDown();
         CommandDeviceFixture::TearDown();
-        platformImpl.reset(nullptr);
     }
 
     //MockContext *context;
@@ -112,7 +97,7 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
     auto pixelSize = 4;
     auto storageSize = imageDesc.image_array_size * pixelSize * imageDesc.image_width * imageDesc.image_height;
 
-    int *hostPtr = new int[storageSize];
+    std::unique_ptr<int[]> hostPtr(new int[storageSize]);
 
     for (auto i = 0u; i < storageSize; i++) {
         hostPtr[i] = i;
@@ -123,7 +108,7 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
         flags,
         surfaceFormat,
         &imageDesc,
-        hostPtr,
+        hostPtr.get(),
         retVal);
 
     ASSERT_EQ(CL_SUCCESS, retVal);
@@ -136,29 +121,41 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
     EXPECT_EQ(image->getQPitch(), imgInfo.qPitch);
     EXPECT_EQ(image->getCubeFaceIndex(), static_cast<uint32_t>(__GMM_NO_CUBE_MAP));
 
-    auto address = (int *)image->getCpuAddress();
-
-    ASSERT_NE(nullptr, address);
-
     auto imageHeight = imageDesc.image_height;
+    std::unique_ptr<uint32_t[]> readMemory(new uint32_t[image->getSize() / sizeof(uint32_t)]);
+    auto allocation = createResidentAllocationAndStoreItInCsr(readMemory.get(), image->getSize());
 
-    uint32_t *readMemory = nullptr;
-    if (image->allowTiling()) {
-        readMemory = new uint32_t[image->getSize()];
-        size_t imgOrigin[] = {0, 0, 0};
-        size_t imgRegion[] = {imageDesc.image_width, imageDesc.image_height, imageDesc.image_array_size};
-        retVal = pCmdQ->enqueueReadImage(image, CL_TRUE, imgOrigin, imgRegion, imgInfo.rowPitch, imgInfo.slicePitch,
-                                         readMemory, 0, nullptr, nullptr);
-        EXPECT_EQ(CL_SUCCESS, retVal);
+    size_t imgOrigin[] = {0, 0, 0};
+    size_t imgRegion[] = {imageDesc.image_width, 1, 1};
+
+    if (imageDesc.image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY) {
+        imgRegion[1] = imageDesc.image_array_size;
+    } else if (imageDesc.image_type == CL_MEM_OBJECT_IMAGE2D_ARRAY) {
+        imgRegion[1] = imageDesc.image_height;
+        imgRegion[2] = imageDesc.image_array_size;
+    } else {
+        ASSERT_TRUE(false);
+    }
+    retVal = pCmdQ->enqueueReadImage(image, CL_FALSE, imgOrigin, imgRegion, imgInfo.rowPitch, imgInfo.slicePitch,
+                                     readMemory.get(), 0, nullptr, nullptr);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    allocation = pCommandStreamReceiver->getTemporaryAllocations().peekHead();
+    while (allocation && allocation->getUnderlyingBuffer() != readMemory.get()) {
+        allocation = allocation->next;
     }
 
+    auto destGpuAddress = reinterpret_cast<uint32_t *>(allocation->getGpuAddress());
+    pCmdQ->flush();
+
+    auto address = (int *)image->getCpuAddress();
     auto currentCounter = 0;
     for (auto array = 0u; array < imageDesc.image_array_size; array++) {
         for (auto height = 0u; height < imageHeight; height++) {
             for (auto element = 0u; element < imageDesc.image_width; element++) {
                 auto offset = (array * imgInfo.slicePitch + element * pixelSize + height * imgInfo.rowPitch) / 4;
-                if (image->allowTiling()) {
-                    AUBCommandStreamFixture::expectMemory<FamilyType>(&readMemory[offset], &currentCounter, pixelSize);
+                if (MemoryPool::isSystemMemoryPool(image->getGraphicsAllocation()->getMemoryPool()) == false) {
+                    AUBCommandStreamFixture::expectMemory<FamilyType>(&destGpuAddress[offset], &currentCounter, pixelSize);
                 } else {
                     EXPECT_EQ(currentCounter, address[offset]);
                 }
@@ -167,13 +164,8 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
         }
     }
 
-    if (readMemory) {
-        delete readMemory;
-    }
     delete image;
-    delete[] hostPtr;
 }
-
 struct AUBCreateImageHostPtr : public AUBCreateImage,
                                public ::testing::WithParamInterface<uint64_t /*cl_mem_object_type*/> {
     void SetUp() override {

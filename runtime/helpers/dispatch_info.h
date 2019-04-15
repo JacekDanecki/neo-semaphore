@@ -1,35 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
-#include "runtime/memory_manager/surface.h"
 #include "runtime/mem_obj/mem_obj.h"
-#include "runtime/utilities/vec.h"
+#include "runtime/memory_manager/surface.h"
 #include "runtime/utilities/stackvec.h"
+#include "runtime/utilities/vec.h"
+
 #include <algorithm>
 #include <memory>
 
-namespace OCLRT {
+namespace NEO {
 
 class Kernel;
 
@@ -40,6 +26,8 @@ class DispatchInfo {
         : kernel(k), dim(d), gws(gws), elws(elws), offset(offset), agws(0, 0, 0), lws(0, 0, 0), twgs(0, 0, 0), nwgs(0, 0, 0), swgs(0, 0, 0) {}
     DispatchInfo(Kernel *k, uint32_t d, Vec3<size_t> gws, Vec3<size_t> elws, Vec3<size_t> offset, Vec3<size_t> agws, Vec3<size_t> lws, Vec3<size_t> twgs, Vec3<size_t> nwgs, Vec3<size_t> swgs)
         : kernel(k), dim(d), gws(gws), elws(elws), offset(offset), agws(agws), lws(lws), twgs(twgs), nwgs(nwgs), swgs(swgs) {}
+    bool isPipeControlRequired() const { return pipeControlRequired; }
+    void setPipeControlRequired(bool blocking) { this->pipeControlRequired = blocking; }
     bool usesSlm() const;
     bool usesStatelessPrintfSurface() const;
     uint32_t getRequiredScratchSize() const;
@@ -63,8 +51,12 @@ class DispatchInfo {
     void setNumberOfWorkgroups(const Vec3<size_t> &nwgs) { this->nwgs = nwgs; }
     const Vec3<size_t> &getStartOfWorkgroups() const { return swgs; };
     void setStartOfWorkgroups(const Vec3<size_t> &swgs) { this->swgs = swgs; }
+    bool peekCanBePartitioned() const { return canBePartitioned; }
+    void setCanBePartitioned(bool canBePartitioned) { this->canBePartitioned = canBePartitioned; }
 
   protected:
+    bool pipeControlRequired = false;
+    bool canBePartitioned = false;
     Kernel *kernel = nullptr;
     uint32_t dim = 0;
 
@@ -79,18 +71,14 @@ class DispatchInfo {
 };
 
 struct MultiDispatchInfo {
-    MultiDispatchInfo(const DispatchInfo &dispatchInfo) {
-        dispatchInfos.push_back(dispatchInfo);
-    }
-
     ~MultiDispatchInfo() {
         for (MemObj *redescribedSurface : redescribedSurfaces) {
             redescribedSurface->release();
         }
     }
 
-    MultiDispatchInfo() {
-    }
+    MultiDispatchInfo(Kernel *mainKernel) : mainKernel(mainKernel) {}
+    MultiDispatchInfo() = default;
 
     MultiDispatchInfo &operator=(const MultiDispatchInfo &) = delete;
     MultiDispatchInfo(const MultiDispatchInfo &) = delete;
@@ -125,12 +113,36 @@ struct MultiDispatchInfo {
         return ret;
     }
 
+    DispatchInfo *begin() {
+        return dispatchInfos.begin();
+    }
+
     const DispatchInfo *begin() const {
         return dispatchInfos.begin();
     }
 
+    std::reverse_iterator<DispatchInfo *> rbegin() {
+        return dispatchInfos.rbegin();
+    }
+
+    std::reverse_iterator<const DispatchInfo *> crbegin() const {
+        return dispatchInfos.crbegin();
+    }
+
+    DispatchInfo *end() {
+        return dispatchInfos.end();
+    }
+
     const DispatchInfo *end() const {
         return dispatchInfos.end();
+    }
+
+    std::reverse_iterator<DispatchInfo *> rend() {
+        return dispatchInfos.rend();
+    }
+
+    std::reverse_iterator<const DispatchInfo *> crend() const {
+        return dispatchInfos.crend();
     }
 
     void push(const DispatchInfo &dispatchInfo) {
@@ -149,8 +161,12 @@ struct MultiDispatchInfo {
         redescribedSurfaces.push_back(memObj.release());
     }
 
+    Kernel *peekParentKernel() const;
+    Kernel *peekMainKernel() const;
+
   protected:
     StackVec<DispatchInfo, 9> dispatchInfos;
     StackVec<MemObj *, 2> redescribedSurfaces;
+    Kernel *mainKernel = nullptr;
 };
-} // namespace OCLRT
+} // namespace NEO

@@ -1,27 +1,14 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #pragma once
 #include "runtime/gmm_helper/resource_info.h"
+#include "runtime/helpers/surface_formats.h"
+
 #include "gmock/gmock.h"
 
 #if defined(__clang__)
@@ -29,7 +16,7 @@
 #pragma clang diagnostic ignored "-Winconsistent-missing-override"
 #endif
 
-namespace OCLRT {
+namespace NEO {
 struct SurfaceFormatInfo;
 
 class MockGmmResourceInfo : public GmmResourceInfo {
@@ -62,7 +49,13 @@ class MockGmmResourceInfo : public GmmResourceInfo {
 
     uint32_t getVAlign() override { return 4u; }
 
-    GMM_TILE_TYPE getTileType() override { return mockResourceCreateParams.Flags.Info.TiledY ? GMM_TILED_Y : GMM_NOT_TILED; }
+    uint32_t getMaxLod() override { return 7u; }
+
+    uint32_t getTileModeSurfaceState() override;
+
+    uint32_t getRenderAuxPitchTiles() override { return unifiedAuxPitch; };
+
+    uint32_t getAuxQPitch() override { return auxQPitch; }
 
     GMM_RESOURCE_FORMAT getResourceFormat() override { return mockResourceCreateParams.Format; }
 
@@ -78,11 +71,9 @@ class MockGmmResourceInfo : public GmmResourceInfo {
 
     void *getSystemMemPointer(uint8_t isD3DDdiAllocation) override { return (void *)mockResourceCreateParams.pExistingSysMem; }
 
-    MOCK_METHOD0(getRenderAuxPitchTiles, uint32_t(void));
-
-    MOCK_METHOD0(getAuxQPitch, uint32_t(void));
-
     MOCK_METHOD1(getUnifiedAuxSurfaceOffset, uint64_t(GMM_UNIFIED_AUX_TYPE auxType));
+
+    bool is64KBPageSuitable() const override { return is64KBPageSuitableValue; }
 
     GMM_RESOURCE_INFO *peekHandle() const override { return mockResourceInfoHandle; }
 
@@ -93,9 +84,15 @@ class MockGmmResourceInfo : public GmmResourceInfo {
     void overrideReturnedSize(size_t newSize) { size = newSize; }
 
     void setUnifiedAuxTranslationCapable();
+    void setMultisampleControlSurface();
+
+    void setUnifiedAuxPitchTiles(uint32_t value);
+    void setAuxQPitch(uint32_t value);
 
     uint32_t getOffsetCalled = 0u;
     uint32_t arrayIndexPassedToGetOffset = 0;
+    SurfaceFormatInfo tempSurface{};
+    bool is64KBPageSuitableValue = true;
 
   protected:
     MockGmmResourceInfo();
@@ -108,8 +105,10 @@ class MockGmmResourceInfo : public GmmResourceInfo {
     size_t size = 0;
     size_t rowPitch = 0;
     uint32_t qPitch = 0;
+    uint32_t unifiedAuxPitch = 0;
+    uint32_t auxQPitch = 0;
 };
-} // namespace OCLRT
+} // namespace NEO
 
 #if defined(__clang__)
 #pragma clang diagnostic pop

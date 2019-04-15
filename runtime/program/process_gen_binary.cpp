@@ -1,42 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "patch_list.h"
-#include "patch_shared.h"
-#include "program.h"
-#include "program_debug_data.h"
+#include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/hash.h"
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
-#include "runtime/kernel/kernel.h"
 #include "runtime/memory_manager/memory_manager.h"
+
+#include "patch_list.h"
+#include "patch_shared.h"
+#include "program.h"
+#include "program_debug_data.h"
 
 #include <algorithm>
 
 using namespace iOpenCL;
 
-namespace OCLRT {
+namespace NEO {
 extern bool familyEnabled[];
 
 const KernelInfo *Program::getKernelInfo(
@@ -79,7 +65,7 @@ size_t Program::processKernel(
     size_t sizeProcessed = 0;
 
     do {
-        auto pKernelInfo = KernelInfo::create();
+        auto pKernelInfo = new KernelInfo();
         if (!pKernelInfo) {
             retVal = CL_OUT_OF_HOST_MEMORY;
             break;
@@ -112,7 +98,6 @@ size_t Program::processKernel(
         retVal = parsePatchList(*pKernelInfo);
         if (retVal != CL_SUCCESS) {
             delete pKernelInfo;
-
             sizeProcessed = ptrDiff(pCurKernelPtr, pKernelBlob);
             break;
         }
@@ -503,7 +488,9 @@ cl_int Program::parsePatchList(KernelInfo &kernelInfo) {
                     "\n  .UnusedPerThreadConstantPresent", kernelInfo.patchInfo.threadPayload->UnusedPerThreadConstantPresent,
                     "\n  .GetLocalIDPresent", kernelInfo.patchInfo.threadPayload->GetLocalIDPresent,
                     "\n  .GetGroupIDPresent", kernelInfo.patchInfo.threadPayload->GetGroupIDPresent,
-                    "\n  .GetGlobalOffsetPresent", kernelInfo.patchInfo.threadPayload->GetGlobalOffsetPresent);
+                    "\n  .GetGlobalOffsetPresent", kernelInfo.patchInfo.threadPayload->GetGlobalOffsetPresent,
+                    "\n  .OffsetToSkipPerThreadDataLoad", kernelInfo.patchInfo.threadPayload->OffsetToSkipPerThreadDataLoad,
+                    "\n  .PassInlineData", kernelInfo.patchInfo.threadPayload->PassInlineData);
             break;
 
         case PATCH_TOKEN_EXECUTION_ENVIRONMENT:
@@ -516,6 +503,15 @@ cl_int Program::parsePatchList(KernelInfo &kernelInfo) {
                 DEBUG_BREAK_IF(!(kernelInfo.patchInfo.executionEnvironment->RequiredWorkGroupSizeY > 0));
                 DEBUG_BREAK_IF(!(kernelInfo.patchInfo.executionEnvironment->RequiredWorkGroupSizeZ > 0));
             }
+            kernelInfo.workgroupWalkOrder[0] = 0;
+            kernelInfo.workgroupWalkOrder[1] = 1;
+            kernelInfo.workgroupWalkOrder[2] = 2;
+
+            for (uint32_t i = 0; i < 3; ++i) {
+                // inverts the walk order mapping (from ORDER_ID->DIM_ID to DIM_ID->ORDER_ID)
+                kernelInfo.workgroupDimensionsOrder[kernelInfo.workgroupWalkOrder[i]] = i;
+            }
+
             if (kernelInfo.patchInfo.executionEnvironment->CompiledForGreaterThan4GBBuffers == false) {
                 kernelInfo.requiresSshForBuffers = true;
             }
@@ -537,7 +533,11 @@ cl_int Program::parsePatchList(KernelInfo &kernelInfo) {
                     "\n  .UsesFencesForReadWriteImages", kernelInfo.patchInfo.executionEnvironment->UsesFencesForReadWriteImages,
                     "\n  .UsesStatelessSpillFill", kernelInfo.patchInfo.executionEnvironment->UsesStatelessSpillFill,
                     "\n  .IsCoherent", kernelInfo.patchInfo.executionEnvironment->IsCoherent,
-                    "\n  .SubgroupIndependentForwardProgressRequired", kernelInfo.patchInfo.executionEnvironment->SubgroupIndependentForwardProgressRequired);
+                    "\n  .SubgroupIndependentForwardProgressRequired", kernelInfo.patchInfo.executionEnvironment->SubgroupIndependentForwardProgressRequired,
+                    "\n  .WorkgroupWalkOrderDim0", kernelInfo.workgroupWalkOrder[0],
+                    "\n  .WorkgroupWalkOrderDim1", kernelInfo.workgroupWalkOrder[1],
+                    "\n  .WorkgroupWalkOrderDim2", kernelInfo.workgroupWalkOrder[2],
+                    "\n  .NumGRFRequired", kernelInfo.patchInfo.executionEnvironment->NumGRFRequired);
             break;
 
         case PATCH_TOKEN_DATA_PARAMETER_STREAM:
@@ -778,7 +778,14 @@ cl_int Program::parsePatchList(KernelInfo &kernelInfo) {
                     "\n  .Offset", pPatchToken->Offset,
                     "\n  .PerThreadSystemThreadSurfaceSize", pPatchToken->PerThreadSystemThreadSurfaceSize);
         } break;
-
+        case PATCH_TOKEN_GTPIN_INFO: {
+            auto igcInfo = ptrOffset(pCurPatchListPtr, sizeof(SPatchItemHeader));
+            kernelInfo.igcInfoForGtpin = static_cast<const gtpin::igc_info_t *>(igcInfo);
+            DBG_LOG(LogPatchTokens,
+                    "\n.PATCH_TOKEN_GTPIN_INFO", pPatch->Token,
+                    "\n  .Size", pPatch->Size);
+            break;
+        }
         default:
             printDebugString(DebugManager.flags.PrintDebugMessages.get(), stderr, " Program::parsePatchList. Unknown Patch Token: %d\n", pPatch->Token);
             if (false == isSafeToSkipUnhandledToken(pPatch->Token)) {
@@ -849,7 +856,7 @@ cl_int Program::parseProgramScopePatchList() {
 
             surfaceSize = patch.InlineDataSize;
             headerSize = sizeof(SPatchAllocateConstantMemorySurfaceProgramBinaryInfo);
-            constantSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryInPreferredPool(true, true, false, false, nullptr, surfaceSize, GraphicsAllocation::AllocationType::CONSTANT_SURFACE);
+            constantSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties({surfaceSize, GraphicsAllocation::AllocationType::CONSTANT_SURFACE});
 
             memcpy_s(constantSurface->getUnderlyingBuffer(), surfaceSize, (cl_char *)pPatch + headerSize, surfaceSize);
             pCurPatchListPtr = ptrOffset(pCurPatchListPtr, surfaceSize);
@@ -871,7 +878,7 @@ cl_int Program::parseProgramScopePatchList() {
             surfaceSize = patch.InlineDataSize;
             globalVarTotalSize += (size_t)surfaceSize;
             headerSize = sizeof(SPatchAllocateGlobalMemorySurfaceProgramBinaryInfo);
-            globalSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryInPreferredPool(true, true, false, false, nullptr, surfaceSize, GraphicsAllocation::AllocationType::GLOBAL_SURFACE);
+            globalSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties({surfaceSize, GraphicsAllocation::AllocationType::GLOBAL_SURFACE});
 
             memcpy_s(globalSurface->getUnderlyingBuffer(), surfaceSize, (cl_char *)pPatch + headerSize, surfaceSize);
             pCurPatchListPtr = ptrOffset(pCurPatchListPtr, surfaceSize);
@@ -889,7 +896,7 @@ cl_int Program::parseProgramScopePatchList() {
                 auto patch = *(SPatchGlobalPointerProgramBinaryInfo *)pPatch;
                 if ((patch.GlobalBufferIndex == 0) && (patch.BufferIndex == 0) && (patch.BufferType == PROGRAM_SCOPE_GLOBAL_BUFFER)) {
                     void *pPtr = (void *)((uintptr_t)globalSurface->getUnderlyingBuffer() + (uintptr_t)patch.GlobalPointerOffset);
-                    if (globalSurface->is32BitAllocation) {
+                    if (globalSurface->is32BitAllocation()) {
                         *reinterpret_cast<uint32_t *>(pPtr) += static_cast<uint32_t>(globalSurface->getGpuAddressToPatch());
                     } else {
                         *reinterpret_cast<uintptr_t *>(pPtr) += reinterpret_cast<uintptr_t>(globalSurface->getUnderlyingBuffer());
@@ -912,7 +919,7 @@ cl_int Program::parseProgramScopePatchList() {
                 auto patch = *(SPatchConstantPointerProgramBinaryInfo *)pPatch;
                 if ((patch.ConstantBufferIndex == 0) && (patch.BufferIndex == 0) && (patch.BufferType == PROGRAM_SCOPE_CONSTANT_BUFFER)) {
                     void *pPtr = (uintptr_t *)((uintptr_t)constantSurface->getUnderlyingBuffer() + (uintptr_t)patch.ConstantPointerOffset);
-                    if (constantSurface->is32BitAllocation) {
+                    if (constantSurface->is32BitAllocation()) {
                         *reinterpret_cast<uint32_t *>(pPtr) += static_cast<uint32_t>(constantSurface->getGpuAddressToPatch());
                     } else {
                         *reinterpret_cast<uintptr_t *>(pPtr) += reinterpret_cast<uintptr_t>(constantSurface->getUnderlyingBuffer());
@@ -1030,4 +1037,4 @@ void Program::processDebugData() {
     }
 }
 
-} // namespace OCLRT
+} // namespace NEO

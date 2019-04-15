@@ -1,28 +1,15 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#include "public/cl_ext_private.h"
+#include "runtime/api/dispatch.h"
 
 #include "CL/cl.h"
 #include "CL/cl_gl.h"
-#include "runtime/api/dispatch.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -131,6 +118,13 @@ cl_int CL_API_CALL clSetCommandQueueProperty(
 cl_mem CL_API_CALL clCreateBuffer(
     cl_context context,
     cl_mem_flags flags,
+    size_t size,
+    void *hostPtr,
+    cl_int *errcodeRet);
+
+cl_mem CL_API_CALL clCreateBufferWithPropertiesINTEL(
+    cl_context context,
+    const cl_mem_properties_intel *properties,
     size_t size,
     void *hostPtr,
     cl_int *errcodeRet);
@@ -846,6 +840,15 @@ cl_sampler CL_API_CALL clCreateSamplerWithProperties(
     cl_context context,
     const cl_sampler_properties *samplerProperties,
     cl_int *errcodeRet);
+
+cl_int CL_API_CALL clEnqueueVerifyMemoryINTEL(
+    cl_command_queue commandQueue,
+    const void *allocationPtr,
+    const void *expectedData,
+    size_t sizeOfComparison,
+    cl_uint comparisonMode);
+
+cl_int CL_API_CALL clAddCommentINTEL(cl_platform_id platform, const char *comment);
 
 // OpenCL 2.1
 

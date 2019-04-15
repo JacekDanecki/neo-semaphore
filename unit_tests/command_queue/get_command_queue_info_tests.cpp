@@ -1,31 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct GetCommandQueueInfoTest : public DeviceFixture,
                                  public ContextFixture,
@@ -116,6 +102,18 @@ TEST_P(GetCommandQueueInfoTest, QUEUE_DEVICE_DEFAULT) {
 
     // host queue can't be default device queue
     EXPECT_NE(pCmdQ, commandQueueReturned);
+}
+
+TEST_P(GetCommandQueueInfoTest, GivenInvalidParameterWhenGettingCommandQueueInfoThenInvalidValueIsReturned) {
+    cl_uint parameterReturned = 0;
+    cl_command_queue_info invalidParameter = 0xdeadbeef;
+
+    auto retVal = pCmdQ->getCommandQueueInfo(
+        invalidParameter,
+        sizeof(parameterReturned),
+        &parameterReturned,
+        nullptr);
+    EXPECT_EQ(CL_INVALID_VALUE, retVal);
 }
 
 INSTANTIATE_TEST_CASE_P(

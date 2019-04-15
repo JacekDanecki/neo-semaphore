@@ -1,34 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "runtime/device_queue/device_queue_hw.h"
 #include "runtime/command_queue/gpgpu_walker.h"
+#include "runtime/device_queue/device_queue_hw.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/preamble.h"
 #include "runtime/helpers/string.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "runtime/utilities/tag_allocator.h"
 
-namespace OCLRT {
+namespace NEO {
 template <typename GfxFamily>
 void DeviceQueueHw<GfxFamily>::allocateSlbBuffer() {
     auto slbSize = getMinimumSlbSize() + getWaCommandsSize();
@@ -39,7 +26,7 @@ void DeviceQueueHw<GfxFamily>::allocateSlbBuffer() {
     slbSize += (4 * MemoryConstants::pageSize); // +4 pages spec restriction
     slbSize = alignUp(slbSize, MemoryConstants::pageSize);
 
-    slbBuffer = device->getMemoryManager()->allocateGraphicsMemory(slbSize);
+    slbBuffer = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({slbSize, GraphicsAllocation::AllocationType::UNDECIDED});
 }
 
 template <typename GfxFamily>
@@ -118,7 +105,7 @@ size_t DeviceQueueHw<GfxFamily>::getMinimumSlbSize() {
 
 template <typename GfxFamily>
 void DeviceQueueHw<GfxFamily>::initPipeControl(PIPE_CONTROL *pc) {
-    *pc = PIPE_CONTROL::sInit();
+    *pc = GfxFamily::cmdInitPipeControl;
     pc->setStateCacheInvalidationEnable(0x1);
     pc->setDcFlushEnable(true);
     pc->setPipeControlFlushEnable(true);
@@ -150,14 +137,14 @@ void DeviceQueueHw<GfxFamily>::buildSlbDummyCommands() {
 
     for (size_t i = 0; i < numEnqueues; i++) {
         auto mediaStateFlush = slbCS.getSpaceForCmd<MEDIA_STATE_FLUSH>();
-        *mediaStateFlush = MEDIA_STATE_FLUSH::sInit();
+        *mediaStateFlush = GfxFamily::cmdInitMediaStateFlush;
 
         addArbCheckCmdWa();
 
         addMiAtomicCmdWa((uint64_t)&igilCmdQueue->m_controls.m_DummyAtomicOperationPlaceholder);
 
         auto mediaIdLoad = slbCS.getSpaceForCmd<MEDIA_INTERFACE_DESCRIPTOR_LOAD>();
-        *mediaIdLoad = MEDIA_INTERFACE_DESCRIPTOR_LOAD::sInit();
+        *mediaIdLoad = GfxFamily::cmdInitMediaInterfaceDescriptorLoad;
         mediaIdLoad->setInterfaceDescriptorTotalLength(2048);
 
         auto dataStartAddress = colorCalcStateSize;
@@ -178,7 +165,7 @@ void DeviceQueueHw<GfxFamily>::buildSlbDummyCommands() {
         }
 
         auto gpgpuWalker = slbCS.getSpaceForCmd<GPGPU_WALKER>();
-        *gpgpuWalker = GPGPU_WALKER::sInit();
+        *gpgpuWalker = GfxFamily::cmdInitGpgpuWalker;
         gpgpuWalker->setSimdSize(GPGPU_WALKER::SIMD_SIZE::SIMD_SIZE_SIMD16);
         gpgpuWalker->setThreadGroupIdXDimension(1);
         gpgpuWalker->setThreadGroupIdYDimension(1);
@@ -187,7 +174,7 @@ void DeviceQueueHw<GfxFamily>::buildSlbDummyCommands() {
         gpgpuWalker->setBottomExecutionMask(0xFFFFFFFF);
 
         mediaStateFlush = slbCS.getSpaceForCmd<MEDIA_STATE_FLUSH>();
-        *mediaStateFlush = MEDIA_STATE_FLUSH::sInit();
+        *mediaStateFlush = GfxFamily::cmdInitMediaStateFlush;
 
         addArbCheckCmdWa();
 
@@ -207,7 +194,7 @@ void DeviceQueueHw<GfxFamily>::buildSlbDummyCommands() {
     slbCS.getSpace(bbStartOffset);
 
     auto bbStart = slbCS.getSpaceForCmd<MI_BATCH_BUFFER_START>();
-    *bbStart = MI_BATCH_BUFFER_START::sInit();
+    *bbStart = GfxFamily::cmdInitBatchBufferStart;
     auto slbPtr = reinterpret_cast<uintptr_t>(slbBuffer->getUnderlyingBuffer());
     bbStart->setBatchBufferStartAddressGraphicsaddress472(slbPtr);
 
@@ -216,7 +203,7 @@ void DeviceQueueHw<GfxFamily>::buildSlbDummyCommands() {
 }
 
 template <typename GfxFamily>
-void DeviceQueueHw<GfxFamily>::addExecutionModelCleanUpSection(Kernel *parentKernel, HwTimeStamps *hwTimeStamp, uint32_t taskCount) {
+void DeviceQueueHw<GfxFamily>::addExecutionModelCleanUpSection(Kernel *parentKernel, TagNode<HwTimeStamps> *hwTimeStamp, uint32_t taskCount) {
     // CleanUp Section
     auto offset = slbCS.getUsed();
     auto alignmentSize = alignUp(offset, MemoryConstants::pageSize) - offset;
@@ -230,7 +217,8 @@ void DeviceQueueHw<GfxFamily>::addExecutionModelCleanUpSection(Kernel *parentKer
     using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
 
     if (hwTimeStamp != nullptr) {
-        uint64_t TimeStampAddress = (uint64_t)((uintptr_t) & (hwTimeStamp->ContextCompleteTS));
+        uint64_t TimeStampAddress = hwTimeStamp->getBaseGraphicsAllocation()->getGpuAddress() +
+                                    ptrDiff(&hwTimeStamp->tagForCpuAccess->ContextCompleteTS, hwTimeStamp->getBaseGraphicsAllocation()->getUnderlyingBuffer());
         igilQueue->m_controls.m_EventTimestampAddress = TimeStampAddress;
 
         addProfilingEndCmds(TimeStampAddress);
@@ -243,30 +231,18 @@ void DeviceQueueHw<GfxFamily>::addExecutionModelCleanUpSection(Kernel *parentKer
 
     addPipeControlCmdWa();
 
-    auto pipeControl = slbCS.getSpaceForCmd<PIPE_CONTROL>();
-    *pipeControl = PIPE_CONTROL::sInit();
-    pipeControl->setCommandStreamerStallEnable(true);
-    pipeControl->setPostSyncOperation(PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA);
-    pipeControl->setAddressHigh(criticalSectionAddress >> 32);
-    pipeControl->setAddress(criticalSectionAddress & (0xffffffff));
-    pipeControl->setImmediateData(ExecutionModelCriticalSection::Free);
+    PipeControlHelper<GfxFamily>::obtainPipeControlAndProgramPostSyncOperation(&slbCS, PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, criticalSectionAddress, ExecutionModelCriticalSection::Free, false);
 
-    uint64_t tagAddress = (uint64_t)device->getTagAddress();
+    uint64_t tagAddress = reinterpret_cast<uint64_t>(device->getDefaultEngine().commandStreamReceiver->getTagAddress());
 
     addPipeControlCmdWa();
 
-    auto pipeControl2 = slbCS.getSpaceForCmd<PIPE_CONTROL>();
-    *pipeControl2 = PIPE_CONTROL::sInit();
-    pipeControl2->setCommandStreamerStallEnable(true);
-    pipeControl2->setPostSyncOperation(PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA);
-    pipeControl2->setAddressHigh(tagAddress >> 32);
-    pipeControl2->setAddress(tagAddress & (0xffffffff));
-    pipeControl2->setImmediateData(taskCount);
+    PipeControlHelper<GfxFamily>::obtainPipeControlAndProgramPostSyncOperation(&slbCS, PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, tagAddress, taskCount, false);
 
     addMediaStateClearCmds();
 
     auto pBBE = slbCS.getSpaceForCmd<MI_BATCH_BUFFER_END>();
-    *pBBE = MI_BATCH_BUFFER_END::sInit();
+    *pBBE = GfxFamily::cmdInitBatchBufferEnd;
 
     igilQueue->m_controls.m_CleanupSectionSize = (uint32_t)(slbCS.getUsed() - offset);
 }
@@ -392,8 +368,8 @@ size_t DeviceQueueHw<GfxFamily>::setSchedulerCrossThreadData(SchedulerKernel &sc
 }
 
 template <typename GfxFamily>
-void DeviceQueueHw<GfxFamily>::dispatchScheduler(CommandQueue &cmdQ, SchedulerKernel &scheduler, PreemptionMode preemptionMode, IndirectHeap *ssh, IndirectHeap *dsh) {
-    GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(cmdQ,
+void DeviceQueueHw<GfxFamily>::dispatchScheduler(LinearStream &commandStream, SchedulerKernel &scheduler, PreemptionMode preemptionMode, IndirectHeap *ssh, IndirectHeap *dsh) {
+    GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(commandStream,
                                                     *this,
                                                     preemptionMode,
                                                     scheduler,
@@ -411,7 +387,7 @@ template <typename GfxFamily>
 void DeviceQueueHw<GfxFamily>::addLriCmd(bool setArbCheck) {
     using MI_LOAD_REGISTER_IMM = typename GfxFamily::MI_LOAD_REGISTER_IMM;
     auto lri = slbCS.getSpaceForCmd<MI_LOAD_REGISTER_IMM>();
-    *lri = MI_LOAD_REGISTER_IMM::sInit();
+    *lri = GfxFamily::cmdInitLoadRegisterImm;
     lri->setRegisterOffset(0x2248); // CTXT_PREMP_DBG offset
     if (setArbCheck)
         lri->setDataDword(0x00000100); // set only bit 8 (Preempt On MI_ARB_CHK Only)
@@ -426,7 +402,7 @@ void DeviceQueueHw<GfxFamily>::addMediaStateClearCmds() {
     addPipeControlCmdWa();
 
     auto pipeControl = slbCS.getSpaceForCmd<PIPE_CONTROL>();
-    *pipeControl = PIPE_CONTROL::sInit();
+    *pipeControl = GfxFamily::cmdInitPipeControl;
     pipeControl->setGenericMediaStateClear(true);
     pipeControl->setCommandStreamerStallEnable(true);
 
@@ -476,4 +452,4 @@ size_t DeviceQueueHw<GfxFamily>::getProfilingEndCmdsSize() {
 template <typename GfxFamily>
 void DeviceQueueHw<GfxFamily>::addDcFlushToPipeControlWa(PIPE_CONTROL *pc) {}
 
-} // namespace OCLRT
+} // namespace NEO

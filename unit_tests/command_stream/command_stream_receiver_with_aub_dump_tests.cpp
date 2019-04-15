@@ -1,59 +1,61 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "runtime/command_stream/command_stream_receiver_with_aub_dump.h"
 #include "runtime/command_stream/command_stream_receiver_with_aub_dump.inl"
+#include "runtime/command_stream/preemption.h"
+#include "runtime/command_stream/tbx_command_stream_receiver_hw.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/dispatch_info.h"
-
+#include "runtime/helpers/hw_helper.h"
+#include "runtime/os_interface/os_context.h"
+#include "runtime/platform/platform.h"
 #include "test.h"
+#include "unit_tests/fixtures/mock_aub_center_fixture.h"
+#include "unit_tests/libult/ult_command_stream_receiver.h"
+#include "unit_tests/mocks/mock_allocation_properties.h"
+#include "unit_tests/mocks/mock_aub_center.h"
+#include "unit_tests/mocks/mock_aub_manager.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/mocks/mock_os_context.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct MyMockCsr : UltCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> {
-    MyMockCsr(const HardwareInfo &hwInfoIn, void *ptr) : UltCommandStreamReceiver(hwInfoIn) {
+    MyMockCsr(ExecutionEnvironment &executionEnvironment)
+        : UltCommandStreamReceiver(executionEnvironment) {
     }
 
-    FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineOrdinal, ResidencyContainer *allocationsForResidency) override {
+    FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
         flushParametrization.wasCalled = true;
         flushParametrization.receivedBatchBuffer = &batchBuffer;
-        flushParametrization.receivedEngine = engineOrdinal;
-        flushParametrization.receivedAllocationsForResidency = allocationsForResidency;
+        flushParametrization.receivedEngine = osContext->getEngineType();
+        flushParametrization.receivedAllocationsForResidency = &allocationsForResidency;
+        processResidency(allocationsForResidency);
         return flushParametrization.flushStampToReturn;
     }
 
     void makeResident(GraphicsAllocation &gfxAllocation) override {
         makeResidentParameterization.wasCalled = true;
         makeResidentParameterization.receivedGfxAllocation = &gfxAllocation;
+        gfxAllocation.updateResidencyTaskCount(1, osContext->getContextId());
     }
 
-    void processResidency(ResidencyContainer *allocationsForResidency) override {
+    void processResidency(ResidencyContainer &allocationsForResidency) override {
         processResidencyParameterization.wasCalled = true;
-        processResidencyParameterization.receivedAllocationsForResidency = allocationsForResidency;
+        processResidencyParameterization.receivedAllocationsForResidency = &allocationsForResidency;
     }
 
     void makeNonResident(GraphicsAllocation &gfxAllocation) override {
-        makeNonResidentParameterization.wasCalled = true;
-        makeNonResidentParameterization.receivedGfxAllocation = &gfxAllocation;
+        if (gfxAllocation.isResident(this->osContext->getContextId())) {
+            makeNonResidentParameterization.wasCalled = true;
+            makeNonResidentParameterization.receivedGfxAllocation = &gfxAllocation;
+            gfxAllocation.releaseResidencyInOsContext(this->osContext->getContextId());
+        }
     }
 
     void activateAubSubCapture(const MultiDispatchInfo &dispatchInfo) override {
@@ -65,7 +67,7 @@ struct MyMockCsr : UltCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> {
         bool wasCalled = false;
         FlushStamp flushStampToReturn = 1;
         BatchBuffer *receivedBatchBuffer = nullptr;
-        EngineType receivedEngine = EngineType::ENGINE_RCS;
+        aub_stream::EngineType receivedEngine = aub_stream::ENGINE_RCS;
         ResidencyContainer *receivedAllocationsForResidency = nullptr;
     } flushParametrization;
 
@@ -92,41 +94,97 @@ struct MyMockCsr : UltCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> {
 
 template <typename BaseCSR>
 struct MyMockCsrWithAubDump : CommandStreamReceiverWithAUBDump<BaseCSR> {
-    MyMockCsrWithAubDump<BaseCSR>(const HardwareInfo &hwInfoIn, bool createAubCSR) : CommandStreamReceiverWithAUBDump<BaseCSR>(hwInfoIn) {
-        if (this->aubCSR != nullptr) {
-            delete this->aubCSR;
-            this->aubCSR = nullptr;
-        }
-        if (createAubCSR) {
-            // overwrite with mock
-            this->aubCSR = new MyMockCsr(hwInfoIn, nullptr);
-        }
+    MyMockCsrWithAubDump<BaseCSR>(bool createAubCSR, ExecutionEnvironment &executionEnvironment) : CommandStreamReceiverWithAUBDump<BaseCSR>("aubfile", executionEnvironment) {
+        this->aubCSR.reset(createAubCSR ? new MyMockCsr(executionEnvironment) : nullptr);
     }
 
-    MyMockCsr &getAubMockCsr() {
+    MyMockCsr &getAubMockCsr() const {
         return static_cast<MyMockCsr &>(*this->aubCSR);
     }
 };
 
-struct CommandStreamReceiverWithAubDumpTest : public ::testing::TestWithParam<bool /*createAubCSR*/> {
+struct CommandStreamReceiverWithAubDumpTest : public ::testing::TestWithParam<bool /*createAubCSR*/>, MockAubCenterFixture {
     void SetUp() override {
+        MockAubCenterFixture::SetUp();
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
         createAubCSR = GetParam();
-        csrWithAubDump = new MyMockCsrWithAubDump<MyMockCsr>(DEFAULT_TEST_PLATFORM::hwInfo, createAubCSR);
+        csrWithAubDump = new MyMockCsrWithAubDump<MyMockCsr>(createAubCSR, *executionEnvironment);
         ASSERT_NE(nullptr, csrWithAubDump);
-
-        memoryManager = csrWithAubDump->createMemoryManager(false);
+        executionEnvironment->initializeMemoryManager();
+        memoryManager = executionEnvironment->memoryManager.get();
         ASSERT_NE(nullptr, memoryManager);
+
+        auto osContext = executionEnvironment->memoryManager->createAndRegisterOsContext(csrWithAubDump,
+                                                                                         getChosenEngineType(DEFAULT_TEST_PLATFORM::hwInfo), 1,
+                                                                                         PreemptionHelper::getDefaultPreemptionMode(DEFAULT_TEST_PLATFORM::hwInfo), false);
+        csrWithAubDump->setupContext(*osContext);
     }
 
     void TearDown() override {
+        MockAubCenterFixture::TearDown();
         delete csrWithAubDump;
-        delete memoryManager;
     }
-
+    ExecutionEnvironment *executionEnvironment;
     MyMockCsrWithAubDump<MyMockCsr> *csrWithAubDump;
     MemoryManager *memoryManager;
     bool createAubCSR;
 };
+
+using CommandStreamReceiverWithAubDumpSimpleTest = Test<MockAubCenterFixture>;
+
+HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenCsrWithAubDumpWhenSettingOsContextThenReplicateItToAubCsr) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+
+    CommandStreamReceiverWithAUBDump<UltCommandStreamReceiver<FamilyType>> csrWithAubDump("aubfile", *executionEnvironment);
+    MockOsContext osContext(0, 1, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0],
+                            PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
+
+    csrWithAubDump.setupContext(osContext);
+    EXPECT_EQ(&osContext, &csrWithAubDump.getOsContext());
+    EXPECT_EQ(&osContext, &csrWithAubDump.aubCSR->getOsContext());
+}
+
+HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubManagerAvailableWhenTbxCsrWithAubDumpIsCreatedThenAubCsrIsNotCreated) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    std::string fileName = "file_name.aub";
+    MockAubManager *mockManager = new MockAubManager();
+    MockAubCenter *mockAubCenter = new MockAubCenter(*platformDevices, false, fileName, CommandStreamReceiverType::CSR_TBX_WITH_AUB);
+    mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(mockManager);
+    executionEnvironment->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
+
+    CommandStreamReceiverWithAUBDump<TbxCommandStreamReceiverHw<FamilyType>> csrWithAubDump("aubfile", *executionEnvironment);
+    ASSERT_EQ(nullptr, csrWithAubDump.aubCSR);
+}
+
+HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubManagerAvailableWhenHwCsrWithAubDumpIsCreatedThenAubCsrIsCreated) {
+    std::string fileName = "file_name.aub";
+    MockAubManager *mockManager = new MockAubManager();
+    MockAubCenter *mockAubCenter = new MockAubCenter(*platformDevices, false, fileName, CommandStreamReceiverType::CSR_HW_WITH_AUB);
+    mockAubCenter->aubManager = std::unique_ptr<MockAubManager>(mockManager);
+
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    executionEnvironment->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
+
+    CommandStreamReceiverWithAUBDump<UltCommandStreamReceiver<FamilyType>> csrWithAubDump("aubfile", *executionEnvironment);
+    ASSERT_NE(nullptr, csrWithAubDump.aubCSR);
+}
+
+HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenNullAubManagerAvailableWhenTbxCsrWithAubDumpIsCreatedThenAubCsrIsCreated) {
+    MockAubCenter *mockAubCenter = new MockAubCenter();
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    executionEnvironment->aubCenter = std::unique_ptr<MockAubCenter>(mockAubCenter);
+
+    CommandStreamReceiverWithAUBDump<TbxCommandStreamReceiverHw<FamilyType>> csrWithAubDump("aubfile", *executionEnvironment);
+    EXPECT_NE(nullptr, csrWithAubDump.aubCSR);
+}
+
+HWTEST_F(CommandStreamReceiverWithAubDumpSimpleTest, givenAubManagerNotAvailableWhenHwCsrWithAubDumpIsCreatedThenAubCsrIsCreated) {
+    std::string fileName = "file_name.aub";
+
+    MockExecutionEnvironment executionEnvironment(platformDevices[0]);
+    CommandStreamReceiverWithAUBDump<UltCommandStreamReceiver<FamilyType>> csrWithAubDump("aubfile", executionEnvironment);
+    ASSERT_NE(nullptr, csrWithAubDump.aubCSR);
+}
 
 HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenCtorIsCalledThenAubCsrIsInitialized) {
     if (createAubCSR) {
@@ -137,15 +195,15 @@ HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAub
 }
 
 HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenFlushIsCalledThenBaseCsrFlushStampIsReturned) {
-    GraphicsAllocation *commandBuffer = memoryManager->allocateGraphicsMemory(4096);
+    GraphicsAllocation *commandBuffer = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, commandBuffer);
     LinearStream cs(commandBuffer);
 
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    auto engineType = OCLRT::ENGINE_RCS;
+    auto engineType = csrWithAubDump->getOsContext().getEngineType();
 
     ResidencyContainer allocationsForResidency;
-    FlushStamp flushStamp = csrWithAubDump->flush(batchBuffer, engineType, &allocationsForResidency);
+    FlushStamp flushStamp = csrWithAubDump->flush(batchBuffer, allocationsForResidency);
     EXPECT_EQ(flushStamp, csrWithAubDump->flushParametrization.flushStampToReturn);
 
     EXPECT_TRUE(csrWithAubDump->flushParametrization.wasCalled);
@@ -164,7 +222,7 @@ HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAub
 }
 
 HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenMakeResidentIsCalledThenBaseCsrMakeResidentIsCalled) {
-    auto gfxAllocation = memoryManager->allocateGraphicsMemory(sizeof(uint32_t), sizeof(uint32_t), false, false);
+    auto gfxAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, gfxAllocation);
 
     csrWithAubDump->makeResident(*gfxAllocation);
@@ -180,12 +238,18 @@ HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAub
     memoryManager->freeGraphicsMemoryImpl(gfxAllocation);
 }
 
-HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenProcessResidencyIsCalledThenBothBaseAndAubCsrProcessResidencyIsCalled) {
-    auto gfxAllocation = memoryManager->allocateGraphicsMemory(sizeof(uint32_t), sizeof(uint32_t), false, false);
-    ASSERT_NE(nullptr, gfxAllocation);
+HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenFlushIsCalledThenBothBaseAndAubCsrProcessResidencyIsCalled) {
+    GraphicsAllocation *commandBuffer = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    ASSERT_NE(nullptr, commandBuffer);
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
 
+    auto gfxAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    ASSERT_NE(nullptr, gfxAllocation);
     ResidencyContainer allocationsForResidency = {gfxAllocation};
-    csrWithAubDump->processResidency(&allocationsForResidency);
+
+    FlushStamp flushStamp = csrWithAubDump->flush(batchBuffer, allocationsForResidency);
+    EXPECT_EQ(flushStamp, csrWithAubDump->flushParametrization.flushStampToReturn);
 
     EXPECT_TRUE(csrWithAubDump->processResidencyParameterization.wasCalled);
     EXPECT_EQ(&allocationsForResidency, csrWithAubDump->processResidencyParameterization.receivedAllocationsForResidency);
@@ -196,20 +260,47 @@ HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAub
     }
 
     memoryManager->freeGraphicsMemoryImpl(gfxAllocation);
+    memoryManager->freeGraphicsMemoryImpl(commandBuffer);
 }
 
-HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenMakeNonResidentIsCalledThenBaseCsrMakeNonResidentIsCalled) {
-    auto gfxAllocation = memoryManager->allocateGraphicsMemory(sizeof(uint32_t), sizeof(uint32_t), false, false);
+HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenFlushIsCalledThenLatestSentTaskCountShouldBeUpdatedForAubCsr) {
+    GraphicsAllocation *commandBuffer = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    ASSERT_NE(nullptr, commandBuffer);
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+
+    ResidencyContainer allocationsForResidency;
+
+    EXPECT_EQ(0u, csrWithAubDump->peekLatestSentTaskCount());
+    if (createAubCSR) {
+        EXPECT_EQ(0u, csrWithAubDump->getAubMockCsr().peekLatestSentTaskCount());
+    }
+
+    csrWithAubDump->setLatestSentTaskCount(1u);
+    csrWithAubDump->flush(batchBuffer, allocationsForResidency);
+
+    EXPECT_EQ(1u, csrWithAubDump->peekLatestSentTaskCount());
+    if (createAubCSR) {
+        EXPECT_EQ(csrWithAubDump->peekLatestSentTaskCount(), csrWithAubDump->getAubMockCsr().peekLatestSentTaskCount());
+    }
+
+    memoryManager->freeGraphicsMemoryImpl(commandBuffer);
+}
+
+HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenMakeNonResidentIsCalledThenBothBaseAndAubCsrMakeNonResidentIsCalled) {
+    auto gfxAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, gfxAllocation);
+    csrWithAubDump->makeResident(*gfxAllocation);
 
     csrWithAubDump->makeNonResident(*gfxAllocation);
 
     EXPECT_TRUE(csrWithAubDump->makeNonResidentParameterization.wasCalled);
     EXPECT_EQ(gfxAllocation, csrWithAubDump->makeNonResidentParameterization.receivedGfxAllocation);
+    EXPECT_FALSE(gfxAllocation->isResident(csrWithAubDump->getOsContext().getContextId()));
 
     if (createAubCSR) {
-        EXPECT_FALSE(csrWithAubDump->getAubMockCsr().makeNonResidentParameterization.wasCalled);
-        EXPECT_EQ(nullptr, csrWithAubDump->getAubMockCsr().makeNonResidentParameterization.receivedGfxAllocation);
+        EXPECT_TRUE(csrWithAubDump->getAubMockCsr().makeNonResidentParameterization.wasCalled);
+        EXPECT_EQ(gfxAllocation, csrWithAubDump->getAubMockCsr().makeNonResidentParameterization.receivedGfxAllocation);
     }
 
     memoryManager->freeGraphicsMemoryImpl(gfxAllocation);
@@ -217,8 +308,8 @@ HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAub
 
 HWTEST_P(CommandStreamReceiverWithAubDumpTest, givenCommandStreamReceiverWithAubDumpWhenActivateAubSubCaptureIsCalledThenBaseCsrCommandStreamReceiverIsCalled) {
     const DispatchInfo dispatchInfo;
-    const MultiDispatchInfo multiDispatchInfo(dispatchInfo);
-
+    MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.push(dispatchInfo);
     csrWithAubDump->activateAubSubCapture(multiDispatchInfo);
 
     EXPECT_TRUE(csrWithAubDump->activateAubSubCaptureParameterization.wasCalled);

@@ -1,43 +1,27 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/compiler_interface/compiler_interface.h"
+#include "test.h"
+#include <runtime/compiler_interface/binary_cache.h>
+#include <runtime/helpers/aligned_memory.h>
 #include <runtime/helpers/hash.h>
 #include <runtime/helpers/hw_info.h>
-#include <runtime/compiler_interface/binary_cache.h>
-#include "runtime/compiler_interface/compiler_interface.h"
 #include <runtime/helpers/string.h>
-#include <runtime/helpers/aligned_memory.h>
-#include <unit_tests/global_environment.h>
 #include <unit_tests/fixtures/device_fixture.h>
+#include <unit_tests/global_environment.h>
 #include <unit_tests/mocks/mock_context.h>
 #include <unit_tests/mocks/mock_program.h>
 
-#include <memory>
 #include <array>
 #include <list>
+#include <memory>
 
-#include "test.h"
-
-using namespace OCLRT;
+using namespace NEO;
 using namespace std;
 
 class BinaryCacheFixture
@@ -53,32 +37,6 @@ class BinaryCacheFixture
     }
     BinaryCache *cache;
 };
-
-class TestedCompilerInterface : public CompilerInterface {
-  public:
-    static TestedCompilerInterface *getInstance() {
-        if (pInstance == nullptr) {
-            auto instance = new TestedCompilerInterface();
-
-            if (!instance->initialize()) {
-                delete instance;
-                instance = nullptr;
-            }
-
-            pInstance = instance;
-        }
-        return pInstance;
-    }
-    static void shutdown() {
-        if (pInstance) {
-            delete pInstance;
-            pInstance = nullptr;
-        }
-    }
-
-    static TestedCompilerInterface *pInstance;
-};
-TestedCompilerInterface *TestedCompilerInterface::pInstance = nullptr;
 
 class BinaryCacheMock : public BinaryCache {
   public:
@@ -103,12 +61,11 @@ class CompilerInterfaceCachedFixture : public DeviceFixture {
   public:
     void SetUp() {
         DeviceFixture::SetUp();
-        pCompilerInterface = TestedCompilerInterface::getInstance();
+        pCompilerInterface = pDevice->getExecutionEnvironment()->getCompilerInterface();
         ASSERT_NE(pCompilerInterface, nullptr);
     }
 
     void TearDown() {
-        TestedCompilerInterface::shutdown();
         DeviceFixture::TearDown();
     }
 
@@ -323,13 +280,15 @@ TEST_F(BinaryCacheTests, doNotCacheEmpty) {
 }
 
 TEST_F(BinaryCacheTests, loadNotFound) {
-    MockProgram program;
+    ExecutionEnvironment executionEnvironment;
+    MockProgram program(executionEnvironment);
     bool ret = cache->loadCachedBinary("----do-not-exists----", program);
     EXPECT_FALSE(ret);
 }
 
 TEST_F(BinaryCacheTests, cacheThenLoad) {
-    MockProgram program;
+    ExecutionEnvironment executionEnvironment;
+    MockProgram program(executionEnvironment);
     static const char *hash = "SOME_HASH";
     std::unique_ptr<char> data(new char[32]);
     for (size_t i = 0; i < 32; i++)
@@ -352,7 +311,7 @@ TEST_F(CompilerInterfaceCachedTests, canInjectCache) {
 }
 TEST_F(CompilerInterfaceCachedTests, notCachedAndIgcFailed) {
     MockContext context(pDevice, true);
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
     BinaryCacheMock cache;
     TranslationArgs inputArgs;
 
@@ -383,7 +342,7 @@ TEST_F(CompilerInterfaceCachedTests, notCachedAndIgcFailed) {
 
 TEST_F(CompilerInterfaceCachedTests, wasCached) {
     MockContext context(pDevice, true);
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
     BinaryCacheMock cache;
     TranslationArgs inputArgs;
 
@@ -414,7 +373,7 @@ TEST_F(CompilerInterfaceCachedTests, wasCached) {
 
 TEST_F(CompilerInterfaceCachedTests, builtThenCached) {
     MockContext context(pDevice, true);
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
     BinaryCacheMock cache;
     TranslationArgs inputArgs;
 
@@ -444,7 +403,7 @@ TEST_F(CompilerInterfaceCachedTests, builtThenCached) {
 
 TEST_F(CompilerInterfaceCachedTests, givenKernelWithoutIncludesAndBinaryInCacheWhenCompilationRequestedThenFCLIsNotCalled) {
     MockContext context(pDevice, true);
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
     BinaryCacheMock cache;
     TranslationArgs inputArgs;
 
@@ -478,7 +437,7 @@ TEST_F(CompilerInterfaceCachedTests, givenKernelWithoutIncludesAndBinaryInCacheW
 
 TEST_F(CompilerInterfaceCachedTests, givenKernelWithIncludesAndBinaryInCacheWhenCompilationRequestedThenFCLIsCalled) {
     MockContext context(pDevice, true);
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
     BinaryCacheMock cache;
     TranslationArgs inputArgs;
 

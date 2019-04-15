@@ -1,94 +1,191 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/memory_manager/memory_manager.h"
 #include "runtime/memory_manager/svm_memory_manager.h"
-#include "runtime/helpers/aligned_memory.h"
+
 #include "runtime/command_stream/command_stream_receiver.h"
+#include "runtime/helpers/aligned_memory.h"
+#include "runtime/mem_obj/mem_obj_helper.h"
+#include "runtime/memory_manager/memory_manager.h"
 
-namespace OCLRT {
+namespace NEO {
 
-void SVMAllocsManager::MapBasedAllocationTracker::insert(GraphicsAllocation &ga) {
-    allocs.insert(std::make_pair(ga.getUnderlyingBuffer(), &ga));
+void SVMAllocsManager::MapBasedAllocationTracker::insert(SvmAllocationData allocationsPair) {
+    allocations.insert(std::make_pair(reinterpret_cast<void *>(allocationsPair.gpuAllocation->getGpuAddress()), allocationsPair));
 }
 
-void SVMAllocsManager::MapBasedAllocationTracker::remove(GraphicsAllocation &ga) {
-    std::map<const void *, GraphicsAllocation *>::iterator iter;
-    iter = allocs.find(ga.getUnderlyingBuffer());
-    allocs.erase(iter);
+void SVMAllocsManager::MapBasedAllocationTracker::remove(SvmAllocationData allocationsPair) {
+    SvmAllocationContainer::iterator iter;
+    iter = allocations.find(reinterpret_cast<void *>(allocationsPair.gpuAllocation->getGpuAddress()));
+    allocations.erase(iter);
 }
 
-GraphicsAllocation *SVMAllocsManager::MapBasedAllocationTracker::get(const void *ptr) {
-    std::map<const void *, GraphicsAllocation *>::iterator Iter, End;
-    GraphicsAllocation *GA;
+SvmAllocationData *SVMAllocsManager::MapBasedAllocationTracker::get(const void *ptr) {
+    SvmAllocationContainer::iterator Iter, End;
+    SvmAllocationData *svmAllocData;
     if (ptr == nullptr)
         return nullptr;
-    End = allocs.end();
-    Iter = allocs.lower_bound(ptr);
+    End = allocations.end();
+    Iter = allocations.lower_bound(ptr);
     if (((Iter != End) && (Iter->first != ptr)) ||
         (Iter == End)) {
-        if (Iter == allocs.begin()) {
+        if (Iter == allocations.begin()) {
             Iter = End;
         } else {
             Iter--;
         }
     }
     if (Iter != End) {
-        GA = Iter->second;
-        if (ptr < ((char *)GA->getUnderlyingBuffer() + GA->getUnderlyingBufferSize())) {
-            return GA;
+        svmAllocData = &Iter->second;
+        char *charPtr = reinterpret_cast<char *>(svmAllocData->gpuAllocation->getGpuAddress());
+        if (ptr < (charPtr + svmAllocData->size)) {
+            return svmAllocData;
         }
     }
     return nullptr;
 }
 
+void SVMAllocsManager::MapOperationsTracker::insert(SvmMapOperation mapOperation) {
+    operations.insert(std::make_pair(mapOperation.regionSvmPtr, mapOperation));
+}
+
+void SVMAllocsManager::MapOperationsTracker::remove(const void *regionPtr) {
+    SvmMapOperationsContainer::iterator iter;
+    iter = operations.find(regionPtr);
+    operations.erase(iter);
+}
+
+SvmMapOperation *SVMAllocsManager::MapOperationsTracker::get(const void *regionPtr) {
+    SvmMapOperationsContainer::iterator iter;
+    iter = operations.find(regionPtr);
+    if (iter == operations.end()) {
+        return nullptr;
+    }
+    return &iter->second;
+}
+
 SVMAllocsManager::SVMAllocsManager(MemoryManager *memoryManager) : memoryManager(memoryManager) {
 }
 
-void *SVMAllocsManager::createSVMAlloc(size_t size, bool coherent) {
+void *SVMAllocsManager::createSVMAlloc(size_t size, cl_mem_flags flags) {
     if (size == 0)
         return nullptr;
 
     std::unique_lock<std::mutex> lock(mtx);
-    GraphicsAllocation *GA = memoryManager->allocateGraphicsMemoryForSVM(size, coherent);
-    if (!GA) {
-        return nullptr;
+    if (!memoryManager->isLocalMemorySupported()) {
+        return createZeroCopySvmAllocation(size, flags);
+    } else {
+        return createSvmAllocationWithDeviceStorage(size, flags);
     }
-    this->SVMAllocs.insert(*GA);
-
-    return GA->getUnderlyingBuffer();
 }
 
-GraphicsAllocation *SVMAllocsManager::getSVMAlloc(const void *ptr) {
+SvmAllocationData *SVMAllocsManager::getSVMAlloc(const void *ptr) {
     std::unique_lock<std::mutex> lock(mtx);
     return SVMAllocs.get(ptr);
 }
 
 void SVMAllocsManager::freeSVMAlloc(void *ptr) {
-    GraphicsAllocation *GA = getSVMAlloc(ptr);
-    if (GA) {
+    SvmAllocationData *svmData = getSVMAlloc(ptr);
+    if (svmData) {
         std::unique_lock<std::mutex> lock(mtx);
-        SVMAllocs.remove(*GA);
-        memoryManager->freeGraphicsMemory(GA);
+        if (svmData->gpuAllocation->getAllocationType() == GraphicsAllocation::AllocationType::SVM_ZERO_COPY) {
+            freeZeroCopySvmAllocation(svmData);
+        } else {
+            freeSvmAllocationWithDeviceStorage(svmData);
+        }
     }
 }
-} // namespace OCLRT
+
+void *SVMAllocsManager::createZeroCopySvmAllocation(size_t size, cl_mem_flags flags) {
+    AllocationProperties properties{true, size, GraphicsAllocation::AllocationType::SVM_ZERO_COPY};
+    MemObjHelper::fillCachePolicyInProperties(properties, flags);
+    GraphicsAllocation *allocation = memoryManager->allocateGraphicsMemoryWithProperties(properties);
+    if (!allocation) {
+        return nullptr;
+    }
+    allocation->setMemObjectsAllocationWithWritableFlags(!SVMAllocsManager::memFlagIsReadOnly(flags));
+    allocation->setCoherent(isValueSet(flags, CL_MEM_SVM_FINE_GRAIN_BUFFER));
+
+    SvmAllocationData allocData;
+    allocData.gpuAllocation = allocation;
+    allocData.size = size;
+
+    this->SVMAllocs.insert(allocData);
+    return allocation->getUnderlyingBuffer();
+}
+
+void *SVMAllocsManager::createSvmAllocationWithDeviceStorage(size_t size, cl_mem_flags flags) {
+    size_t alignedSize = alignUp<size_t>(size, 2 * MemoryConstants::megaByte);
+    AllocationProperties cpuProperties{true, alignedSize, GraphicsAllocation::AllocationType::SVM_CPU};
+    cpuProperties.alignment = 2 * MemoryConstants::megaByte;
+    MemObjHelper::fillCachePolicyInProperties(cpuProperties, flags);
+    GraphicsAllocation *allocationCpu = memoryManager->allocateGraphicsMemoryWithProperties(cpuProperties);
+    if (!allocationCpu) {
+        return nullptr;
+    }
+    allocationCpu->setMemObjectsAllocationWithWritableFlags(!SVMAllocsManager::memFlagIsReadOnly(flags));
+    allocationCpu->setCoherent(isValueSet(flags, CL_MEM_SVM_FINE_GRAIN_BUFFER));
+    void *svmPtr = allocationCpu->getUnderlyingBuffer();
+
+    AllocationProperties gpuProperties{false, alignedSize, GraphicsAllocation::AllocationType::SVM_GPU};
+    gpuProperties.alignment = 2 * MemoryConstants::megaByte;
+    MemObjHelper::fillCachePolicyInProperties(gpuProperties, flags);
+    GraphicsAllocation *allocationGpu = memoryManager->allocateGraphicsMemoryWithProperties(gpuProperties, svmPtr);
+    if (!allocationGpu) {
+        memoryManager->freeGraphicsMemory(allocationCpu);
+        return nullptr;
+    }
+    allocationGpu->setMemObjectsAllocationWithWritableFlags(!SVMAllocsManager::memFlagIsReadOnly(flags));
+    allocationGpu->setCoherent(isValueSet(flags, CL_MEM_SVM_FINE_GRAIN_BUFFER));
+
+    SvmAllocationData allocData;
+    allocData.gpuAllocation = allocationGpu;
+    allocData.cpuAllocation = allocationCpu;
+    allocData.size = size;
+
+    this->SVMAllocs.insert(allocData);
+    return svmPtr;
+}
+
+void SVMAllocsManager::freeZeroCopySvmAllocation(SvmAllocationData *svmData) {
+    GraphicsAllocation *gpuAllocation = svmData->gpuAllocation;
+    SVMAllocs.remove(*svmData);
+
+    memoryManager->freeGraphicsMemory(gpuAllocation);
+}
+
+void SVMAllocsManager::freeSvmAllocationWithDeviceStorage(SvmAllocationData *svmData) {
+    GraphicsAllocation *gpuAllocation = svmData->gpuAllocation;
+    GraphicsAllocation *cpuAllocation = svmData->cpuAllocation;
+    SVMAllocs.remove(*svmData);
+
+    memoryManager->freeGraphicsMemory(gpuAllocation);
+    memoryManager->freeGraphicsMemory(cpuAllocation);
+}
+
+SvmMapOperation *SVMAllocsManager::getSvmMapOperation(const void *ptr) {
+    std::unique_lock<std::mutex> lock(mtx);
+    return svmMapOperations.get(ptr);
+}
+
+void SVMAllocsManager::insertSvmMapOperation(void *regionSvmPtr, size_t regionSize, void *baseSvmPtr, size_t offset, bool readOnlyMap) {
+    SvmMapOperation svmMapOperation;
+    svmMapOperation.regionSvmPtr = regionSvmPtr;
+    svmMapOperation.baseSvmPtr = baseSvmPtr;
+    svmMapOperation.offset = offset;
+    svmMapOperation.regionSize = regionSize;
+    svmMapOperation.readOnlyMap = readOnlyMap;
+    std::unique_lock<std::mutex> lock(mtx);
+    svmMapOperations.insert(svmMapOperation);
+}
+
+void SVMAllocsManager::removeSvmMapOperation(const void *regionSvmPtr) {
+    std::unique_lock<std::mutex> lock(mtx);
+    svmMapOperations.remove(regionSvmPtr);
+}
+
+} // namespace NEO

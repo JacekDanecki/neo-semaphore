@@ -1,73 +1,128 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/source_level_debugger/source_level_debugger.h"
+
+#include "runtime/aub/aub_center.h"
+#include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/sip.h"
+#include "runtime/command_stream/command_stream_receiver.h"
+#include "runtime/command_stream/tbx_command_stream_receiver_hw.h"
+#include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/os_interface/device_factory.h"
+#include "runtime/os_interface/os_interface.h"
+#include "runtime/source_level_debugger/source_level_debugger.h"
 
-namespace OCLRT {
+namespace NEO {
 ExecutionEnvironment::ExecutionEnvironment() = default;
 ExecutionEnvironment::~ExecutionEnvironment() = default;
-extern CommandStreamReceiver *createCommandStream(const HardwareInfo *pHwInfo);
+extern CommandStreamReceiver *createCommandStream(ExecutionEnvironment &executionEnvironment);
 
-void ExecutionEnvironment::initGmm(const HardwareInfo *hwInfo) {
-    if (!gmmHelper) {
-        gmmHelper.reset(new GmmHelper(hwInfo));
+void ExecutionEnvironment::initAubCenter(bool localMemoryEnabled, const std::string &aubFileName, CommandStreamReceiverType csrType) {
+    if (!aubCenter) {
+        aubCenter.reset(new AubCenter(this->hwInfo, localMemoryEnabled, aubFileName, csrType));
     }
 }
-bool ExecutionEnvironment::initializeCommandStreamReceiver(const HardwareInfo *pHwInfo) {
-    if (this->commandStreamReceiver) {
+void ExecutionEnvironment::initGmm() {
+    if (!gmmHelper) {
+        gmmHelper.reset(new GmmHelper(this->hwInfo));
+    }
+}
+void ExecutionEnvironment::setHwInfo(const HardwareInfo *hwInfo) {
+    this->hwInfo = hwInfo;
+}
+bool ExecutionEnvironment::initializeCommandStreamReceiver(uint32_t deviceIndex, uint32_t deviceCsrIndex) {
+    if (deviceIndex + 1 > commandStreamReceivers.size()) {
+        commandStreamReceivers.resize(deviceIndex + 1);
+    }
+
+    if (deviceCsrIndex + 1 > commandStreamReceivers[deviceIndex].size()) {
+        commandStreamReceivers[deviceIndex].resize(deviceCsrIndex + 1);
+    }
+    if (this->commandStreamReceivers[deviceIndex][deviceCsrIndex]) {
         return true;
     }
-    CommandStreamReceiver *commandStreamReceiver = createCommandStream(pHwInfo);
+    std::unique_ptr<CommandStreamReceiver> commandStreamReceiver(createCommandStream(*this));
     if (!commandStreamReceiver) {
         return false;
     }
-    this->commandStreamReceiver.reset(commandStreamReceiver);
+    if (HwHelper::get(this->hwInfo->pPlatform->eRenderCoreFamily).isPageTableManagerSupported(*this->hwInfo)) {
+        commandStreamReceiver->createPageTableManager();
+    }
+    commandStreamReceiver->setDeviceIndex(deviceIndex);
+    this->commandStreamReceivers[deviceIndex][deviceCsrIndex] = std::move(commandStreamReceiver);
     return true;
 }
-void ExecutionEnvironment::initializeMemoryManager(bool enable64KBpages) {
+void ExecutionEnvironment::initializeMemoryManager() {
     if (this->memoryManager) {
-        commandStreamReceiver->setMemoryManager(this->memoryManager.get());
         return;
     }
 
-    memoryManager.reset(commandStreamReceiver->createMemoryManager(enable64KBpages));
-    commandStreamReceiver->setMemoryManager(memoryManager.get());
+    int32_t setCommandStreamReceiverType = CommandStreamReceiverType::CSR_HW;
+    if (DebugManager.flags.SetCommandStreamReceiver.get() >= 0) {
+        setCommandStreamReceiverType = DebugManager.flags.SetCommandStreamReceiver.get();
+    }
 
+    switch (setCommandStreamReceiverType) {
+    case CommandStreamReceiverType::CSR_TBX:
+    case CommandStreamReceiverType::CSR_TBX_WITH_AUB:
+        memoryManager = std::make_unique<TbxMemoryManager>(*this);
+        break;
+    case CommandStreamReceiverType::CSR_AUB:
+        memoryManager = std::make_unique<OsAgnosticMemoryManager>(*this);
+        break;
+    case CommandStreamReceiverType::CSR_HW:
+    case CommandStreamReceiverType::CSR_HW_WITH_AUB:
+    default:
+        memoryManager = MemoryManager::createMemoryManager(*this);
+        break;
+    }
     DEBUG_BREAK_IF(!this->memoryManager);
 }
-
-void ExecutionEnvironment::initSourceLevelDebugger(const HardwareInfo &hwInfo) {
-    if (hwInfo.capabilityTable.sourceLevelDebuggerSupported) {
+void ExecutionEnvironment::initSourceLevelDebugger() {
+    if (this->hwInfo->capabilityTable.sourceLevelDebuggerSupported) {
         sourceLevelDebugger.reset(SourceLevelDebugger::create());
     }
     if (sourceLevelDebugger) {
-        bool localMemorySipAvailable = (SipKernelType::DbgCsrLocal == SipKernel::getSipKernelType(hwInfo.pPlatform->eRenderCoreFamily, true));
+        bool localMemorySipAvailable = (SipKernelType::DbgCsrLocal == SipKernel::getSipKernelType(this->hwInfo->pPlatform->eRenderCoreFamily, true));
         sourceLevelDebugger->initialize(localMemorySipAvailable);
     }
 }
-} // namespace OCLRT
+GmmHelper *ExecutionEnvironment::getGmmHelper() const {
+    return gmmHelper.get();
+}
+CompilerInterface *ExecutionEnvironment::getCompilerInterface() {
+    if (this->compilerInterface.get() == nullptr) {
+        std::lock_guard<std::mutex> autolock(this->mtx);
+        if (this->compilerInterface.get() == nullptr) {
+            this->compilerInterface.reset(CompilerInterface::createInstance());
+        }
+    }
+    return this->compilerInterface.get();
+}
+BuiltIns *ExecutionEnvironment::getBuiltIns() {
+    if (this->builtins.get() == nullptr) {
+        std::lock_guard<std::mutex> autolock(this->mtx);
+        if (this->builtins.get() == nullptr) {
+            this->builtins = std::make_unique<BuiltIns>();
+        }
+    }
+    return this->builtins.get();
+}
+
+EngineControl *ExecutionEnvironment::getEngineControlForSpecialCsr() {
+    EngineControl *engine = nullptr;
+    if (specialCommandStreamReceiver.get()) {
+        engine = memoryManager->getRegisteredEngineForCsr(specialCommandStreamReceiver.get());
+    }
+    return engine;
+}
+
+} // namespace NEO

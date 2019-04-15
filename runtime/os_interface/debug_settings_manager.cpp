@@ -1,40 +1,34 @@
 /*
- * Copyright (c) 2017-2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "debug_settings_manager.h"
+
 #include "runtime/event/event.h"
+#include "runtime/helpers/dispatch_info.h"
+#include "runtime/helpers/ptr_math.h"
+#include "runtime/helpers/string.h"
+#include "runtime/helpers/timestamp_packet.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/mem_obj.h"
-#include "runtime/helpers/ptr_math.h"
-#include "runtime/helpers/dispatch_info.h"
-#include "runtime/helpers/string.h"
-#include "runtime/utilities/debug_settings_reader.h"
+#include "runtime/os_interface/definitions/translate_debug_settings.h"
+#include "runtime/utilities/debug_settings_reader_creator.h"
 
 #include "CL/cl.h"
 
 #include <cstdio>
 #include <sstream>
 
-namespace OCLRT {
+namespace std {
+static std::string to_string(const std::string &arg) {
+    return arg;
+}
+} // namespace std
+
+namespace NEO {
 
 DebugSettingsManager<globalDebugFunctionalityLevel> DebugManager;
 
@@ -43,17 +37,11 @@ DebugSettingsManager<DebugLevel>::DebugSettingsManager() {
 
     logFileName = "igdrcl.log";
     if (registryReadAvailable()) {
-        readerImpl = SettingsReader::create();
-
-#undef DECLARE_DEBUG_VARIABLE
-#define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description)            \
-    {                                                                                        \
-        dataType tempData = readerImpl->getSetting(#variableName, flags.variableName.get()); \
-        flags.variableName.set(tempData);                                                    \
+        readerImpl = SettingsReaderCreator::create();
+        injectSettingsFromReader();
+        dumpFlags();
     }
-#include "DebugVariables.inl"
-    }
-
+    translateDebugSettings(flags);
     std::remove(logFileName.c_str());
 }
 
@@ -67,9 +55,16 @@ void DebugSettingsManager<DebugLevel>::writeToFile(std::string filename, const c
 }
 
 template <DebugFunctionalityLevel DebugLevel>
-DebugSettingsManager<DebugLevel>::~DebugSettingsManager() {
-    if (readerImpl) {
-        delete readerImpl;
+DebugSettingsManager<DebugLevel>::~DebugSettingsManager() = default;
+
+template <DebugFunctionalityLevel DebugLevel>
+void DebugSettingsManager<DebugLevel>::getHardwareInfoOverride(std::string &hwInfoConfig) {
+    std::string str = flags.HardwareInfoOverride.get();
+    if (str[0] == '\"') {
+        str.pop_back();
+        hwInfoConfig = str.substr(1, std::string::npos);
+    } else {
+        hwInfoConfig = str;
     }
 }
 
@@ -109,6 +104,29 @@ void DebugSettingsManager<DebugLevel>::logApiCall(const char *function, bool ent
 }
 
 template <DebugFunctionalityLevel DebugLevel>
+void DebugSettingsManager<DebugLevel>::logAllocation(GraphicsAllocation const *graphicsAllocation) {
+    if (false == debugLoggingAvailable()) {
+        return;
+    }
+
+    if (flags.LogAllocationMemoryPool.get()) {
+        std::thread::id thisThread = std::this_thread::get_id();
+
+        std::stringstream ss;
+        ss << " ThreadID: " << thisThread;
+        ss << " AllocationType: " << getAllocationTypeString(graphicsAllocation);
+        ss << " MemoryPool: " << graphicsAllocation->getMemoryPool();
+        ss << graphicsAllocation->getAllocationInfoString();
+        ss << std::endl;
+
+        auto str = ss.str();
+
+        std::unique_lock<std::mutex> theLock(mtx);
+        writeToFile(logFileName, str.c_str(), str.size(), std::ios::app);
+    }
+}
+
+template <DebugFunctionalityLevel DebugLevel>
 size_t DebugSettingsManager<DebugLevel>::getInput(const size_t *input, int32_t index) {
     if (debugLoggingAvailable() == false)
         return 0;
@@ -129,6 +147,47 @@ const std::string DebugSettingsManager<DebugLevel>::getEvents(const uintptr_t *i
         }
     }
     return os.str();
+}
+
+template <DebugFunctionalityLevel DebugLevel>
+const std::string DebugSettingsManager<DebugLevel>::getMemObjects(const uintptr_t *input, uint32_t numOfObjects) {
+    if (false == debugLoggingAvailable()) {
+        return "";
+    }
+
+    std::stringstream os;
+    for (uint32_t i = 0; i < numOfObjects; i++) {
+        if (input != nullptr) {
+            cl_mem mem = const_cast<cl_mem>(reinterpret_cast<const cl_mem *>(input)[i]);
+            os << "cl_mem " << mem << ", MemObj " << static_cast<MemObj *>(mem) << ", ";
+        }
+    }
+    return os.str();
+}
+
+template <DebugFunctionalityLevel DebugLevel>
+template <typename DataType>
+void DebugSettingsManager<DebugLevel>::dumpNonDefaultFlag(const char *variableName, const DataType &variableValue, const DataType &defaultValue) {
+    if (variableValue != defaultValue) {
+        const auto variableStringValue = std::to_string(variableValue);
+        printDebugString(DebugManager.flags.PrintDebugMessages.get(), stdout, "Non-default value of debug variable: %s = %s\n", variableName, variableStringValue.c_str());
+    }
+}
+
+template <DebugFunctionalityLevel DebugLevel>
+void DebugSettingsManager<DebugLevel>::dumpFlags() const {
+    if (flags.PrintDebugSettings.get() == false) {
+        return;
+    }
+
+    std::ofstream settingsDumpFile{settingsDumpFileName, std::ios::out};
+    DEBUG_BREAK_IF(!settingsDumpFile.good());
+
+#define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description)   \
+    settingsDumpFile << #variableName << " = " << flags.variableName.get() << '\n'; \
+    dumpNonDefaultFlag(#variableName, flags.variableName.get(), defaultValue);
+#include "debug_variables.inl"
+#undef DECLARE_DEBUG_VARIABLE
 }
 
 template <DebugFunctionalityLevel DebugLevel>
@@ -218,7 +277,7 @@ void DebugSettingsManager<DebugLevel>::dumpKernelArgs(const MultiDispatchInfo *m
         return;
     }
 
-    if ((flags.DumpKernelArgs.get() == false) || (multiDispatchInfo == nullptr)) {
+    if (flags.DumpKernelArgs.get() == false || multiDispatchInfo == nullptr) {
         return;
     }
 
@@ -227,7 +286,85 @@ void DebugSettingsManager<DebugLevel>::dumpKernelArgs(const MultiDispatchInfo *m
     }
 }
 
+template <DebugFunctionalityLevel DebugLevel>
+void DebugSettingsManager<DebugLevel>::injectSettingsFromReader() {
+#undef DECLARE_DEBUG_VARIABLE
+#define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description)            \
+    {                                                                                        \
+        dataType tempData = readerImpl->getSetting(#variableName, flags.variableName.get()); \
+        flags.variableName.set(tempData);                                                    \
+    }
+#include "debug_variables.inl"
+#undef DECLARE_DEBUG_VARIABLE
+}
+
+template <DebugFunctionalityLevel DebugLevel>
+const char *DebugSettingsManager<DebugLevel>::getAllocationTypeString(GraphicsAllocation const *graphicsAllocation) {
+    if (false == debugLoggingAvailable()) {
+        return nullptr;
+    }
+
+    auto type = graphicsAllocation->getAllocationType();
+
+    switch (type) {
+    case GraphicsAllocation::AllocationType::UNKNOWN:
+        return "UNKNOWN";
+    case GraphicsAllocation::AllocationType::BUFFER_COMPRESSED:
+        return "BUFFER_COMPRESSED";
+    case GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY:
+        return "BUFFER_HOST_MEMORY";
+    case GraphicsAllocation::AllocationType::BUFFER:
+        return "BUFFER";
+    case GraphicsAllocation::AllocationType::IMAGE:
+        return "IMAGE";
+    case GraphicsAllocation::AllocationType::TAG_BUFFER:
+        return "TAG_BUFFER";
+    case GraphicsAllocation::AllocationType::LINEAR_STREAM:
+        return "LINEAR_STREAM";
+    case GraphicsAllocation::AllocationType::FILL_PATTERN:
+        return "FILL_PATTERN";
+    case GraphicsAllocation::AllocationType::PIPE:
+        return "PIPE";
+    case GraphicsAllocation::AllocationType::TIMESTAMP_PACKET_TAG_BUFFER:
+        return "TIMESTAMP_PACKET_TAG_BUFFER";
+    case GraphicsAllocation::AllocationType::PROFILING_TAG_BUFFER:
+        return "PROFILING_TAG_BUFFER";
+    case GraphicsAllocation::AllocationType::COMMAND_BUFFER:
+        return "COMMAND_BUFFER";
+    case GraphicsAllocation::AllocationType::PRINTF_SURFACE:
+        return "PRINTF_SURFACE";
+    case GraphicsAllocation::AllocationType::GLOBAL_SURFACE:
+        return "GLOBAL_SURFACE";
+    case GraphicsAllocation::AllocationType::PRIVATE_SURFACE:
+        return "PRIVATE_SURFACE";
+    case GraphicsAllocation::AllocationType::CONSTANT_SURFACE:
+        return "CONSTANT_SURFACE";
+    case GraphicsAllocation::AllocationType::SCRATCH_SURFACE:
+        return "SCRATCH_SURFACE";
+    case GraphicsAllocation::AllocationType::INSTRUCTION_HEAP:
+        return "INSTRUCTION_HEAP";
+    case GraphicsAllocation::AllocationType::INDIRECT_OBJECT_HEAP:
+        return "INDIRECT_OBJECT_HEAP";
+    case GraphicsAllocation::AllocationType::SURFACE_STATE_HEAP:
+        return "SURFACE_STATE_HEAP";
+    case GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY:
+        return "SHARED_RESOURCE_COPY";
+    case GraphicsAllocation::AllocationType::SVM_ZERO_COPY:
+        return "SVM_ZERO_COPY";
+    case GraphicsAllocation::AllocationType::SVM_CPU:
+        return "SVM_CPU";
+    case GraphicsAllocation::AllocationType::SVM_GPU:
+        return "SVM_GPU";
+    case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
+        return "EXTERNAL_HOST_PTR";
+    case GraphicsAllocation::AllocationType::UNDECIDED:
+        return "UNDECIDED";
+    default:
+        return "ILLEGAL_VALUE";
+    }
+}
+
 template class DebugSettingsManager<DebugFunctionalityLevel::None>;
 template class DebugSettingsManager<DebugFunctionalityLevel::Full>;
 template class DebugSettingsManager<DebugFunctionalityLevel::RegKeys>;
-}; // namespace OCLRT
+}; // namespace NEO

@@ -1,39 +1,25 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
+
 #include "gtest/gtest.h"
+
 #include <array>
 
-using namespace OCLRT;
+using namespace NEO;
 
 const cl_mem_flags flagsForTests[] = {CL_MEM_READ_ONLY, CL_MEM_WRITE_ONLY, CL_MEM_READ_WRITE};
 
-const std::tuple<const SurfaceFormatInfo *, const size_t> paramsForSnormTests[] = {
-    std::make_tuple(readOnlySurfaceFormats, numReadOnlySurfaceFormats),
-    std::make_tuple(writeOnlySurfaceFormats, numWriteOnlySurfaceFormats),
-    std::make_tuple(readWriteSurfaceFormats, numReadWriteSurfaceFormats),
-};
+const ArrayRef<const SurfaceFormatInfo> paramsForSnormTests[] = {
+    SurfaceFormats::readOnly(),
+    SurfaceFormats::writeOnly(),
+    SurfaceFormats::readWrite()};
 
 const std::array<SurfaceFormatInfo, 6> referenceSnormSurfaceFormats = {{
     // clang-format off
@@ -60,14 +46,13 @@ TEST_P(SnormSurfaceFormatAccessFlagsTests, givenSnormFormatWhenGetSurfaceFormatF
     }
 }
 
-using SnormSurfaceFormatTests = ::testing::TestWithParam<std::tuple<const SurfaceFormatInfo *, const size_t>>;
+using SnormSurfaceFormatTests = ::testing::TestWithParam<ArrayRef<const SurfaceFormatInfo>>;
 
 TEST_P(SnormSurfaceFormatTests, givenSnormOclFormatWhenCheckingrReadOnlySurfaceFormatsThenFindExactCount) {
-    const SurfaceFormatInfo *formatsTable = std::get<0>(GetParam());
-    size_t formatsTableCount = std::get<1>(GetParam());
+    ArrayRef<const SurfaceFormatInfo> formatsTable = GetParam();
 
     size_t snormFormatsFound = 0;
-    for (size_t i = 0; i < formatsTableCount; i++) {
+    for (size_t i = 0; i < formatsTable.size(); ++i) {
         auto oclFormat = formatsTable[i].OCLImageFormat;
         if (CL_SNORM_INT8 == oclFormat.image_channel_data_type || CL_SNORM_INT16 == oclFormat.image_channel_data_type) {
             EXPECT_TRUE(oclFormat.image_channel_order == CL_R || oclFormat.image_channel_order == CL_RG || oclFormat.image_channel_order == CL_RGBA);

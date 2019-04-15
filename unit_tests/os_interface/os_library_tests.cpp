@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #if defined(_WIN32)
@@ -27,9 +12,11 @@
 #endif
 #include "runtime/os_interface/os_library.h"
 #include "test.h"
-#include "unit_tests/helpers/memory_management.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
+#include "unit_tests/helpers/memory_management.h"
+
 #include "gtest/gtest.h"
+
 #include <memory>
 
 namespace Os {
@@ -40,7 +27,7 @@ extern const char *testDllName;
 const std::string fakeLibName = "_fake_library_name_";
 const std::string fnName = "testDynamicLibraryFunc";
 
-using namespace OCLRT;
+using namespace NEO;
 
 class OSLibraryFixture : public MemoryManagementFixture
 
@@ -105,4 +92,41 @@ TEST_F(OSLibraryTest, testFailNew) {
         delete library;
     };
     injectFailures(method);
+}
+
+TEST(OsLibrary, whenCallingIndexOperatorThenObjectConvertibleToFunctionOrVoidPointerIsReturned) {
+    struct MockOsLibrary : OsLibrary {
+        void *getProcAddress(const std::string &procName) override {
+            lastRequestedProcName = procName;
+            return ptrToReturn;
+        }
+        bool isLoaded() override { return true; }
+
+        void *ptrToReturn = nullptr;
+        std::string lastRequestedProcName;
+    };
+
+    MockOsLibrary lib;
+
+    int varA;
+    int varB;
+    int varC;
+
+    using FunctionTypeA = void (*)(int *, float);
+    using FunctionTypeB = int (*)();
+
+    lib.ptrToReturn = &varA;
+    FunctionTypeA functionA = lib["funcA"];
+    EXPECT_STREQ("funcA", lib.lastRequestedProcName.c_str());
+    EXPECT_EQ(&varA, reinterpret_cast<void *>(functionA));
+
+    lib.ptrToReturn = &varB;
+    FunctionTypeB functionB = lib["funcB"];
+    EXPECT_STREQ("funcB", lib.lastRequestedProcName.c_str());
+    EXPECT_EQ(&varB, reinterpret_cast<void *>(functionB));
+
+    lib.ptrToReturn = &varC;
+    void *rawPtr = lib["funcC"];
+    EXPECT_STREQ("funcC", lib.lastRequestedProcName.c_str());
+    EXPECT_EQ(&varC, rawPtr);
 }

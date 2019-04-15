@@ -1,36 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "test.h"
 #include "runtime/command_queue/local_id_gen.h"
 #include "runtime/command_stream/linear_stream.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/per_thread_data.h"
 #include "runtime/program/kernel_info.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
+
 #include "patch_shared.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 template <bool localIdX = true, bool localIdY = true, bool localIdZ = true, bool flattenedId = false>
 struct PerThreadDataTests : public DeviceFixture,
@@ -73,6 +59,8 @@ struct PerThreadDataTests : public DeviceFixture,
         alignedFree(indirectHeapMemory);
         DeviceFixture::TearDown();
     }
+
+    const std::array<uint8_t, 3> workgroupWalkOrder = {{0, 1, 2}};
     uint32_t simd;
     uint32_t numChannels;
     uint32_t kernelIsa[32];
@@ -107,7 +95,9 @@ HWTEST_F(PerThreadDataXYZTests, sendPerThreadData_256x1x1) {
         indirectHeap,
         simd,
         numChannels,
-        localWorkSizes);
+        localWorkSizes,
+        workgroupWalkOrder,
+        false);
     auto expectedPerThreadDataSizeTotal = PerThreadDataHelper::getPerThreadDataSizeTotal(simd, numChannels, localWorkSize);
 
     size_t sizeConsumed = indirectHeap.getUsed() - offsetPerThreadData;
@@ -123,7 +113,9 @@ HWTEST_F(PerThreadDataXYZTests, sendPerThreadData_2x4x8) {
         indirectHeap,
         simd,
         numChannels,
-        localWorkSizes);
+        localWorkSizes,
+        workgroupWalkOrder,
+        false);
 
     size_t sizeConsumed = indirectHeap.getUsed() - offsetPerThreadData;
     EXPECT_EQ(64u * (3u * 2u * 4u * 8u) / 32u, sizeConsumed);
@@ -174,7 +166,9 @@ HWTEST_F(PerThreadDataNoIdsTests, sendPerThreadDataDoesntSendAnyData) {
         indirectHeap,
         simd,
         numChannels,
-        localWorkSizes);
+        localWorkSizes,
+        workgroupWalkOrder,
+        false);
 
     size_t sizeConsumed = indirectHeap.getUsed() - offsetPerThreadData;
     EXPECT_EQ(0u, sizeConsumed);
@@ -245,7 +239,9 @@ TEST(PerThreadDataTest, generateLocalIDs) {
         stream,
         simd,
         numChannels,
-        localWorkSizes);
+        localWorkSizes,
+        {{0, 1, 2}},
+        false);
 
     // Check if buffer overrun happend, only first sizePerThreadDataTotal bytes can be overwriten, following should be same as reference.
     for (auto i = sizePerThreadDataTotal; i < sizeOverSizedBuffer; i += sizePerThreadDataTotal) {

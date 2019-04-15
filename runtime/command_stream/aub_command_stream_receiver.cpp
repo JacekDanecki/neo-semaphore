@@ -1,45 +1,34 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/aub_command_stream_receiver.h"
+
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/os_interface/os_inc_base.h"
+
 #include <algorithm>
 #include <cstring>
 #include <sstream>
 
-namespace OCLRT {
+namespace NEO {
 AubCommandStreamReceiverCreateFunc aubCommandStreamReceiverFactory[IGFX_MAX_CORE] = {};
 
-CommandStreamReceiver *AUBCommandStreamReceiver::create(const HardwareInfo &hwInfo, const std::string &baseName, bool standalone) {
+std::string AUBCommandStreamReceiver::createFullFilePath(const HardwareInfo &hwInfo, const std::string &filename) {
     std::string hwPrefix = hardwarePrefix[hwInfo.pPlatform->eProductFamily];
 
     // Generate the full filename
     const auto &gtSystemInfo = *hwInfo.pSysInfo;
     std::stringstream strfilename;
-    strfilename << hwPrefix << "_" << gtSystemInfo.SliceCount << "x" << gtSystemInfo.SubSliceCount << "x" << gtSystemInfo.MaxEuPerSubSlice << "_" << baseName << ".aub";
+    uint32_t subSlicesPerSlice = gtSystemInfo.SubSliceCount / gtSystemInfo.SliceCount;
+    strfilename << hwPrefix << "_" << gtSystemInfo.SliceCount << "x" << subSlicesPerSlice << "x" << gtSystemInfo.MaxEuPerSubSlice << "_" << filename << ".aub";
 
     // clean-up any fileName issues because of the file system incompatibilities
     auto fileName = strfilename.str();
@@ -51,15 +40,25 @@ CommandStreamReceiver *AUBCommandStreamReceiver::create(const HardwareInfo &hwIn
     filePath.append(Os::fileSeparator);
     filePath.append(fileName);
 
-    if (hwInfo.pPlatform->eRenderCoreFamily >= IGFX_MAX_CORE) {
+    return filePath;
+}
+
+CommandStreamReceiver *AUBCommandStreamReceiver::create(const std::string &baseName, bool standalone, ExecutionEnvironment &executionEnvironment) {
+    auto hwInfo = executionEnvironment.getHardwareInfo();
+    std::string filePath = AUBCommandStreamReceiver::createFullFilePath(*hwInfo, baseName);
+    if (DebugManager.flags.AUBDumpCaptureFileName.get() != "unk") {
+        filePath.assign(DebugManager.flags.AUBDumpCaptureFileName.get());
+    }
+
+    if (hwInfo->pPlatform->eRenderCoreFamily >= IGFX_MAX_CORE) {
         DEBUG_BREAK_IF(!false);
         return nullptr;
     }
 
-    auto pCreate = aubCommandStreamReceiverFactory[hwInfo.pPlatform->eRenderCoreFamily];
-    return pCreate ? pCreate(hwInfo, filePath, standalone) : nullptr;
+    auto pCreate = aubCommandStreamReceiverFactory[hwInfo->pPlatform->eRenderCoreFamily];
+    return pCreate ? pCreate(filePath, standalone, executionEnvironment) : nullptr;
 }
-} // namespace OCLRT
+} // namespace NEO
 
 namespace AubMemDump {
 using CmdServicesMemTraceMemoryCompare = AubMemDump::CmdServicesMemTraceMemoryCompare;
@@ -148,14 +147,14 @@ void AubFileStream::writeMemoryWriteHeader(uint64_t physAddress, size_t size, ui
 }
 
 void AubFileStream::writeGTT(uint32_t gttOffset, uint64_t entry) {
-    fileHandle.write(reinterpret_cast<char *>(&entry), sizeof(entry));
-}
-
-void AubFileStream::writePTE(uint64_t physAddress, uint64_t entry) {
     write(reinterpret_cast<char *>(&entry), sizeof(entry));
 }
 
-void AubFileStream::writeMMIO(uint32_t offset, uint32_t value) {
+void AubFileStream::writePTE(uint64_t physAddress, uint64_t entry, uint32_t addressSpace) {
+    write(reinterpret_cast<char *>(&entry), sizeof(entry));
+}
+
+void AubFileStream::writeMMIOImpl(uint32_t offset, uint32_t value) {
     CmdServicesMemTraceRegisterWrite header = {};
     header.setHeader();
     header.dwordCount = (sizeof(header) / sizeof(uint32_t)) - 1;
@@ -186,7 +185,26 @@ void AubFileStream::registerPoll(uint32_t registerOffset, uint32_t mask, uint32_
     write(reinterpret_cast<char *>(&header), sizeof(header));
 }
 
-void AubFileStream::expectMemory(uint64_t physAddress, const void *memory, size_t sizeRemaining) {
+void AubFileStream::expectMMIO(uint32_t mmioRegister, uint32_t expectedValue) {
+    using AubMemDump::CmdServicesMemTraceRegisterCompare;
+    CmdServicesMemTraceRegisterCompare header;
+    memset(&header, 0, sizeof(header));
+    header.setHeader();
+
+    header.data[0] = expectedValue;
+    header.registerOffset = mmioRegister;
+    header.noReadExpect = CmdServicesMemTraceRegisterCompare::NoReadExpectValues::ReadExpect;
+    header.registerSize = CmdServicesMemTraceRegisterCompare::RegisterSizeValues::Dword;
+    header.registerSpace = CmdServicesMemTraceRegisterCompare::RegisterSpaceValues::Mmio;
+    header.readMaskLow = 0xffffffff;
+    header.readMaskHigh = 0xffffffff;
+    header.dwordCount = (sizeof(header) / sizeof(uint32_t)) - 1;
+
+    write(reinterpret_cast<char *>(&header), sizeof(header));
+}
+
+void AubFileStream::expectMemory(uint64_t physAddress, const void *memory, size_t sizeRemaining,
+                                 uint32_t addressSpace, uint32_t compareOperation) {
     using CmdServicesMemTraceMemoryCompare = AubMemDump::CmdServicesMemTraceMemoryCompare;
     CmdServicesMemTraceMemoryCompare header = {};
     header.setHeader();
@@ -195,8 +213,9 @@ void AubFileStream::expectMemory(uint64_t physAddress, const void *memory, size_
     header.repeatMemory = CmdServicesMemTraceMemoryCompare::RepeatMemoryValues::NoRepeat;
     header.tiling = CmdServicesMemTraceMemoryCompare::TilingValues::NoTiling;
     header.crcCompare = CmdServicesMemTraceMemoryCompare::CrcCompareValues::NoCrc;
+    header.compareOperation = compareOperation;
     header.dataTypeHint = CmdServicesMemTraceMemoryCompare::DataTypeHintValues::TraceNotype;
-    header.addressSpace = CmdServicesMemTraceMemoryCompare::AddressSpaceValues::TraceNonlocal;
+    header.addressSpace = addressSpace;
 
     auto headerSize = sizeof(CmdServicesMemTraceMemoryCompare) - sizeof(CmdServicesMemTraceMemoryCompare::data);
     auto blockSizeMax = g_dwordCountMax * sizeof(uint32_t) - headerSize;
@@ -256,6 +275,10 @@ bool AubFileStream::addComment(const char *message) {
         write(reinterpret_cast<char *>(&zero), sizeof(uint32_t) - remainder);
     }
     return true;
+}
+
+std::unique_lock<std::mutex> AubFileStream::lockStream() {
+    return std::unique_lock<std::mutex>(mutex);
 }
 
 } // namespace AubMemDump

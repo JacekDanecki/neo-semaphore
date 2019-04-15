@@ -1,29 +1,14 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/kernel/kernel.h"
+#include "test.h"
 #include "unit_tests/fixtures/kernel_arg_fixture.h"
-#include "unit_tests/gen_common/test.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_csr.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
@@ -33,7 +18,7 @@
 
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 TEST_F(KernelImageArgTest, GIVENkernelWithImageArgsWHENcheckDifferentScenariosTHENproperBehaviour) {
     size_t imageWidth = image->getImageDesc().image_width;
@@ -200,19 +185,18 @@ HWTEST_F(KernelImageArgTest, givenImgWithMcsAllocWhenMakeResidentThenMakeMcsAllo
     auto surfaceFormat = Image::getSurfaceFormatFromTable(0, &imgFormat);
     auto img = Image::create(context.get(), 0, surfaceFormat, &imgDesc, nullptr, retVal);
     EXPECT_EQ(CL_SUCCESS, retVal);
-    auto mcsAlloc = context->getMemoryManager()->allocateGraphicsMemory(4096);
+    auto mcsAlloc = context->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     img->setMcsAllocation(mcsAlloc);
     cl_mem memObj = img;
     pKernel->setArg(0, sizeof(memObj), &memObj);
 
-    std::unique_ptr<OsAgnosticMemoryManager> memoryManager(new OsAgnosticMemoryManager());
-    std::unique_ptr<MockCsr<FamilyType>> csr(new MockCsr<FamilyType>(execStamp));
-    csr->setMemoryManager(memoryManager.get());
+    std::unique_ptr<MockCsr<FamilyType>> csr(new MockCsr<FamilyType>(execStamp, *pDevice->executionEnvironment));
+    csr->setupContext(*pDevice->getDefaultEngine().osContext);
 
     pKernel->makeResident(*csr.get());
     EXPECT_TRUE(csr->isMadeResident(mcsAlloc));
 
-    csr->makeSurfacePackNonResident(nullptr, false);
+    csr->makeSurfacePackNonResident(csr->getResidencyAllocations());
 
     EXPECT_TRUE(csr->isMadeNonResident(mcsAlloc));
 
@@ -251,8 +235,8 @@ TEST_F(KernelImageArgTest, givenNullKernelWhenClSetKernelArgCalledThenInvalidKer
 
 class MockSharingHandler : public SharingHandler {
   public:
-    void synchronizeObject(UpdateData *updateData) override {
-        updateData->synchronizationStatus = ACQUIRE_SUCCESFUL;
+    void synchronizeObject(UpdateData &updateData) override {
+        updateData.synchronizationStatus = ACQUIRE_SUCCESFUL;
     }
 };
 
@@ -275,4 +259,40 @@ TEST_F(KernelImageArgTest, givenKernelWithSharedImageWhenSetArgCalledThenUsingSh
     EXPECT_EQ(1u, pKernel->getPatchedArgumentsNum());
     EXPECT_TRUE(pKernel->getKernelArguments()[0].isPatched);
     EXPECT_TRUE(pKernel->isUsingSharedObjArgs());
+}
+
+TEST_F(KernelImageArgTest, givenWritableImageWhenSettingAsArgThenDoNotExpectAllocationInCacheFlushVector) {
+    MockImageBase image;
+    image.graphicsAllocation->setMemObjectsAllocationWithWritableFlags(true);
+    image.graphicsAllocation->setFlushL3Required(false);
+
+    cl_mem imageObj = &image;
+
+    pKernel->setArg(0, sizeof(imageObj), &imageObj);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pKernel->kernelArgRequiresCacheFlush[0]);
+}
+
+TEST_F(KernelImageArgTest, givenCacheFlushImageWhenSettingAsArgThenExpectAllocationInCacheFlushVector) {
+    MockImageBase image;
+    image.graphicsAllocation->setMemObjectsAllocationWithWritableFlags(false);
+    image.graphicsAllocation->setFlushL3Required(true);
+
+    cl_mem imageObj = &image;
+
+    pKernel->setArg(0, sizeof(imageObj), &imageObj);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(image.graphicsAllocation, pKernel->kernelArgRequiresCacheFlush[0]);
+}
+
+TEST_F(KernelImageArgTest, givenNoCacheFlushImageWhenSettingAsArgThenExpectAllocationInCacheFlushVector) {
+    MockImageBase image;
+    image.graphicsAllocation->setMemObjectsAllocationWithWritableFlags(false);
+    image.graphicsAllocation->setFlushL3Required(false);
+
+    cl_mem imageObj = &image;
+
+    pKernel->setArg(0, sizeof(imageObj), &imageObj);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pKernel->kernelArgRequiresCacheFlush[0]);
 }

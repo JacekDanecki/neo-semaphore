@@ -1,35 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gtest/gtest.h"
+#include "runtime/command_stream/preemption.h"
+#include "runtime/helpers/hw_helper.h"
+#include "runtime/memory_manager/graphics_allocation.h"
+#include "runtime/memory_manager/surface.h"
+#include "runtime/platform/platform.h"
 #include "test.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_csr.h"
-#include "runtime/memory_manager/surface.h"
-#include "runtime/memory_manager/graphics_allocation.h"
+
+#include "gtest/gtest.h"
 #include "hw_cmds.h"
+
 #include <type_traits>
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef ::testing::Types<NullSurface, HostPtrSurface, MemObjSurface, GeneralSurface> SurfaceTypes;
 
@@ -63,7 +53,7 @@ class SurfaceTest : public ::testing::Test {
   public:
     char data[10];
     MockBuffer buffer;
-    GraphicsAllocation gfxAllocation{nullptr, 0};
+    MockGraphicsAllocation gfxAllocation{nullptr, 0};
 };
 
 TYPED_TEST_CASE(SurfaceTest, SurfaceTypes);
@@ -71,9 +61,14 @@ TYPED_TEST_CASE(SurfaceTest, SurfaceTypes);
 HWTEST_TYPED_TEST(SurfaceTest, GivenSurfaceWhenInterfaceIsUsedThenSurfaceBehavesCorrectly) {
     int32_t execStamp;
 
-    MockCsr<FamilyType> *csr = new MockCsr<FamilyType>(execStamp);
-
-    auto memManager = csr->createMemoryManager(false);
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    executionEnvironment->commandStreamReceivers.resize(1);
+    MockCsr<FamilyType> *csr = new MockCsr<FamilyType>(execStamp, *executionEnvironment);
+    executionEnvironment->commandStreamReceivers[0].push_back(std::unique_ptr<CommandStreamReceiver>(csr));
+    executionEnvironment->initializeMemoryManager();
+    auto engine = HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0];
+    auto osContext = executionEnvironment->memoryManager->createAndRegisterOsContext(csr, engine, 1, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
+    csr->setupContext(*osContext);
 
     Surface *surface = createSurface::Create<TypeParam>(this->data,
                                                         &this->buffer,
@@ -93,8 +88,6 @@ HWTEST_TYPED_TEST(SurfaceTest, GivenSurfaceWhenInterfaceIsUsedThenSurfaceBehaves
 
     delete duplicatedSurface;
     delete surface;
-    delete csr;
-    delete memManager;
 }
 
 class CoherentMemObjSurface : public SurfaceTest<MemObjSurface> {

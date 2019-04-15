@@ -1,37 +1,23 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/fixtures/kernel_arg_fixture.h"
 
+#include "runtime/program/kernel_info.h"
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_image.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/mocks/mock_image.h"
 
 KernelImageArgTest::~KernelImageArgTest() = default;
 
 void KernelImageArgTest::SetUp() {
-    pKernelInfo.reset(OCLRT::KernelInfo::create());
+    pKernelInfo = std::make_unique<NEO::KernelInfo>();
     KernelArgPatchInfo kernelArgPatchInfo;
     kernelHeader.reset(new iOpenCL::SKernelBinaryHeaderCommon{});
 
@@ -65,21 +51,21 @@ void KernelImageArgTest::SetUp() {
     pKernelInfo->kernelArgInfo[0].isImage = true;
 
     DeviceFixture::SetUp();
-    program.reset(new OCLRT::MockProgram);
-    pKernel.reset(new OCLRT::MockKernel(program.get(), *pKernelInfo, *pDevice));
+    program = std::make_unique<NEO::MockProgram>(*pDevice->getExecutionEnvironment());
+    pKernel.reset(new NEO::MockKernel(program.get(), *pKernelInfo, *pDevice));
     ASSERT_EQ(CL_SUCCESS, pKernel->initialize());
 
-    pKernel->setKernelArgHandler(0, &OCLRT::Kernel::setArgImage);
-    pKernel->setKernelArgHandler(1, &OCLRT::Kernel::setArgImage);
-    pKernel->setKernelArgHandler(2, &OCLRT::Kernel::setArgImmediate);
-    pKernel->setKernelArgHandler(3, &OCLRT::Kernel::setArgImage);
-    pKernel->setKernelArgHandler(4, &OCLRT::Kernel::setArgImage);
+    pKernel->setKernelArgHandler(0, &NEO::Kernel::setArgImage);
+    pKernel->setKernelArgHandler(1, &NEO::Kernel::setArgImage);
+    pKernel->setKernelArgHandler(2, &NEO::Kernel::setArgImmediate);
+    pKernel->setKernelArgHandler(3, &NEO::Kernel::setArgImage);
+    pKernel->setKernelArgHandler(4, &NEO::Kernel::setArgImage);
 
     uint32_t crossThreadData[0x44] = {};
     crossThreadData[0x20 / sizeof(uint32_t)] = 0x12344321;
     pKernel->setCrossThreadData(crossThreadData, sizeof(crossThreadData));
 
-    context.reset(new OCLRT::MockContext(pDevice));
+    context.reset(new NEO::MockContext(pDevice));
     image.reset(Image2dHelper<>::create(context.get()));
     ASSERT_NE(nullptr, image);
 }

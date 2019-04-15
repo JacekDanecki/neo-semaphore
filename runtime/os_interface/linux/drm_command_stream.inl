@@ -1,27 +1,13 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/linear_stream.h"
-#include "hw_cmds.h"
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/preamble.h"
 #include "runtime/mem_obj/buffer.h"
@@ -30,28 +16,35 @@
 #include "runtime/os_interface/linux/drm_engine_mapper.h"
 #include "runtime/os_interface/linux/drm_memory_manager.h"
 #include "runtime/os_interface/linux/drm_neo.h"
+#include "runtime/os_interface/linux/os_context_linux.h"
 #include "runtime/os_interface/linux/os_interface.h"
+#include "runtime/platform/platform.h"
+
+#include "hw_cmds.h"
+
 #include <cstdlib>
 #include <cstring>
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
-DrmCommandStreamReceiver<GfxFamily>::DrmCommandStreamReceiver(const HardwareInfo &hwInfoIn,
-                                                              Drm *drm, gemCloseWorkerMode mode)
-    : BaseClass(hwInfoIn), gemCloseWorkerOperationMode(mode) {
-    this->drm = drm ? drm : Drm::get(0);
+DrmCommandStreamReceiver<GfxFamily>::DrmCommandStreamReceiver(ExecutionEnvironment &executionEnvironment, gemCloseWorkerMode mode)
+    : BaseClass(executionEnvironment), gemCloseWorkerOperationMode(mode) {
+
+    this->drm = executionEnvironment.osInterface->get()->getDrm();
+
     residency.reserve(512);
     execObjectsStorage.reserve(512);
-    CommandStreamReceiver::osInterface = std::unique_ptr<OSInterface>(new OSInterface());
-    CommandStreamReceiver::osInterface.get()->get()->setDrm(this->drm);
+
+    executionEnvironment.osInterface->get()->setDrm(this->drm);
+    CommandStreamReceiver::osInterface = executionEnvironment.osInterface.get();
+    auto gmmHelper = platform()->peekExecutionEnvironment()->getGmmHelper();
+    gmmHelper->setSimplifiedMocsTableUsage(this->drm->getSimplifiedMocsTableUsage());
 }
 
 template <typename GfxFamily>
-FlushStamp DrmCommandStreamReceiver<GfxFamily>::flush(BatchBuffer &batchBuffer, EngineType engineType, ResidencyContainer *allocationsForResidency) {
-    unsigned int engineFlag = 0xFF;
-    bool ret = DrmEngineMapper<GfxFamily>::engineNodeMap(engineType, engineFlag);
-    UNRECOVERABLE_IF(!(ret));
+FlushStamp DrmCommandStreamReceiver<GfxFamily>::flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) {
+    unsigned int engineFlag = static_cast<OsContextLinux *>(osContext)->getEngineFlag();
 
     DrmAllocation *alloc = static_cast<DrmAllocation *>(batchBuffer.commandBufferAllocation);
     DEBUG_BREAK_IF(!alloc);
@@ -69,19 +62,14 @@ FlushStamp DrmCommandStreamReceiver<GfxFamily>::flush(BatchBuffer &batchBuffer, 
             this->execObjectsStorage.resize(requiredSize);
         }
 
-        bb->swapResidencyVector(&this->residency);
-        bb->setExecObjectsStorage(this->execObjectsStorage.data());
-        this->residency.reserve(512);
-
         bb->exec(static_cast<uint32_t>(alignUp(batchBuffer.usedSize - batchBuffer.startOffset, 8)),
                  alignedStart, engineFlag | I915_EXEC_NO_RELOC,
                  batchBuffer.requiresCoherency,
-                 batchBuffer.low_priority);
+                 static_cast<OsContextLinux *>(osContext)->getDrmContextId(),
+                 this->residency,
+                 this->execObjectsStorage.data());
 
-        for (auto &surface : *(bb->getResidency())) {
-            surface->setIsResident(false);
-        }
-        bb->getResidency()->clear();
+        this->residency.clear();
 
         if (this->gemCloseWorkerOperationMode == gemCloseWorkerActive) {
             bb->reference();
@@ -103,21 +91,30 @@ void DrmCommandStreamReceiver<GfxFamily>::makeResident(GraphicsAllocation &gfxAl
 
 template <typename GfxFamily>
 void DrmCommandStreamReceiver<GfxFamily>::makeResident(BufferObject *bo) {
-    if (bo && !bo->peekIsResident()) {
-        bo->setIsResident(true);
+    if (bo) {
+        if (bo->peekIsReusableAllocation()) {
+            for (auto bufferObject : this->residency) {
+                if (bufferObject == bo) {
+                    return;
+                }
+            }
+        }
+
         residency.push_back(bo);
     }
 }
 
 template <typename GfxFamily>
-void DrmCommandStreamReceiver<GfxFamily>::processResidency(ResidencyContainer *inputAllocationsForResidency) {
-    auto &allocationsForResidency = inputAllocationsForResidency ? *inputAllocationsForResidency : getMemoryManager()->getResidencyAllocations();
-    for (uint32_t a = 0; a < allocationsForResidency.size(); a++) {
-        DrmAllocation *drmAlloc = reinterpret_cast<DrmAllocation *>(allocationsForResidency[a]);
+void DrmCommandStreamReceiver<GfxFamily>::processResidency(ResidencyContainer &inputAllocationsForResidency) {
+    for (auto &alloc : inputAllocationsForResidency) {
+        auto drmAlloc = static_cast<DrmAllocation *>(alloc);
         if (drmAlloc->fragmentsStorage.fragmentCount) {
             for (unsigned int f = 0; f < drmAlloc->fragmentsStorage.fragmentCount; f++) {
-                makeResident(drmAlloc->fragmentsStorage.fragmentStorageData[f].osHandleStorage->bo);
-                drmAlloc->fragmentsStorage.fragmentStorageData[f].residency->resident = true;
+                const auto osContextId = osContext->getContextId();
+                if (!drmAlloc->fragmentsStorage.fragmentStorageData[f].residency->resident[osContextId]) {
+                    makeResident(drmAlloc->fragmentsStorage.fragmentStorageData[f].osHandleStorage->bo);
+                    drmAlloc->fragmentsStorage.fragmentStorageData[f].residency->resident[osContextId] = true;
+                }
             }
         } else {
             BufferObject *bo = drmAlloc->getBO();
@@ -131,32 +128,22 @@ void DrmCommandStreamReceiver<GfxFamily>::makeNonResident(GraphicsAllocation &gf
     // Vector is moved to command buffer inside flush.
     // If flush wasn't called we need to make all objects non-resident.
     // If makeNonResident is called before flush, vector will be cleared.
-    if (gfxAllocation.residencyTaskCount != ObjectNotResident) {
-        for (auto &surface : residency) {
-            surface->setIsResident(false);
-        }
+    if (gfxAllocation.isResident(this->osContext->getContextId())) {
         if (this->residency.size() != 0) {
             this->residency.clear();
         }
         if (gfxAllocation.fragmentsStorage.fragmentCount) {
             for (auto fragmentId = 0u; fragmentId < gfxAllocation.fragmentsStorage.fragmentCount; fragmentId++) {
-                gfxAllocation.fragmentsStorage.fragmentStorageData[fragmentId].osHandleStorage->bo->setIsResident(false);
-                gfxAllocation.fragmentsStorage.fragmentStorageData[fragmentId].residency->resident = false;
+                gfxAllocation.fragmentsStorage.fragmentStorageData[fragmentId].residency->resident[osContext->getContextId()] = false;
             }
         }
     }
-    gfxAllocation.residencyTaskCount = ObjectNotResident;
+    gfxAllocation.releaseResidencyInOsContext(this->osContext->getContextId());
 }
 
 template <typename GfxFamily>
 DrmMemoryManager *DrmCommandStreamReceiver<GfxFamily>::getMemoryManager() {
     return (DrmMemoryManager *)CommandStreamReceiver::getMemoryManager();
-}
-
-template <typename GfxFamily>
-MemoryManager *DrmCommandStreamReceiver<GfxFamily>::createMemoryManager(bool enable64kbPages) {
-    memoryManager = new DrmMemoryManager(this->drm, this->gemCloseWorkerOperationMode, DebugManager.flags.EnableForcePin.get(), true);
-    return memoryManager;
 }
 
 template <typename GfxFamily>
@@ -169,20 +156,4 @@ bool DrmCommandStreamReceiver<GfxFamily>::waitForFlushStamp(FlushStamp &flushSta
     return true;
 }
 
-template <typename GfxFamily>
-inline void DrmCommandStreamReceiver<GfxFamily>::overrideMediaVFEStateDirty(bool dirty) {
-    this->mediaVfeStateDirty = dirty;
-    this->mediaVfeStateLowPriorityDirty = dirty;
-}
-
-template <typename GfxFamily>
-inline void DrmCommandStreamReceiver<GfxFamily>::programVFEState(LinearStream &csr, DispatchFlags &dispatchFlags) {
-    bool &currentContextDirtyFlag = dispatchFlags.lowPriority ? mediaVfeStateLowPriorityDirty : mediaVfeStateDirty;
-
-    if (currentContextDirtyFlag) {
-        PreambleHelper<GfxFamily>::programVFEState(&csr, hwInfo, requiredScratchSize, getScratchPatchAddress());
-        currentContextDirtyFlag = false;
-    }
-}
-
-} // namespace OCLRT
+} // namespace NEO

@@ -1,46 +1,34 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "reg_configs_common.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
+#include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/linear_stream.h"
-#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/command_stream/preemption.h"
 #include "runtime/event/user_event.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/cache_policy.h"
 #include "runtime/helpers/preamble.h"
 #include "runtime/helpers/ptr_math.h"
+#include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/mem_obj/buffer.h"
-#include "runtime/command_stream/preemption.h"
-#include "unit_tests/libult/ult_command_stream_receiver.h"
-#include "unit_tests/fixtures/device_fixture.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/utilities/linux/debug_env_reader.h"
+#include "test.h"
 #include "unit_tests/fixtures/built_in_fixture.h"
+#include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/ult_command_stream_receiver_fixture.h"
-#include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/hw_parse.h"
+#include "unit_tests/libult/create_command_stream.h"
+#include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
@@ -48,13 +36,11 @@
 #include "unit_tests/mocks/mock_event.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_submissions_aggregator.h"
-#include "unit_tests/libult/create_command_stream.h"
-#include "test.h"
-#include "gtest/gtest.h"
-#include "runtime/utilities/linux/debug_env_reader.h"
-#include "runtime/command_queue/gpgpu_walker.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+#include "reg_configs_common.h"
+
+using namespace NEO;
 
 using ::testing::_;
 using ::testing::Invoke;
@@ -74,8 +60,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
     CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
-    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(mockCsr->getMemoryManager());
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
+    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(*pDevice->executionEnvironment);
     mockCsr->overwriteFlatBatchBufferHelper(mockHelper);
     pDevice->resetCommandStreamReceiver(mockCsr);
 
@@ -89,7 +75,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
     dispatchFlags.outOfOrderExecutionAllowed = true;
 
     EXPECT_CALL(*mockHelper, setPatchInfoData(::testing::_)).Times(10);
-    EXPECT_CALL(*mockHelper, removePatchInfoData(::testing::_)).Times(4 * mockCsr->getRequiredPipeControlSize() / sizeof(PIPE_CONTROL));
+    EXPECT_CALL(*mockHelper, removePatchInfoData(::testing::_)).Times(4 * PipeControlHelper<FamilyType>::getRequiredPipeControlSize() / sizeof(PIPE_CONTROL));
     EXPECT_CALL(*mockHelper, registerCommandChunk(::testing::_)).Times(4);
     EXPECT_CALL(*mockHelper, registerBatchBufferStartAddress(::testing::_, ::testing::_)).Times(3);
 
@@ -99,7 +85,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
                        ioh,
                        ssh,
                        taskLevel,
-                       dispatchFlags);
+                       dispatchFlags,
+                       *pDevice);
 
     mockCsr->flushTask(commandStream,
                        0,
@@ -107,7 +94,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
                        ioh,
                        ssh,
                        taskLevel,
-                       dispatchFlags);
+                       dispatchFlags,
+                       *pDevice);
 
     mockCsr->flushTask(commandStream,
                        0,
@@ -115,7 +103,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
                        ioh,
                        ssh,
                        taskLevel,
-                       dispatchFlags);
+                       dispatchFlags,
+                       *pDevice);
 
     auto primaryBatch = mockedSubmissionsAggregator->peekCommandBuffers().peekHead();
     auto lastBatchBuffer = primaryBatch->next->next;
@@ -137,8 +126,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenA
     CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
-    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(mockCsr->getMemoryManager());
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
+    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(*pDevice->executionEnvironment);
     mockCsr->overwriteFlatBatchBufferHelper(mockHelper);
     pDevice->resetCommandStreamReceiver(mockCsr);
 
@@ -153,7 +142,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenA
                        ioh,
                        ssh,
                        taskLevel,
-                       dispatchFlags);
+                       dispatchFlags,
+                       *pDevice);
 }
 
 HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenAddPatchInfoCommentsForAUBDumpIsSetThenAddPatchInfoDataIsCollected) {
@@ -163,8 +153,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenA
     CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
-    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(mockCsr->getMemoryManager());
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
+    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(*pDevice->executionEnvironment);
     mockCsr->overwriteFlatBatchBufferHelper(mockHelper);
 
     pDevice->resetCommandStreamReceiver(mockCsr);
@@ -186,7 +176,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenA
                        ioh,
                        ssh,
                        taskLevel,
-                       dispatchFlags);
+                       dispatchFlags,
+                       *pDevice);
 
     EXPECT_EQ(4u, patchInfoDataVector.size());
 
@@ -214,8 +205,8 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenA
 HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCsrWhenCollectStateBaseAddresPatchInfoIsCalledThenAppropriateAddressesAreTaken) {
     typedef typename FamilyType::STATE_BASE_ADDRESS STATE_BASE_ADDRESS;
 
-    std::unique_ptr<MockCsrHw2<FamilyType>> mockCsr(new MockCsrHw2<FamilyType>(*platformDevices[0]));
-    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(mockCsr->getMemoryManager());
+    std::unique_ptr<MockCsrHw2<FamilyType>> mockCsr(new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment));
+    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(*pDevice->executionEnvironment);
     mockCsr->overwriteFlatBatchBufferHelper(mockHelper);
 
     std::vector<PatchInfoData> patchInfoDataVector;

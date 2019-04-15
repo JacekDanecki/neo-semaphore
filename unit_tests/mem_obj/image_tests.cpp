@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/built_ins/built_ins.h"
@@ -25,19 +10,22 @@
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/mem_obj/image.h"
+#include "runtime/mem_obj/mem_obj_helper.h"
+#include "runtime/os_interface/os_context.h"
+#include "test.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
-#include "unit_tests/gen_common/test.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/kernel_binary_helper.h"
 #include "unit_tests/helpers/memory_management.h"
+#include "unit_tests/mem_obj/image_compression_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_gmm.h"
 #include "unit_tests/mocks/mock_memory_manager.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 static const unsigned int testImageDimensions = 45;
 auto channelType = CL_UNORM_INT8;
@@ -60,9 +48,6 @@ class CreateImageTest : public DeviceFixture,
   protected:
     void SetUp() override {
         DeviceFixture::SetUp();
-        memoryManager = new MockMemoryManager();
-
-        pDevice->injectMemoryManager(memoryManager);
 
         CommandQueueFixture::SetUp(pDevice, 0);
         flags = GetParam();
@@ -85,12 +70,10 @@ class CreateImageTest : public DeviceFixture,
     }
 
     void TearDown() override {
-        BuiltIns::shutDown();
         CommandQueueFixture::TearDown();
         DeviceFixture::TearDown();
     }
 
-    MockMemoryManager *memoryManager;
     cl_image_format imageFormat;
     cl_image_desc imageDesc;
     cl_int retVal = CL_SUCCESS;
@@ -353,6 +336,7 @@ TEST(TestCreateImage, UseSharedContextToCreateImage) {
 
     EXPECT_EQ((width + 1) * elementSize, image->getHostPtrRowPitch());
     EXPECT_EQ(0u, image->getHostPtrSlicePitch());
+    EXPECT_TRUE(image->isMemObjZeroCopy());
 
     delete image;
 
@@ -420,14 +404,43 @@ TEST(TestCreateImageUseHostPtr, CheckMemoryAllocationForDifferenHostPtrAlignment
     alignedFree(pageAlignedPointer);
 }
 
+TEST(TestCreateImageUseHostPtr, givenZeroCopyImageValuesWhenUsingHostPtrThenZeroCopyImageIsCreated) {
+    cl_int retVal = CL_SUCCESS;
+    MockContext context;
+    cl_image_desc imageDesc = {};
+    imageDesc.image_width = 4096;
+    imageDesc.image_height = 1;
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+    auto hostPtr = alignedMalloc(imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes, MemoryConstants::cacheLineSize);
+
+    auto image = std::unique_ptr<Image>(Image::create(
+        &context,
+        flags,
+        surfaceFormat,
+        &imageDesc,
+        hostPtr,
+        retVal));
+
+    EXPECT_NE(nullptr, image);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_TRUE(image->isMemObjZeroCopy());
+    EXPECT_EQ(hostPtr, image->getGraphicsAllocation()->getUnderlyingBuffer());
+
+    alignedFree(hostPtr);
+}
+
 TEST_P(CreateImageNoHostPtr, validFlags) {
     auto image = createImageWithFlags(flags);
 
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, image);
-    ASSERT_EQ(true, image->isMemObjZeroCopy());
-    auto address = image->getCpuAddress();
-    EXPECT_NE(nullptr, address);
 
     delete image;
 }
@@ -447,33 +460,6 @@ TEST_P(CreateImageNoHostPtr, getImageDesc) {
     delete image;
 }
 
-TEST_P(CreateImageNoHostPtr, completionStamp) {
-    auto image = createImageWithFlags(flags);
-
-    FlushStamp expectedFlushStamp = 0;
-
-    ASSERT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, image);
-    ASSERT_EQ(true, image->isMemObjZeroCopy());
-    EXPECT_EQ(0u, image->getCompletionStamp().taskCount);
-    EXPECT_EQ(expectedFlushStamp, image->getCompletionStamp().flushStamp);
-    EXPECT_EQ(0u, image->getCompletionStamp().deviceOrdinal);
-    EXPECT_EQ(0u, image->getCompletionStamp().engineType);
-
-    CompletionStamp completionStamp;
-    completionStamp.taskCount = 42;
-    completionStamp.deviceOrdinal = 43;
-    completionStamp.engineType = EngineType::ENGINE_RCS;
-    completionStamp.flushStamp = 5;
-    image->setCompletionStamp(completionStamp, nullptr, nullptr);
-    EXPECT_EQ(completionStamp.taskCount, image->getCompletionStamp().taskCount);
-    EXPECT_EQ(completionStamp.flushStamp, image->getCompletionStamp().flushStamp);
-    EXPECT_EQ(completionStamp.deviceOrdinal, image->getCompletionStamp().deviceOrdinal);
-    EXPECT_EQ(completionStamp.engineType, image->getCompletionStamp().engineType);
-
-    delete image;
-}
-
 TEST_P(CreateImageNoHostPtr, withImageGraphicsAllocationReportsImageType) {
     auto image = createImageWithFlags(flags);
 
@@ -487,6 +473,16 @@ TEST_P(CreateImageNoHostPtr, withImageGraphicsAllocationReportsImageType) {
     EXPECT_EQ(isImageWritable, allocation->isMemObjectsAllocationWithWritableFlags());
 
     delete image;
+}
+
+TEST_P(CreateImageNoHostPtr, whenImageIsReadOnlyThenFlushL3IsNotRequired) {
+    auto image = clUniquePtr(createImageWithFlags(flags));
+
+    EXPECT_NE(nullptr, image);
+
+    auto allocation = image->getGraphicsAllocation();
+    auto isReadOnly = isValueSet(flags, CL_MEM_READ_ONLY);
+    EXPECT_NE(isReadOnly, allocation->isFlushL3Required());
 }
 
 // Parameterized test that tests image creation with all flags that should be
@@ -519,7 +515,6 @@ struct CreateImageHostPtr
 
     void TearDown() override {
         delete image;
-        CompilerInterface::shutdown();
         BaseClass::TearDown();
         MemoryManagementFixture::TearDown();
     }
@@ -545,25 +540,14 @@ TEST_P(CreateImageHostPtr, isResidentDefaultsToFalseAfterCreate) {
     image = createImage(retVal);
     ASSERT_NE(nullptr, image);
 
-    EXPECT_FALSE(image->getGraphicsAllocation()->isResident());
-}
-
-TEST_P(CreateImageHostPtr, isResidentReturnsValueFromSetResident) {
-    image = createImage(retVal);
-    ASSERT_NE(nullptr, image);
-
-    image->getGraphicsAllocation()->residencyTaskCount = 1;
-    EXPECT_TRUE(image->getGraphicsAllocation()->isResident());
-
-    image->getGraphicsAllocation()->residencyTaskCount = ObjectNotResident;
-    EXPECT_FALSE(image->getGraphicsAllocation()->isResident());
+    EXPECT_FALSE(image->getGraphicsAllocation()->isResident(pDevice->getDefaultEngine().osContext->getContextId()));
 }
 
 TEST_P(CreateImageHostPtr, getAddress) {
     image = createImage(retVal);
     ASSERT_NE(nullptr, image);
 
-    auto address = image->getCpuAddress();
+    auto address = image->getBasePtrForMap();
     EXPECT_NE(nullptr, address);
 
     if (!(flags & CL_MEM_USE_HOST_PTR)) {
@@ -585,18 +569,13 @@ TEST_P(CreateImageHostPtr, getAddress) {
 
         bool copyRequired = (alignedRequiredSize > alignedPtrSize) | (requiredRowPitch != rowPitch) | (slicePitch != requiredSlicePitch);
 
+        EXPECT_EQ(pHostPtr, address);
+        EXPECT_EQ(pHostPtr, image->getHostPtr());
+
         if (copyRequired) {
-            // Buffer should use host ptr
-            EXPECT_NE(pHostPtr, address);
-            EXPECT_EQ(pHostPtr, image->getHostPtr());
             EXPECT_FALSE(image->isMemObjZeroCopy());
-        } else {
-            // Buffer should use host ptr
-            EXPECT_EQ(pHostPtr, address);
-            EXPECT_TRUE(image->isMemObjZeroCopy());
         }
     } else {
-        // Buffer should have a different ptr
         EXPECT_NE(pHostPtr, address);
     }
 
@@ -606,17 +585,11 @@ TEST_P(CreateImageHostPtr, getAddress) {
     }
 }
 
-TEST_P(CreateImageHostPtr, getSize) {
+TEST_P(CreateImageHostPtr, givenImageWhenItIsCreateItHasProperSizeAndGraphicsAllocation) {
     image = createImage(retVal);
     ASSERT_NE(nullptr, image);
 
     EXPECT_NE(0u, image->getSize());
-}
-
-TEST_P(CreateImageHostPtr, graphicsAllocationPresent) {
-    image = createImage(retVal);
-    ASSERT_NE(nullptr, image);
-
     EXPECT_NE(nullptr, image->getGraphicsAllocation());
 }
 
@@ -672,7 +645,10 @@ TEST_P(CreateImageHostPtr, failedAllocationInjection) {
 }
 
 TEST_P(CreateImageHostPtr, checkWritingOutsideAllocatedMemoryWhileCreatingImage) {
-    memoryManager->redundancyRatio = 2;
+    auto mockMemoryManager = new MockMemoryManager(*pDevice->executionEnvironment);
+    pDevice->injectMemoryManager(mockMemoryManager);
+    context->setMemoryManager(mockMemoryManager);
+    mockMemoryManager->redundancyRatio = 2;
     memset(pHostPtr, 1, testImageDimensions * testImageDimensions * elementSize * 4);
     imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D_ARRAY;
     imageDesc.image_height = 1;
@@ -692,7 +668,7 @@ TEST_P(CreateImageHostPtr, checkWritingOutsideAllocatedMemoryWhileCreatingImage)
         EXPECT_EQ(0, memory[memorySize + i]);
     }
 
-    memoryManager->redundancyRatio = 1;
+    mockMemoryManager->redundancyRatio = 1;
 }
 
 struct ModifyableImage {
@@ -700,11 +676,11 @@ struct ModifyableImage {
     static cl_image_format imageFormat;
     static cl_image_desc imageDesc;
     static void *hostPtr;
-    static OCLRT::Context *context;
+    static NEO::Context *context;
 };
 
 void *ModifyableImage::hostPtr = nullptr;
-OCLRT::Context *ModifyableImage::context = nullptr;
+NEO::Context *ModifyableImage::context = nullptr;
 cl_image_format ModifyableImage::imageFormat;
 cl_image_desc ModifyableImage::imageDesc;
 
@@ -938,36 +914,6 @@ TEST(ImageGetSurfaceFormatInfoTest, givenNullptrFormatWhenGetSurfaceFormatInfoIs
     EXPECT_EQ(nullptr, surfaceFormat);
 }
 
-class ImageCompressionTests : public ::testing::Test {
-  public:
-    class MyMemoryManager : public MockMemoryManager {
-      public:
-        GraphicsAllocation *allocateGraphicsMemoryForImage(ImageInfo &imgInfo, Gmm *gmm) override {
-            mockMethodCalled = true;
-            capturedImgInfo = imgInfo;
-            return OsAgnosticMemoryManager::allocateGraphicsMemoryForImage(imgInfo, gmm);
-        }
-        ImageInfo capturedImgInfo = {};
-        bool mockMethodCalled = false;
-    };
-
-    void SetUp() override {
-        myMemoryManager = new MyMemoryManager();
-        mockDevice.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(*platformDevices));
-        mockDevice->injectMemoryManager(myMemoryManager);
-        mockContext.reset(new MockContext(mockDevice.get()));
-    }
-
-    std::unique_ptr<MockDevice> mockDevice;
-    std::unique_ptr<MockContext> mockContext;
-    MyMemoryManager *myMemoryManager = nullptr;
-
-    cl_image_desc imageDesc = {};
-    cl_image_format imageFormat{CL_RGBA, CL_UNORM_INT8};
-    cl_mem_flags flags = CL_MEM_READ_WRITE;
-    cl_int retVal = CL_SUCCESS;
-};
-
 TEST_F(ImageCompressionTests, givenTiledImageWhenCreatingAllocationThenPreferRenderCompression) {
     imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
     imageDesc.image_width = 5;
@@ -1080,7 +1026,7 @@ TEST(ImageTest, givenImageWhenAskedForPtrLengthForCpuMappingThenReturnCorrectVal
     EXPECT_EQ(expectedLength, retLength);
 }
 
-TEST(ImageTest, givenMipMapImage3DWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithoutSlicePitch) {
+TEST(ImageTest, givenMipMapImage3DWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithSlicePitch) {
     MockContext ctx;
     cl_image_desc imageDesc{};
     imageDesc.image_type = CL_MEM_OBJECT_IMAGE3D;
@@ -1092,16 +1038,16 @@ TEST(ImageTest, givenMipMapImage3DWhenAskedForPtrOffsetForGpuMappingThenReturnOf
     std::unique_ptr<Image> image(ImageHelper<Image3dDefaults>::create(&ctx, &imageDesc));
     EXPECT_FALSE(image->mappingOnCpuAllowed());
 
-    MemObjOffsetArray origin = {{}};
+    MemObjOffsetArray origin{{1, 1, 1}};
 
     auto retOffset = image->calculateOffsetForMapping(origin);
     size_t expectedOffset = image->getSurfaceFormatInfo().ImageElementSizeInBytes * origin[0] +
-                            image->getHostPtrRowPitch() * origin[1];
+                            image->getHostPtrRowPitch() * origin[1] + image->getHostPtrSlicePitch() * origin[2];
 
     EXPECT_EQ(expectedOffset, retOffset);
 }
 
-TEST(ImageTest, givenMipMapImage2DArrayWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithoutSlicePitch) {
+TEST(ImageTest, givenMipMapImage2DArrayWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithSlicePitch) {
     MockContext ctx;
     cl_image_desc imageDesc{};
     imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D_ARRAY;
@@ -1113,16 +1059,37 @@ TEST(ImageTest, givenMipMapImage2DArrayWhenAskedForPtrOffsetForGpuMappingThenRet
     std::unique_ptr<Image> image(ImageHelper<Image2dArrayDefaults>::create(&ctx, &imageDesc));
     EXPECT_FALSE(image->mappingOnCpuAllowed());
 
-    MemObjOffsetArray origin = {{}};
+    MemObjOffsetArray origin{{1, 1, 1}};
 
     auto retOffset = image->calculateOffsetForMapping(origin);
     size_t expectedOffset = image->getSurfaceFormatInfo().ImageElementSizeInBytes * origin[0] +
-                            image->getHostPtrRowPitch() * origin[1];
+                            image->getHostPtrRowPitch() * origin[1] + image->getHostPtrSlicePitch() * origin[2];
 
     EXPECT_EQ(expectedOffset, retOffset);
 }
 
-TEST(ImageTest, givenMipMapImage1DArrayWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithoutSlicePitch) {
+TEST(ImageTest, givenNonMipMapImage2DArrayWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithSlicePitch) {
+    MockContext ctx;
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D_ARRAY;
+    imageDesc.image_width = 5;
+    imageDesc.image_height = 5;
+    imageDesc.image_array_size = 5;
+    imageDesc.num_mip_levels = 1;
+
+    std::unique_ptr<Image> image(ImageHelper<Image2dArrayDefaults>::create(&ctx, &imageDesc));
+    EXPECT_FALSE(image->mappingOnCpuAllowed());
+
+    MemObjOffsetArray origin{{1, 1, 1}};
+
+    auto retOffset = image->calculateOffsetForMapping(origin);
+    size_t expectedOffset = image->getSurfaceFormatInfo().ImageElementSizeInBytes * origin[0] +
+                            image->getHostPtrRowPitch() * origin[1] + image->getHostPtrSlicePitch() * origin[2];
+
+    EXPECT_EQ(expectedOffset, retOffset);
+}
+
+TEST(ImageTest, givenMipMapImage1DArrayWhenAskedForPtrOffsetForGpuMappingThenReturnOffsetWithSlicePitch) {
     MockContext ctx;
     cl_image_desc imageDesc{};
     imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D_ARRAY;
@@ -1133,26 +1100,230 @@ TEST(ImageTest, givenMipMapImage1DArrayWhenAskedForPtrOffsetForGpuMappingThenRet
     std::unique_ptr<Image> image(ImageHelper<Image1dArrayDefaults>::create(&ctx, &imageDesc));
     EXPECT_FALSE(image->mappingOnCpuAllowed());
 
-    MemObjOffsetArray origin = {{}};
+    MemObjOffsetArray origin{{1, 1, 0}};
 
     auto retOffset = image->calculateOffsetForMapping(origin);
-    size_t expectedOffset = image->getSurfaceFormatInfo().ImageElementSizeInBytes * origin[0];
+    size_t expectedOffset = image->getSurfaceFormatInfo().ImageElementSizeInBytes * origin[0] + image->getHostPtrSlicePitch() * origin[1];
 
     EXPECT_EQ(expectedOffset, retOffset);
+}
+
+TEST(ImageTest, givenNullHostPtrWhenIsCopyRequiredIsCalledThenFalseIsReturned) {
+    ImageInfo imgInfo{};
+    EXPECT_FALSE(Image::isCopyRequired(imgInfo, nullptr));
+}
+
+TEST(ImageTest, givenAllowedTilingWhenIsCopyRequiredIsCalledThenTrueIsReturned) {
+    ImageInfo imgInfo{};
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    imageDesc.image_width = 1;
+    imageDesc.image_height = 1;
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    imgInfo.imgDesc = &imageDesc;
+    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.rowPitch = imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.slicePitch = imgInfo.rowPitch * imageDesc.image_height;
+    imgInfo.size = imgInfo.slicePitch;
+
+    char memory;
+
+    EXPECT_TRUE(Image::isCopyRequired(imgInfo, &memory));
+}
+
+TEST(ImageTest, givenDifferentRowPitchWhenIsCopyRequiredIsCalledThenTrueIsReturned) {
+    ImageInfo imgInfo{};
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imageDesc.image_width = 1;
+    imageDesc.image_height = 1;
+    imageDesc.image_row_pitch = 10;
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    imgInfo.imgDesc = &imageDesc;
+    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.rowPitch = imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.slicePitch = imgInfo.rowPitch * imageDesc.image_height;
+    imgInfo.size = imgInfo.slicePitch;
+
+    char memory[10];
+
+    EXPECT_TRUE(Image::isCopyRequired(imgInfo, memory));
+}
+
+TEST(ImageTest, givenDifferentSlicePitchAndTilingNotAllowedWhenIsCopyRequiredIsCalledThenTrueIsReturned) {
+    ImageInfo imgInfo{};
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imageDesc.image_width = 4;
+    imageDesc.image_height = 2;
+    imageDesc.image_slice_pitch = imageDesc.image_width * (imageDesc.image_height + 3) * surfaceFormat->ImageElementSizeInBytes;
+
+    imgInfo.imgDesc = &imageDesc;
+    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.rowPitch = imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.slicePitch = imgInfo.rowPitch * imageDesc.image_height;
+    imgInfo.size = imgInfo.slicePitch;
+    char memory[8];
+
+    EXPECT_TRUE(Image::isCopyRequired(imgInfo, memory));
+}
+
+TEST(ImageTest, givenNotCachelinAlignedPointerWhenIsCopyRequiredIsCalledThenTrueIsReturned) {
+    ImageInfo imgInfo{};
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imageDesc.image_width = 4096;
+    imageDesc.image_height = 1;
+
+    imgInfo.imgDesc = &imageDesc;
+    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.rowPitch = imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.slicePitch = imgInfo.rowPitch * imageDesc.image_height;
+    imgInfo.size = imgInfo.slicePitch;
+    char memory[8];
+
+    EXPECT_TRUE(Image::isCopyRequired(imgInfo, &memory[1]));
+}
+
+TEST(ImageTest, givenCachelineAlignedPointerAndProperDescriptorValuesWhenIsCopyRequiredIsCalledThenFalseIsReturned) {
+    ImageInfo imgInfo{};
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imageDesc.image_width = 2;
+    imageDesc.image_height = 1;
+
+    imgInfo.imgDesc = &imageDesc;
+    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.rowPitch = imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.slicePitch = imgInfo.rowPitch * imageDesc.image_height;
+    imgInfo.size = imgInfo.slicePitch;
+
+    auto hostPtr = alignedMalloc(imgInfo.size, MemoryConstants::cacheLineSize);
+
+    EXPECT_FALSE(Image::isCopyRequired(imgInfo, hostPtr));
+    alignedFree(hostPtr);
+}
+
+TEST(ImageTest, givenForcedLinearImages3DImageAndProperDescriptorValuesWhenIsCopyRequiredIsCalledThenFalseIsReturned) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.ForceLinearImages.set(true);
+
+    ImageInfo imgInfo{};
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE3D;
+    imageDesc.image_width = 2;
+    imageDesc.image_height = 2;
+    imageDesc.image_depth = 2;
+
+    imgInfo.imgDesc = &imageDesc;
+    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.rowPitch = imageDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.slicePitch = imgInfo.rowPitch * imageDesc.image_height;
+    imgInfo.size = imgInfo.slicePitch;
+
+    auto hostPtr = alignedMalloc(imgInfo.size, MemoryConstants::cacheLineSize);
+
+    EXPECT_FALSE(Image::isCopyRequired(imgInfo, hostPtr));
+    alignedFree(hostPtr);
+}
+
+TEST(ImageTest, givenClMemCopyHostPointerPassedToImageCreateWhenAllocationIsNotInSystemMemoryPoolThenAllocationIsWrittenByEnqueueWriteImage) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    auto *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*executionEnvironment);
+    executionEnvironment->memoryManager.reset(memoryManager);
+    EXPECT_CALL(*memoryManager, allocateGraphicsMemoryInDevicePool(::testing::_, ::testing::_))
+        .WillRepeatedly(::testing::Invoke(memoryManager, &GMockMemoryManagerFailFirstAllocation::baseAllocateGraphicsMemoryInDevicePool));
+
+    std::unique_ptr<MockDevice> device(MockDevice::create<MockDevice>(*platformDevices, executionEnvironment, 0));
+
+    MockContext ctx(device.get());
+    EXPECT_CALL(*memoryManager, allocateGraphicsMemoryInDevicePool(::testing::_, ::testing::_))
+        .WillOnce(::testing::Invoke(memoryManager, &GMockMemoryManagerFailFirstAllocation::allocateNonSystemGraphicsMemoryInDevicePool))
+        .WillRepeatedly(::testing::Invoke(memoryManager, &GMockMemoryManagerFailFirstAllocation::baseAllocateGraphicsMemoryInDevicePool));
+
+    char memory[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    auto taskCount = device->getCommandStreamReceiver().peekLatestFlushedTaskCount();
+
+    cl_int retVal = 0;
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR;
+
+    cl_image_desc imageDesc{};
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imageDesc.image_width = 1;
+    imageDesc.image_height = 1;
+    imageDesc.image_row_pitch = sizeof(memory);
+
+    cl_image_format imageFormat = {};
+    imageFormat.image_channel_data_type = CL_UNSIGNED_INT8;
+    imageFormat.image_channel_order = CL_R;
+
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    std::unique_ptr<Image> image(Image::create(&ctx, flags, surfaceFormat, &imageDesc, memory, retVal));
+    EXPECT_NE(nullptr, image);
+
+    auto taskCountSent = device->getCommandStreamReceiver().peekLatestFlushedTaskCount();
+    EXPECT_LT(taskCount, taskCountSent);
 }
 
 typedef ::testing::TestWithParam<uint32_t> MipLevelCoordinateTest;
 
 TEST_P(MipLevelCoordinateTest, givenMipmappedImageWhenValidateRegionAndOriginIsCalledThenAdditionalOriginCoordinateIsAnalyzed) {
     size_t origin[4]{};
-    size_t region[3] = {1, 1, 1};
+    size_t region[3]{1, 1, 1};
     cl_image_desc desc = {};
     desc.image_type = GetParam();
     desc.num_mip_levels = 2;
     origin[getMipLevelOriginIdx(desc.image_type)] = 1;
-    EXPECT_TRUE(Image::validateRegionAndOrigin(origin, region, desc));
+    EXPECT_EQ(CL_SUCCESS, Image::validateRegionAndOrigin(origin, region, desc));
     origin[getMipLevelOriginIdx(desc.image_type)] = 2;
-    EXPECT_FALSE(Image::validateRegionAndOrigin(origin, region, desc));
+    EXPECT_EQ(CL_INVALID_MIP_LEVEL, Image::validateRegionAndOrigin(origin, region, desc));
 }
 
 INSTANTIATE_TEST_CASE_P(MipLevelCoordinate,
@@ -1183,7 +1354,7 @@ HWTEST_F(ImageTransformTest, givenSurfaceStateWhenTransformImage3dTo2dArrayIsCal
     using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     MockContext context;
     auto image = std::unique_ptr<Image>(ImageHelper<Image3dDefaults>::create(&context));
-    auto surfaceState = RENDER_SURFACE_STATE::sInit();
+    auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
     auto imageHw = static_cast<ImageHw<FamilyType> *>(image.get());
     surfaceState.setSurfaceType(SURFACE_TYPE::SURFACE_TYPE_SURFTYPE_3D);
     surfaceState.setSurfaceArray(false);
@@ -1197,13 +1368,34 @@ HWTEST_F(ImageTransformTest, givenSurfaceStateWhenTransformImage2dArrayTo3dIsCal
     using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
     MockContext context;
     auto image = std::unique_ptr<Image>(ImageHelper<Image3dDefaults>::create(&context));
-    auto surfaceState = RENDER_SURFACE_STATE::sInit();
+    auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
     auto imageHw = static_cast<ImageHw<FamilyType> *>(image.get());
     surfaceState.setSurfaceType(SURFACE_TYPE::SURFACE_TYPE_SURFTYPE_2D);
     surfaceState.setSurfaceArray(true);
     imageHw->transformImage2dArrayTo3d(reinterpret_cast<void *>(&surfaceState));
     EXPECT_EQ(SURFACE_TYPE::SURFACE_TYPE_SURFTYPE_3D, surfaceState.getSurfaceType());
     EXPECT_FALSE(surfaceState.getSurfaceArray());
+}
+
+HWTEST_F(ImageTransformTest, givenSurfaceBaseAddressAndUnifiedSurfaceWhenSetUnifiedAuxAddressCalledThenAddressIsSet) {
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+    using SURFACE_TYPE = typename RENDER_SURFACE_STATE::SURFACE_TYPE;
+    MockContext context;
+    auto image = std::unique_ptr<Image>(ImageHelper<Image3dDefaults>::create(&context));
+    auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
+    auto imageHw = static_cast<ImageHw<FamilyType> *>(image.get());
+    auto gmm = std::unique_ptr<Gmm>(new Gmm(nullptr, 1, false));
+    uint64_t surfBsaseAddress = 0xABCDEF1000;
+    surfaceState.setSurfaceBaseAddress(surfBsaseAddress);
+    auto mockResource = reinterpret_cast<MockGmmResourceInfo *>(gmm->gmmResourceInfo.get());
+    mockResource->setUnifiedAuxTranslationCapable();
+
+    EXPECT_EQ(0u, surfaceState.getAuxiliarySurfaceBaseAddress());
+
+    imageHw->setUnifiedAuxBaseAddress(&surfaceState, gmm.get());
+    uint64_t offset = gmm->gmmResourceInfo->getUnifiedAuxSurfaceOffset(GMM_UNIFIED_AUX_TYPE::GMM_AUX_SURF);
+
+    EXPECT_EQ(surfBsaseAddress + offset, surfaceState.getAuxiliarySurfaceBaseAddress());
 }
 
 template <typename FamilyName>
@@ -1213,19 +1405,25 @@ class MockImageHw : public ImageHw<FamilyName> {
     }
 
     void setClearColorParams(typename FamilyName::RENDER_SURFACE_STATE *surfaceState, const Gmm *gmm) override;
+    void setAuxParamsForMCSCCS(typename FamilyName::RENDER_SURFACE_STATE *surfaceState, Gmm *gmm) override;
     bool setClearColorParamsCalled = false;
+    bool setAuxParamsForMCSCCSCalled = false;
 };
 
 template <typename FamilyName>
 void MockImageHw<FamilyName>::setClearColorParams(typename FamilyName::RENDER_SURFACE_STATE *surfaceState, const Gmm *gmm) {
     this->setClearColorParamsCalled = true;
 }
+template <typename FamilyName>
+void MockImageHw<FamilyName>::setAuxParamsForMCSCCS(typename FamilyName::RENDER_SURFACE_STATE *surfaceState, Gmm *gmm) {
+    this->setAuxParamsForMCSCCSCalled = true;
+}
 
 using HwImageTest = ::testing::Test;
 HWTEST_F(HwImageTest, givenImageHwWhenSettingCCSParamsThenSetClearColorParamsIsCalled) {
 
-    OsAgnosticMemoryManager memoryManager;
     MockContext context;
+    OsAgnosticMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
     context.setMemoryManager(&memoryManager);
 
     cl_image_desc imgDesc = {};
@@ -1239,17 +1437,62 @@ HWTEST_F(HwImageTest, givenImageHwWhenSettingCCSParamsThenSetClearColorParamsIsC
     format.image_channel_order = CL_RGBA;
 
     auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
-    std::unique_ptr<Gmm> gmm = MockGmm::queryImgParams(imgInfo);
+    AllocationProperties allocProperties = MemObjHelper::getAllocationProperties(imgInfo, true, 0);
 
-    auto graphicsAllocation = memoryManager.allocateGraphicsMemoryForImage(imgInfo, gmm.release());
+    auto graphicsAllocation = memoryManager.allocateGraphicsMemoryInPreferredPool(allocProperties, nullptr);
 
     SurfaceFormatInfo formatInfo = {};
     std::unique_ptr<MockImageHw<FamilyType>> mockImage(new MockImageHw<FamilyType>(&context, format, imgDesc, formatInfo, graphicsAllocation));
 
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
-    auto surfaceState = RENDER_SURFACE_STATE::sInit();
+    auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
 
     EXPECT_FALSE(mockImage->setClearColorParamsCalled);
-    mockImage->setAuxParamsForCCS(&surfaceState, graphicsAllocation->gmm);
+    mockImage->setAuxParamsForCCS(&surfaceState, graphicsAllocation->getDefaultGmm());
     EXPECT_TRUE(mockImage->setClearColorParamsCalled);
+}
+
+using HwImageTest = ::testing::Test;
+HWTEST_F(HwImageTest, givenImageHwWithUnifiedSurfaceAndMcsWhenSettingParamsForMultisampleImageThenSetParamsForCcsMcsIsCalled) {
+
+    MockContext context;
+    OsAgnosticMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
+    context.setMemoryManager(&memoryManager);
+
+    cl_image_desc imgDesc = {};
+    imgDesc.image_height = 1;
+    imgDesc.image_width = 4;
+    imgDesc.image_depth = 1;
+    imgDesc.image_type = CL_MEM_OBJECT_IMAGE1D;
+    imgDesc.num_samples = 8;
+    cl_image_format format = {};
+
+    auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
+    AllocationProperties allocProperties = MemObjHelper::getAllocationProperties(imgInfo, true, 0);
+
+    auto graphicsAllocation = memoryManager.allocateGraphicsMemoryInPreferredPool(allocProperties, nullptr);
+
+    SurfaceFormatInfo formatInfo = {};
+    std::unique_ptr<MockImageHw<FamilyType>> mockImage(new MockImageHw<FamilyType>(&context, format, imgDesc, formatInfo, graphicsAllocation));
+
+    McsSurfaceInfo msi = {10, 20, 3};
+    auto mcsAlloc = context.getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    mcsAlloc->setDefaultGmm(new Gmm(nullptr, 1, false));
+
+    auto mockMcsGmmResInfo = reinterpret_cast<::testing::NiceMock<MockGmmResourceInfo> *>(mcsAlloc->getDefaultGmm()->gmmResourceInfo.get());
+    mockMcsGmmResInfo->setUnifiedAuxTranslationCapable();
+    mockMcsGmmResInfo->setMultisampleControlSurface();
+    EXPECT_TRUE(mcsAlloc->getDefaultGmm()->unifiedAuxTranslationCapable());
+    EXPECT_TRUE(mcsAlloc->getDefaultGmm()->hasMultisampleControlSurface());
+
+    mockImage->setMcsSurfaceInfo(msi);
+    mockImage->setMcsAllocation(mcsAlloc);
+
+    typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    auto surfaceState = FamilyType::cmdInitRenderSurfaceState;
+
+    EXPECT_FALSE(mockImage->setAuxParamsForMCSCCSCalled);
+    mockImage->setAuxParamsForMultisamples(&surfaceState);
+
+    EXPECT_TRUE(mockImage->setAuxParamsForMCSCCSCalled);
 }

@@ -1,38 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/event/event.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "test.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/command_queue/enqueue_fixture.h"
+#include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/hello_world_kernel_fixture.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
 #include "unit_tests/fixtures/simple_arg_kernel_fixture.h"
-#include "test.h"
-#include "unit_tests/fixtures/buffer_fixture.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct OOMSetting {
     bool oomCS;
@@ -109,7 +94,7 @@ struct OOMCommandQueueBufferTest : public MemoryManagementFixture,
 HWTEST_P(OOMCommandQueueBufferTest, enqueueCopyBuffer) {
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();
@@ -133,7 +118,7 @@ HWTEST_P(OOMCommandQueueBufferTest, enqueueCopyBuffer) {
 HWTEST_P(OOMCommandQueueBufferTest, enqueueFillBuffer) {
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();
@@ -157,7 +142,7 @@ HWTEST_P(OOMCommandQueueBufferTest, enqueueFillBuffer) {
 HWTEST_P(OOMCommandQueueBufferTest, enqueueReadBuffer) {
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();
@@ -181,7 +166,7 @@ HWTEST_P(OOMCommandQueueBufferTest, enqueueReadBuffer) {
 HWTEST_P(OOMCommandQueueBufferTest, enqueueWriteBuffer) {
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();
@@ -205,7 +190,7 @@ HWTEST_P(OOMCommandQueueBufferTest, enqueueWriteBuffer) {
 HWTEST_P(OOMCommandQueueBufferTest, enqueueWriteBufferRect) {
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();
@@ -230,7 +215,7 @@ HWTEST_P(OOMCommandQueueBufferTest, enqueueKernelHelloWorld) {
     typedef HelloWorldKernelFixture KernelFixture;
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();
@@ -260,7 +245,7 @@ HWTEST_P(OOMCommandQueueBufferTest, enqueueKernelSimpleArg) {
     typedef SimpleArgKernelFixture KernelFixture;
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, 0);
 
-    auto &commandStream = pCmdQ->getCS();
+    auto &commandStream = pCmdQ->getCS(1024);
     auto &indirectHeap = pCmdQ->getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 10);
     auto usedBeforeCS = commandStream.getUsed();
     auto usedBeforeISH = indirectHeap.getUsed();

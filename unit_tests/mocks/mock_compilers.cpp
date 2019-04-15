@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/mocks/mock_compilers.h"
@@ -29,14 +14,13 @@
 #include "unit_tests/helpers/test_files.h"
 #include "unit_tests/mocks/mock_sip.h"
 
-#include "ocl_igc_interface/igc_ocl_device_ctx.h"
+#include "cif/macros/enable.h"
 #include "ocl_igc_interface/fcl_ocl_device_ctx.h"
+#include "ocl_igc_interface/igc_ocl_device_ctx.h"
 
 #include <fstream>
 #include <map>
-
-#include "cif/macros/enable.h"
-namespace OCLRT {
+namespace NEO {
 
 std::unique_ptr<MockCompilerDebugVars> fclDebugVars;
 std::unique_ptr<MockCompilerDebugVars> igcDebugVars;
@@ -87,8 +71,8 @@ void MockCompilerEnableGuard::Enable() {
         this->oldIgcDllName = Os::igcDllName;
         Os::frontEndDllName = "";
         Os::igcDllName = "";
-        MockCIFMain::setGlobalCreatorFunc<OCLRT::MockIgcOclDeviceCtx>(OCLRT::MockIgcOclDeviceCtx::Create);
-        MockCIFMain::setGlobalCreatorFunc<OCLRT::MockFclOclDeviceCtx>(OCLRT::MockFclOclDeviceCtx::Create);
+        MockCIFMain::setGlobalCreatorFunc<NEO::MockIgcOclDeviceCtx>(NEO::MockIgcOclDeviceCtx::Create);
+        MockCIFMain::setGlobalCreatorFunc<NEO::MockFclOclDeviceCtx>(NEO::MockFclOclDeviceCtx::Create);
         if (fclDebugVars == nullptr) {
             fclDebugVars.reset(new MockCompilerDebugVars);
         }
@@ -105,8 +89,8 @@ void MockCompilerEnableGuard::Disable() {
         Os::frontEndDllName = this->oldFclDllName;
         Os::igcDllName = this->oldIgcDllName;
 
-        MockCIFMain::removeGlobalCreatorFunc<OCLRT::MockIgcOclDeviceCtx>();
-        MockCIFMain::removeGlobalCreatorFunc<OCLRT::MockFclOclDeviceCtx>();
+        MockCIFMain::removeGlobalCreatorFunc<NEO::MockIgcOclDeviceCtx>();
+        MockCIFMain::removeGlobalCreatorFunc<NEO::MockFclOclDeviceCtx>();
 
         clearFclDebugVars();
         clearIgcDebugVars();
@@ -114,7 +98,7 @@ void MockCompilerEnableGuard::Disable() {
         enabled = false;
     }
 }
-} // namespace OCLRT
+} // namespace NEO
 
 namespace IGC {
 
@@ -328,14 +312,14 @@ IGC::FclOclTranslationCtxBase *CIF_GET_INTERFACE_CLASS(FclOclDeviceCtx, 1)::Crea
 }
 
 CodeType::CodeType_t CIF_GET_INTERFACE_CLASS(FclOclDeviceCtx, 2)::GetPreferredIntermediateRepresentation() {
-    return CodeType::llvmBc;
+    return CodeType::spirV;
 }
 
 } // namespace IGC
 
 #include "cif/macros/disable.h"
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename StrT>
 std::unique_ptr<unsigned char[]> loadBinaryFile(StrT &&fileName, size_t &fileSize) {
@@ -356,7 +340,7 @@ std::unique_ptr<unsigned char[]> loadBinaryFile(StrT &&fileName, size_t &fileSiz
 
 void translate(bool usingIgc, CIF::Builtins::BufferSimple *src, CIF::Builtins::BufferSimple *options,
                CIF::Builtins::BufferSimple *internalOptions, MockOclTranslationOutput *out) {
-    MockCompilerDebugVars &debugVars = (usingIgc) ? *OCLRT::igcDebugVars : *fclDebugVars;
+    MockCompilerDebugVars &debugVars = (usingIgc) ? *NEO::igcDebugVars : *fclDebugVars;
     if (debugVars.receivedInput != nullptr) {
         if (src != nullptr) {
             debugVars.receivedInput->assign(src->GetMemory<char>(),
@@ -406,12 +390,16 @@ void translate(bool usingIgc, CIF::Builtins::BufferSimple *src, CIF::Builtins::B
             }
         }
 
-        size_t fileSize = 0;
-        auto fileData = loadBinaryFile(inputFile, fileSize);
+        if ((debugVars.binaryToReturn != nullptr) || (debugVars.binaryToReturnSize != 0)) {
+            out->setOutput(debugVars.binaryToReturn, debugVars.binaryToReturnSize);
+        } else {
+            size_t fileSize = 0;
+            auto fileData = loadBinaryFile(inputFile, fileSize);
 
-        out->setOutput(fileData.get(), fileSize);
-        if (fileSize == 0) {
-            out->setError("error: Mock compiler could not find cached input file: " + inputFile);
+            out->setOutput(fileData.get(), fileSize);
+            if (fileSize == 0) {
+                out->setError("error: Mock compiler could not find cached input file: " + inputFile);
+            }
         }
 
         if (debugVars.debugDataToReturn != nullptr) {
@@ -451,6 +439,7 @@ CIF::ICIF *MockIgcOclDeviceCtx::Create(CIF::InterfaceId_t intId, CIF::Version_t 
 IGC::IgcOclTranslationCtxBase *MockIgcOclDeviceCtx::CreateTranslationCtxImpl(CIF::Version_t ver,
                                                                              IGC::CodeType::CodeType_t inType,
                                                                              IGC::CodeType::CodeType_t outType) {
+    requestedTranslationCtxs.emplace_back(inType, outType);
     return new MockIgcOclTranslationCtx;
 }
 
@@ -464,6 +453,19 @@ IGC::OclTranslationOutputBase *MockIgcOclTranslationCtx::TranslateImpl(
     CIF::Builtins::BufferSimple *internalOptions,
     CIF::Builtins::BufferSimple *tracingOptions,
     uint32_t tracingOptionsCount) {
+    auto out = new MockOclTranslationOutput();
+    translate(true, src, options, internalOptions, out);
+    return out;
+}
+
+IGC::OclTranslationOutputBase *MockIgcOclTranslationCtx::TranslateImpl(
+    CIF::Version_t outVersion,
+    CIF::Builtins::BufferSimple *src,
+    CIF::Builtins::BufferSimple *options,
+    CIF::Builtins::BufferSimple *internalOptions,
+    CIF::Builtins::BufferSimple *tracingOptions,
+    uint32_t tracingOptionsCount,
+    void *gtpinInput) {
     auto out = new MockOclTranslationOutput();
     translate(true, src, options, internalOptions, out);
     return out;
@@ -547,4 +549,4 @@ IGC::FclOclTranslationCtxBase *MockFclOclDeviceCtx::CreateTranslationCtxImpl(CIF
 std::vector<char> MockCompilerInterface::getDummyGenBinary() {
     return MockSipKernel::getDummyGenBinary();
 }
-} // namespace OCLRT
+} // namespace NEO

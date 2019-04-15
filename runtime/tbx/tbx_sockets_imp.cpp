@@ -1,26 +1,12 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/tbx/tbx_sockets_imp.h"
+
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/string.h"
 
@@ -30,20 +16,21 @@
 #endif
 typedef int socklen_t;
 #else
-#include <netdb.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
 typedef struct sockaddr SOCKADDR;
 #define SOCKET_ERROR -1
 #define INVALID_SOCKET -1
 #define WSAECONNRESET -1
 #endif
-#include <cstdint>
 #include "tbx_proto.h"
 
-namespace OCLRT {
+#include <cstdint>
+
+namespace NEO {
 
 TbxSocketsImp::TbxSocketsImp(std::ostream &err)
     : cerrStream(err) {
@@ -239,7 +226,7 @@ bool TbxSocketsImp::readMemory(uint64_t addrOffset, void *data, size_t size) {
     return success;
 }
 
-bool TbxSocketsImp::writeMemory(uint64_t physAddr, const void *data, size_t size) {
+bool TbxSocketsImp::writeMemory(uint64_t physAddr, const void *data, size_t size, uint32_t type) {
     HAS_MSG cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.hdr.msg_type = HAS_WRITE_DATA_REQ_TYPE;
@@ -253,6 +240,7 @@ bool TbxSocketsImp::writeMemory(uint64_t physAddr, const void *data, size_t size
     cmd.u.write_req.take_ownership = 0;
     cmd.u.write_req.frontdoor = 0;
     cmd.u.write_req.cacheline_disable = cmd.u.write_req.frontdoor;
+    cmd.u.write_req.memory_type = type;
 
     bool success;
     do {
@@ -329,4 +317,4 @@ bool TbxSocketsImp::getResponseData(void *buffer, size_t sizeInBytes) {
     return true;
 }
 
-} // namespace OCLRT
+} // namespace NEO

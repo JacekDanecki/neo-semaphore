@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -26,7 +11,11 @@
 #include "runtime/helpers/string.h"
 #include "runtime/program/program.h"
 
-namespace OCLRT {
+#include "gmock/gmock.h"
+
+#include <string>
+
+namespace NEO {
 
 class GraphicsAllocation;
 
@@ -35,10 +24,27 @@ class GraphicsAllocation;
 ////////////////////////////////////////////////////////////////////////////////
 class MockProgram : public Program {
   public:
+    using Program::createProgramFromBinary;
+    using Program::getProgramCompilerVersion;
     using Program::isKernelDebugEnabled;
+    using Program::rebuildProgramFromIr;
+    using Program::resolveProgramBinary;
+    using Program::updateNonUniformFlag;
 
-    MockProgram() : Program() {}
-    MockProgram(Context *context, bool isBuiltinKernel) : Program(context, isBuiltinKernel) {}
+    using Program::elfBinary;
+    using Program::elfBinarySize;
+    using Program::genBinary;
+    using Program::genBinarySize;
+    using Program::irBinary;
+    using Program::irBinarySize;
+    using Program::isProgramBinaryResolved;
+    using Program::isSpirV;
+    using Program::programBinaryType;
+
+    using Program::sourceCode;
+
+    MockProgram(ExecutionEnvironment &executionEnvironment) : Program(executionEnvironment) {}
+    MockProgram(ExecutionEnvironment &executionEnvironment, Context *context, bool isBuiltinKernel) : Program(executionEnvironment, context, isBuiltinKernel) {}
     ~MockProgram() {
         if (contextSet)
             context = nullptr;
@@ -109,7 +115,7 @@ class MockProgram : public Program {
         this->isSpirV = isSpirV;
     }
 
-    uint64_t getHash();
+    std::string getCachedFileName() const;
     void setAllowNonUniform(bool allow) {
         allowNonUniform = allow;
     }
@@ -121,13 +127,17 @@ class MockProgram : public Program {
 
     Device *getDevicePtr() { return this->pDevice; }
 
+    void extractInternalOptionsForward(std::string &buildOptions) {
+        extractInternalOptions(buildOptions);
+    }
+
     bool contextSet = false;
 };
 
 class GlobalMockSipProgram : public Program {
   public:
     using Program::Program;
-    GlobalMockSipProgram() : Program() {
+    GlobalMockSipProgram(ExecutionEnvironment &executionEnvironment) : Program(executionEnvironment) {
     }
     cl_int processGenBinary() override;
     cl_int processGenBinaryOnce();
@@ -138,64 +148,17 @@ class GlobalMockSipProgram : public Program {
     static void initSipProgram();
     static void shutDownSipProgram();
     static GlobalMockSipProgram *sipProgram;
+    static Program *getSipProgramWithCustomBinary();
 
   protected:
     void *sipAllocationStorage;
+    static ExecutionEnvironment executionEnvironment;
 };
 
-inline Program *getSipProgramWithCustomBinary() {
-    char binary[1024];
-    char *pBinary = binary;
-    auto totalSize = 0u;
+class GMockProgram : public Program {
+  public:
+    using Program::Program;
+    MOCK_METHOD0(appendKernelDebugOptions, bool(void));
+};
 
-    SProgramBinaryHeader *pBHdr = (SProgramBinaryHeader *)binary;
-    pBHdr->Magic = iOpenCL::MAGIC_CL;
-    pBHdr->Version = iOpenCL::CURRENT_ICBE_VERSION;
-    pBHdr->Device = platformDevices[0]->pPlatform->eRenderCoreFamily;
-    pBHdr->GPUPointerSizeInBytes = 8;
-    pBHdr->NumberOfKernels = 1;
-    pBHdr->SteppingId = 0;
-    pBHdr->PatchListSize = 0;
-    pBinary += sizeof(SProgramBinaryHeader);
-    totalSize += sizeof(SProgramBinaryHeader);
-
-    SKernelBinaryHeaderCommon *pKHdr = (SKernelBinaryHeaderCommon *)pBinary;
-    pKHdr->CheckSum = 0;
-    pKHdr->ShaderHashCode = 0;
-    pKHdr->KernelNameSize = 4;
-    pKHdr->PatchListSize = 0;
-    pKHdr->KernelHeapSize = 16;
-    pKHdr->GeneralStateHeapSize = 0;
-    pKHdr->DynamicStateHeapSize = 0;
-    pKHdr->SurfaceStateHeapSize = 0;
-    pKHdr->KernelUnpaddedSize = 0;
-    pBinary += sizeof(SKernelBinaryHeaderCommon);
-    totalSize += sizeof(SKernelBinaryHeaderCommon);
-    char *pKernelBin = pBinary;
-    strcpy_s(pBinary, 4, "sip");
-    pBinary += pKHdr->KernelNameSize;
-    totalSize += pKHdr->KernelNameSize;
-
-    strcpy_s(pBinary, 18, "kernel morphEUs()");
-    pBinary += pKHdr->KernelHeapSize;
-    totalSize += pKHdr->KernelHeapSize;
-
-    uint32_t kernelBinSize =
-        pKHdr->DynamicStateHeapSize +
-        pKHdr->GeneralStateHeapSize +
-        pKHdr->KernelHeapSize +
-        pKHdr->KernelNameSize +
-        pKHdr->PatchListSize +
-        pKHdr->SurfaceStateHeapSize;
-    uint64_t hashValue = Hash::hash(reinterpret_cast<const char *>(pKernelBin), kernelBinSize);
-    pKHdr->CheckSum = static_cast<uint32_t>(hashValue & 0xFFFFFFFF);
-
-    auto errCode = CL_SUCCESS;
-    auto program = Program::createFromGenBinary(nullptr, binary, totalSize, false, &errCode);
-    UNRECOVERABLE_IF(errCode != CL_SUCCESS);
-    errCode = program->processGenBinary();
-    UNRECOVERABLE_IF(errCode != CL_SUCCESS);
-    return program;
-}
-
-} // namespace OCLRT
+} // namespace NEO

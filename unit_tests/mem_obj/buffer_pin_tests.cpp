@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/options.h"
@@ -29,30 +14,34 @@
 #include "unit_tests/fixtures/platform_fixture.h"
 #include "unit_tests/helpers/memory_management.h"
 #include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 class TestedMemoryManager : public OsAgnosticMemoryManager {
   public:
-    GraphicsAllocation *allocateGraphicsMemory(size_t size, size_t alignment, bool forcePin, bool uncacheable) override {
+    using OsAgnosticMemoryManager::OsAgnosticMemoryManager;
+    GraphicsAllocation *allocateGraphicsMemoryWithAlignment(const AllocationData &allocationData) override {
         EXPECT_NE(0u, expectedSize);
-        if (expectedSize == size) {
-            EXPECT_TRUE(forcePin);
+        if (expectedSize == allocationData.size) {
+            EXPECT_TRUE(allocationData.flags.forcePin);
             allocCount++;
         }
-        return OsAgnosticMemoryManager::allocateGraphicsMemory(size, alignment, forcePin, uncacheable);
+        return OsAgnosticMemoryManager::allocateGraphicsMemoryWithAlignment(allocationData);
     };
-    GraphicsAllocation *allocateGraphicsMemory64kb(size_t size, size_t alignment, bool forcePin, bool preferRenderCompressed) override {
+    GraphicsAllocation *allocateGraphicsMemory64kb(const AllocationData &allocationData) override {
         return nullptr;
     };
-    GraphicsAllocation *allocateGraphicsMemory(size_t size, const void *ptr, bool forcePin) override {
+    GraphicsAllocation *allocateGraphicsMemoryWithHostPtr(const AllocationData &properties) override {
         EXPECT_NE(0u, HPExpectedSize);
-        if (HPExpectedSize == size) {
-            EXPECT_TRUE(forcePin);
+        if (HPExpectedSize == properties.size) {
+            EXPECT_TRUE(properties.flags.forcePin);
             HPAllocCount++;
         }
-        return OsAgnosticMemoryManager::allocateGraphicsMemory(size, ptr, forcePin);
+        return OsAgnosticMemoryManager::allocateGraphicsMemoryWithHostPtr(properties);
     }
 
     size_t expectedSize = 0;
@@ -62,7 +51,8 @@ class TestedMemoryManager : public OsAgnosticMemoryManager {
 };
 
 TEST(BufferTests, doPinIsSet) {
-    std::unique_ptr<TestedMemoryManager> mm(new TestedMemoryManager());
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    std::unique_ptr<TestedMemoryManager> mm(new MemoryManagerCreate<TestedMemoryManager>(false, false, executionEnvironment));
     {
         MockContext context;
         auto size = MemoryConstants::pageSize * 32;
@@ -84,7 +74,8 @@ TEST(BufferTests, doPinIsSet) {
     }
 }
 TEST(BufferTests, doPinIsSetForHostPtr) {
-    std::unique_ptr<TestedMemoryManager> mm(new TestedMemoryManager());
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    std::unique_ptr<TestedMemoryManager> mm(new TestedMemoryManager(executionEnvironment));
     {
         MockContext context;
         auto retVal = CL_INVALID_OPERATION;
@@ -98,7 +89,7 @@ TEST(BufferTests, doPinIsSetForHostPtr) {
 
         auto buffer = Buffer::create(
             &context,
-            CL_MEM_USE_HOST_PTR,
+            CL_MEM_USE_HOST_PTR | CL_MEM_FORCE_SHARED_PHYSICAL_MEMORY_INTEL,
             size,
             bff,
             retVal);

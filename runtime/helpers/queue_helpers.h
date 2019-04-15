@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -25,7 +10,19 @@
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/helpers/get_info.h"
 
-namespace OCLRT {
+namespace NEO {
+
+inline void releaseVirtualEvent(CommandQueue &commandQueue) {
+    if (commandQueue.getRefApiCount() == 1) {
+        commandQueue.releaseVirtualEvent();
+    }
+}
+
+inline void releaseVirtualEvent(DeviceQueue &commandQueue) {
+}
+
+bool isCommandWithoutKernel(uint32_t commandType);
+
 template <typename QueueType>
 void retainQueue(cl_command_queue commandQueue, cl_int &retVal) {
     using BaseType = typename QueueType::BaseType;
@@ -36,11 +33,14 @@ void retainQueue(cl_command_queue commandQueue, cl_int &retVal) {
     }
 }
 
+void getIntelQueueInfo(CommandQueue *queue, cl_command_queue_info paramName, GetInfoHelper &getInfoHelper, cl_int &retVal);
+
 template <typename QueueType>
 void releaseQueue(cl_command_queue commandQueue, cl_int &retVal) {
     using BaseType = typename QueueType::BaseType;
     auto queue = castToObject<QueueType>(static_cast<BaseType *>(commandQueue));
     if (queue) {
+        releaseVirtualEvent(*queue);
         queue->release();
         retVal = CL_SUCCESS;
     }
@@ -81,6 +81,11 @@ cl_int getQueueInfo(QueueType *queue,
         retVal = CL_INVALID_VALUE;
         break;
     default:
+        if (std::is_same<QueueType, class CommandQueue>::value) {
+            auto cmdQ = reinterpret_cast<CommandQueue *>(queue);
+            getIntelQueueInfo(cmdQ, paramName, getInfoHelper, retVal);
+            break;
+        }
         retVal = CL_INVALID_VALUE;
         break;
     }
@@ -117,4 +122,6 @@ returnType getCmdQueueProperties(const cl_queue_properties *properties,
     }
     return retVal;
 }
-} // namespace OCLRT
+bool isExtraToken(const cl_queue_properties *property);
+bool verifyExtraTokens(Device *&device, Context &context, const cl_queue_properties *properties);
+} // namespace NEO

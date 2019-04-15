@@ -1,31 +1,17 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/aub_subcapture.h"
+
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/utilities/debug_settings_reader.h"
 
-namespace OCLRT {
+namespace NEO {
 
 AubSubCaptureManager::AubSubCaptureManager(const std::string &fileName)
     : initialFileName(fileName) {
@@ -47,7 +33,7 @@ bool AubSubCaptureManager::activateSubCapture(const MultiDispatchInfo &dispatchI
         subCaptureIsActive = isSubCaptureToggleActive();
         break;
     case SubCaptureMode::Filter:
-        subCaptureIsActive = isSubCaptureFilterActive(dispatchInfo, kernelCurrentIdx);
+        subCaptureIsActive = isSubCaptureFilterActive(dispatchInfo);
         break;
     default:
         DEBUG_BREAK_IF(false);
@@ -85,9 +71,8 @@ const std::string &AubSubCaptureManager::getSubCaptureFileName(const MultiDispat
     return currentFileName;
 }
 
-bool AubSubCaptureManager::isKernelIndexInSubCaptureRange(uint32_t kernelIdx) const {
-    return ((subCaptureFilter.dumpKernelStartIdx <= kernelIdx) &&
-            (kernelIdx <= subCaptureFilter.dumpKernelEndIdx));
+bool AubSubCaptureManager::isKernelIndexInSubCaptureRange(uint32_t kernelIdx, uint32_t rangeStartIdx, uint32_t rangeEndIdx) const {
+    return ((rangeStartIdx <= kernelIdx) && (kernelIdx <= rangeEndIdx));
 }
 
 bool AubSubCaptureManager::isSubCaptureToggleActive() const {
@@ -105,6 +90,8 @@ std::string AubSubCaptureManager::generateFilterFileName() const {
     filterFileName += "_to_" + std::to_string(subCaptureFilter.dumpKernelEndIdx);
     if (!subCaptureFilter.dumpKernelName.empty()) {
         filterFileName += "_" + subCaptureFilter.dumpKernelName;
+        filterFileName += "_from_" + std::to_string(subCaptureFilter.dumpNamedKernelStartIdx);
+        filterFileName += "_to_" + std::to_string(subCaptureFilter.dumpNamedKernelEndIdx);
     }
     filterFileName += ".aub";
     return filterFileName;
@@ -115,24 +102,26 @@ std::string AubSubCaptureManager::generateToggleFileName(const MultiDispatchInfo
     std::string toggleFileName = baseFileName + "_toggle";
     toggleFileName += "_from_" + std::to_string(kernelCurrentIdx - 1);
     if (!dispatchInfo.empty()) {
-        toggleFileName += "_" + dispatchInfo.begin()->getKernel()->getKernelInfo().name;
+        toggleFileName += "_" + dispatchInfo.peekMainKernel()->getKernelInfo().name;
     }
     toggleFileName += ".aub";
     return toggleFileName;
 }
 
-bool AubSubCaptureManager::isSubCaptureFilterActive(const MultiDispatchInfo &dispatchInfo, uint32_t kernelIdx) const {
-    DEBUG_BREAK_IF(dispatchInfo.size() > 1);
-    auto kernelName = dispatchInfo.begin()->getKernel()->getKernelInfo().name;
+bool AubSubCaptureManager::isSubCaptureFilterActive(const MultiDispatchInfo &dispatchInfo) {
+    auto kernelName = dispatchInfo.peekMainKernel()->getKernelInfo().name;
     auto subCaptureIsActive = false;
 
-    if (isKernelIndexInSubCaptureRange(kernelIdx)) {
-        if (subCaptureFilter.dumpKernelName.empty()) {
+    if (subCaptureFilter.dumpKernelName.empty()) {
+        if (isKernelIndexInSubCaptureRange(kernelCurrentIdx, subCaptureFilter.dumpKernelStartIdx, subCaptureFilter.dumpKernelEndIdx)) {
             subCaptureIsActive = true;
-        } else {
-            if (0 == kernelName.compare(subCaptureFilter.dumpKernelName)) {
+        }
+    } else {
+        if (0 == kernelName.compare(subCaptureFilter.dumpKernelName)) {
+            if (isKernelIndexInSubCaptureRange(kernelNameMatchesNum, subCaptureFilter.dumpNamedKernelStartIdx, subCaptureFilter.dumpNamedKernelEndIdx)) {
                 subCaptureIsActive = true;
             }
+            kernelNameMatchesNum++;
         }
     }
     return subCaptureIsActive;
@@ -149,4 +138,4 @@ void AubSubCaptureManager::setDebugManagerFlags() const {
         DebugManager.flags.ForceCsrReprogramming.set(true);
     }
 }
-} // namespace OCLRT
+} // namespace NEO

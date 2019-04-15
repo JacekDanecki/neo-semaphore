@@ -1,52 +1,51 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/command_queue/command_queue_fixture.h"
+
 #include "runtime/command_queue/command_queue_hw.h"
-#include "hw_cmds.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
-#include "gtest/gtest.h"
+#include "unit_tests/mocks/mock_device.h"
 
-namespace OCLRT {
+#include "gtest/gtest.h"
+#include "hw_cmds.h"
+
+namespace NEO {
 
 // Global table of create functions
 extern CommandQueueCreateFunc commandQueueFactory[IGFX_MAX_CORE];
-
-CommandQueueHwFixture::CommandQueueHwFixture()
-    : pCmdQ(nullptr), context(nullptr) {
-}
 
 CommandQueue *CommandQueueHwFixture::createCommandQueue(
     Device *pDevice,
     cl_command_queue_properties properties) {
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, properties, 0};
 
-    auto funcCreate = commandQueueFactory[pDevice->getRenderCoreFamily()];
-    assert(nullptr != funcCreate);
+    return createCommandQueue(pDevice, props);
+}
+
+CommandQueue *CommandQueueHwFixture::createCommandQueue(
+    Device *pDevice,
+    const cl_command_queue_properties *properties) {
+
+    if (pDevice == nullptr) {
+        if (this->device == nullptr) {
+            this->device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr);
+        }
+        pDevice = this->device;
+    }
+
     if (!context)
         context = new MockContext(pDevice);
 
-    return funcCreate(context, pDevice, props);
+    auto funcCreate = commandQueueFactory[pDevice->getRenderCoreFamily()];
+    assert(nullptr != funcCreate);
+
+    return funcCreate(context, pDevice, properties);
 }
 
 void CommandQueueHwFixture::SetUp() {
@@ -70,7 +69,12 @@ void CommandQueueHwFixture::TearDown() {
         UNRECOVERABLE_IF(blocked);
         pCmdQ->release();
     }
-    context->release();
+    if (context) {
+        context->release();
+    }
+    if (device) {
+        delete device;
+    }
 }
 
 CommandQueueFixture::CommandQueueFixture()
@@ -102,4 +106,4 @@ void CommandQueueFixture::TearDown() {
     delete pCmdQ;
     pCmdQ = nullptr;
 }
-} // namespace OCLRT
+} // namespace NEO

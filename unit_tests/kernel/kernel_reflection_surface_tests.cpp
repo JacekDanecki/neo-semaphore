@@ -1,48 +1,33 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/execution_model/device_enqueue.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/program/printf_handler.h"
 #include "runtime/sampler/sampler.h"
 #include "unit_tests/fixtures/execution_model_fixture.h"
 #include "unit_tests/fixtures/execution_model_kernel_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
+#include "unit_tests/gen_common/matchers.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/gtest_helpers.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device_queue.h"
+#include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_mdi.h"
+#include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/mocks/mock_sampler.h"
-#include "patch_list.h"
-#include "runtime/execution_model/device_enqueue.h"
 
-#include "matchers.h"
+#include "patch_list.h"
 
 #include <algorithm>
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef ExecutionModelKernelFixture KernelReflectionSurfaceTest;
 typedef ExecutionModelKernelTest KernelReflectionSurfaceWithQueueTest;
@@ -620,8 +605,8 @@ TEST_P(KernelReflectionSurfaceTest, getCurbeParamsReturnsTokenMask) {
 }
 
 TEST(KernelReflectionSurfaceTestSingle, CreateKernelReflectionSurfaceCalledOnNonParentKernelDoesNotCreateReflectionSurface) {
-    MockProgram program;
     MockDevice device(*platformDevices[0]);
+    MockProgram program(*device.getExecutionEnvironment());
     KernelInfo info;
     MockKernel kernel(&program, info, device);
 
@@ -638,8 +623,8 @@ TEST(KernelReflectionSurfaceTestSingle, CreateKernelReflectionSurfaceCalledOnNon
     DebugManagerStateRestore dbgRestorer;
     DebugManager.flags.ForceDispatchScheduler.set(true);
 
-    MockProgram program;
     MockDevice device(*platformDevices[0]);
+    MockProgram program(*device.getExecutionEnvironment());
     KernelInfo info;
     MockKernel kernel(&program, info, device);
 
@@ -653,15 +638,15 @@ TEST(KernelReflectionSurfaceTestSingle, CreateKernelReflectionSurfaceCalledOnNon
 }
 
 TEST(KernelReflectionSurfaceTestSingle, ObtainKernelReflectionSurfaceWithoutKernelArgs) {
-    MockProgram program;
     MockContext context;
     std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    MockProgram program(*device->getExecutionEnvironment());
     KernelInfo *blockInfo = new KernelInfo;
     KernelInfo &info = *blockInfo;
     cl_queue_properties properties[1] = {0};
     DeviceQueue devQueue(&context, device.get(), properties[0]);
 
-    SPatchExecutionEnvironment environment;
+    SPatchExecutionEnvironment environment = {};
     environment.HasDeviceEnqueue = 1;
     info.patchInfo.executionEnvironment = &environment;
 
@@ -704,9 +689,9 @@ TEST(KernelReflectionSurfaceTestSingle, ObtainKernelReflectionSurfaceWithoutKern
 }
 
 TEST(KernelReflectionSurfaceTestSingle, ObtainKernelReflectionSurfaceWithDeviceQueueKernelArg) {
-    MockProgram program;
     MockContext context;
     std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    MockProgram program(*device->getExecutionEnvironment());
 
     KernelInfo *blockInfo = new KernelInfo;
     KernelInfo &info = *blockInfo;
@@ -716,7 +701,7 @@ TEST(KernelReflectionSurfaceTestSingle, ObtainKernelReflectionSurfaceWithDeviceQ
     uint32_t devQueueCurbeOffset = 16;
     uint32_t devQueueCurbeSize = 4;
 
-    SPatchExecutionEnvironment environment;
+    SPatchExecutionEnvironment environment = {};
     environment.HasDeviceEnqueue = 1;
     info.patchInfo.executionEnvironment = &environment;
 
@@ -830,34 +815,20 @@ TEST_P(KernelReflectionSurfaceTest, CreateKernelReflectionSurface) {
 
         IGIL_KernelDataHeader *pKernelHeader = reinterpret_cast<IGIL_KernelDataHeader *>(reflectionSurface->getUnderlyingBuffer());
 
-        // Kernel Data Header
-        IGIL_KernelDataHeader kernelDataHeaderExpected;
+        uint32_t parentImages = 0;
+        uint32_t parentSamplers = 0;
 
         if (pKernel->getKernelInfo().name == "kernel_reflection") {
-            if (sizeof(uintptr_t) == 8)
-                MockKernel::ReflectionSurfaceHelperPublic::setKernelDataHeader(&kernelDataHeaderExpected, (uint32_t)blockCount, 1, 1, 1944, 1980);
-            else
-                MockKernel::ReflectionSurfaceHelperPublic::setKernelDataHeader(&kernelDataHeaderExpected, (uint32_t)blockCount, 1, 1, 1836, 1872);
-
-            EXPECT_EQ(kernelDataHeaderExpected.m_numberOfKernels, pKernelHeader->m_numberOfKernels);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentKernelImageCount, pKernelHeader->m_ParentKernelImageCount);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentImageDataOffset, pKernelHeader->m_ParentImageDataOffset);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentSamplerCount, pKernelHeader->m_ParentSamplerCount);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentSamplerParamsOffset, pKernelHeader->m_ParentSamplerParamsOffset);
-        } else if (pKernel->getKernelInfo().name == "simple_block_kernel") {
-            if (sizeof(uintptr_t) == 8)
-                MockKernel::ReflectionSurfaceHelperPublic::setKernelDataHeader(&kernelDataHeaderExpected, (uint32_t)blockCount, 0, 0, 1920, 0);
-            else
-                MockKernel::ReflectionSurfaceHelperPublic::setKernelDataHeader(&kernelDataHeaderExpected, (uint32_t)blockCount, 0, 0, 1812, 0);
-
-            EXPECT_EQ(kernelDataHeaderExpected.m_numberOfKernels, pKernelHeader->m_numberOfKernels);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentKernelImageCount, pKernelHeader->m_ParentKernelImageCount);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentImageDataOffset, pKernelHeader->m_ParentImageDataOffset);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentSamplerCount, pKernelHeader->m_ParentSamplerCount);
-            EXPECT_EQ(kernelDataHeaderExpected.m_ParentSamplerParamsOffset, pKernelHeader->m_ParentSamplerParamsOffset);
-        } else {
-            EXPECT_TRUE(false);
+            parentImages = 1;
+            parentSamplers = 1;
+            EXPECT_LT(sizeof(IGIL_KernelDataHeader), pKernelHeader->m_ParentSamplerParamsOffset);
         }
+
+        EXPECT_EQ(blockCount, pKernelHeader->m_numberOfKernels);
+        EXPECT_EQ(parentImages, pKernelHeader->m_ParentKernelImageCount);
+        EXPECT_LT(sizeof(IGIL_KernelDataHeader), pKernelHeader->m_ParentImageDataOffset);
+        EXPECT_EQ(parentSamplers, pKernelHeader->m_ParentSamplerCount);
+        EXPECT_NE(pKernelHeader->m_ParentImageDataOffset, pKernelHeader->m_ParentSamplerParamsOffset);
 
         // Curbe tokens
         EXPECT_NE(0u, totalCurbeParamsSize);
@@ -1280,6 +1251,7 @@ class ReflectionSurfaceHelperSetKernelDataTest : public testing::TestWithParam<s
 
         info.patchInfo.dataParameterStream = &dataParameterStream;
 
+        executionEnvironment = {};
         executionEnvironment.LargestCompiledSIMDSize = 16;
         executionEnvironment.HasBarriers = 1;
 
@@ -1924,9 +1896,9 @@ typedef ParentKernelCommandQueueFixture ReflectionSurfaceTestForPrintfHandler;
 
 TEST_F(ReflectionSurfaceTestForPrintfHandler, PatchReflectionSurfacePatchesPrintfBufferWhenPrintfHandlerIsPassed) {
 
-    MockContext context;
+    MockContext context(device);
     cl_queue_properties properties[3] = {0};
-    MockParentKernel *parentKernel = MockParentKernel::create(*device);
+    MockParentKernel *parentKernel = MockParentKernel::create(context);
 
     DeviceQueue devQueue(&context, device, properties[0]);
     parentKernel->createReflectionSurface();
@@ -1952,9 +1924,9 @@ TEST_F(ReflectionSurfaceTestForPrintfHandler, PatchReflectionSurfacePatchesPrint
 
 TEST_F(ReflectionSurfaceTestForPrintfHandler, PatchReflectionSurfaceDoesNotPatchPrintfBufferWhenPrintfSurfaceIsNotCreated) {
 
-    MockContext context;
+    MockContext context(device);
     cl_queue_properties properties[3] = {0};
-    MockParentKernel *parentKernel = MockParentKernel::create(*device);
+    MockParentKernel *parentKernel = MockParentKernel::create(context);
 
     DeviceQueue devQueue(&context, device, properties[0]);
     parentKernel->createReflectionSurface();
@@ -1990,16 +1962,16 @@ class ReflectionSurfaceConstantValuesPatchingTest : public DeviceFixture,
 
 TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithGlobalMemoryWhenReflectionSurfaceIsPatchedWithConstantValuesThenProgramGlobalMemoryAddressIsPatched) {
 
-    MockContext context;
-    MockParentKernel *parentKernel = MockParentKernel::create(*pDevice, false, true, false);
+    MockContext context(pDevice);
+    MockParentKernel *parentKernel = MockParentKernel::create(context, false, true, false);
 
     // graphicsMemory is released by Program
-    GraphicsAllocation *globalMemory = pDevice->getMemoryManager()->allocateGraphicsMemory(4096);
+    GraphicsAllocation *globalMemory = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     parentKernel->mockProgram->setGlobalSurface(globalMemory);
 
     // Allocte reflectionSurface, 2 * 4096 should be enough
-    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemory(2 * 4096);
+    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{2 * MemoryConstants::pageSize});
     parentKernel->setReflectionSurface(reflectionSurface);
 
     memset(reflectionSurface->getUnderlyingBuffer(), 0, reflectionSurface->getUnderlyingBufferSize());
@@ -2024,8 +1996,8 @@ TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithGlobalMemoryWh
 
 TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithGlobalMemoryAndProgramWithoutGlobalMemortWhenReflectionSurfaceIsPatchedWithConstantValuesThenZeroAddressIsPatched) {
 
-    MockContext context;
-    MockParentKernel *parentKernel = MockParentKernel::create(*pDevice, false, true, false);
+    MockContext context(pDevice);
+    MockParentKernel *parentKernel = MockParentKernel::create(context, false, true, false);
 
     if (parentKernel->mockProgram->getGlobalSurface()) {
         pDevice->getMemoryManager()->freeGraphicsMemory(parentKernel->mockProgram->getGlobalSurface());
@@ -2033,7 +2005,7 @@ TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithGlobalMemoryAn
     }
 
     // Allocte reflectionSurface, 2 * 4096 should be enough
-    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemory(2 * 4096);
+    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{2 * MemoryConstants::pageSize});
     parentKernel->setReflectionSurface(reflectionSurface);
 
     memset(reflectionSurface->getUnderlyingBuffer(), 0, reflectionSurface->getUnderlyingBufferSize());
@@ -2057,16 +2029,16 @@ TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithGlobalMemoryAn
 
 TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithConstantMemoryWhenReflectionSurfaceIsPatchedWithConstantValuesThenProgramConstantMemoryAddressIsPatched) {
 
-    MockContext context;
-    MockParentKernel *parentKernel = MockParentKernel::create(*pDevice, false, false, true);
+    MockContext context(pDevice);
+    MockParentKernel *parentKernel = MockParentKernel::create(context, false, false, true);
 
     // graphicsMemory is released by Program
-    GraphicsAllocation *constantMemory = pDevice->getMemoryManager()->allocateGraphicsMemory(4096);
+    GraphicsAllocation *constantMemory = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     parentKernel->mockProgram->setConstantSurface(constantMemory);
 
     // Allocte reflectionSurface, 2 * 4096 should be enough
-    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemory(2 * 4096);
+    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{2 * MemoryConstants::pageSize});
     parentKernel->setReflectionSurface(reflectionSurface);
 
     memset(reflectionSurface->getUnderlyingBuffer(), 0, reflectionSurface->getUnderlyingBufferSize());
@@ -2100,8 +2072,8 @@ TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithConstantMemory
 
 TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithConstantMemoryAndProgramWithoutConstantMemortWhenReflectionSurfaceIsPatchedWithConstantValuesThenZeroAddressIsPatched) {
 
-    MockContext context;
-    MockParentKernel *parentKernel = MockParentKernel::create(*pDevice, false, false, true);
+    MockContext context(pDevice);
+    MockParentKernel *parentKernel = MockParentKernel::create(context, false, false, true);
 
     if (parentKernel->mockProgram->getConstantSurface()) {
         pDevice->getMemoryManager()->freeGraphicsMemory(parentKernel->mockProgram->getConstantSurface());
@@ -2109,7 +2081,7 @@ TEST_F(ReflectionSurfaceConstantValuesPatchingTest, GivenBlockWithConstantMemory
     }
 
     // Allocte reflectionSurface, 2 * 4096 should be enough
-    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemory(2 * 4096);
+    GraphicsAllocation *reflectionSurface = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{2 * MemoryConstants::pageSize});
     parentKernel->setReflectionSurface(reflectionSurface);
 
     memset(reflectionSurface->getUnderlyingBuffer(), 0, reflectionSurface->getUnderlyingBufferSize());

@@ -1,144 +1,27 @@
 /*
- * Copyright (c) 2017-2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "test.h"
-#include "gtest/gtest.h"
-#include "runtime/helpers/file_io.h"
-#include "runtime/helpers/string_helpers.h"
-#include "runtime/os_interface/debug_settings_manager.h"
-#include "runtime/utilities/directory.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/mocks/mock_buffer.h"
-#include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/mocks/mock_mdi.h"
+#include "runtime/utilities/debug_file_reader.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/memory_management.h"
+#include "unit_tests/mocks/mock_buffer.h"
+#include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_kernel.h"
+#include "unit_tests/mocks/mock_mdi.h"
+#include "unit_tests/mocks/mock_program.h"
+#include "unit_tests/os_interface/debug_settings_manager_fixture.h"
+#include "unit_tests/utilities/base_object_utils.h"
 
-#include <memory>
-#include <string>
-#include <sstream>
 #include <cstdio>
-
-using namespace OCLRT;
-using namespace std;
-
-#undef DECLARE_DEBUG_VARIABLE
-
-class SettingsFileCreator {
-  public:
-    SettingsFileCreator(string &content) {
-        bool settingsFileExists = fileExists(fileName);
-        if (settingsFileExists) {
-            remove(fileName.c_str());
-        }
-
-        writeDataToFile(fileName.c_str(), content.c_str(), content.size());
-    };
-
-    ~SettingsFileCreator() {
-        remove(fileName.c_str());
-    };
-
-  private:
-    string fileName = "igdrcl.config";
-};
-
-class TestDebugFlagsChecker {
-  public:
-    static bool isEqual(int32_t returnedValue, bool defaultValue) {
-        if (returnedValue == 0) {
-            return !defaultValue;
-        } else {
-            return defaultValue;
-        }
-    }
-
-    static bool isEqual(int32_t returnedValue, int32_t defaultValue) {
-        return returnedValue == defaultValue;
-    }
-
-    static bool isEqual(string returnedValue, string defaultValue) {
-        return returnedValue == defaultValue;
-    }
-};
-
-template <DebugFunctionalityLevel DebugLevel>
-class TestDebugSettingsManager : public DebugSettingsManager<DebugLevel> {
-  public:
-    ~TestDebugSettingsManager() {
-        remove(DebugSettingsManager<DebugLevel>::logFileName.c_str());
-    }
-    SettingsReader *getSettingsReader() {
-        return DebugSettingsManager<DebugLevel>::readerImpl;
-    }
-
-    void useRealFiles(bool value) {
-        mockFileSystem = !value;
-    }
-
-    void writeToFile(std::string filename,
-                     const char *str,
-                     size_t length,
-                     std::ios_base::openmode mode) override {
-
-        savedFiles[filename] << std::string(str, str + length);
-        if (mockFileSystem == false) {
-            DebugSettingsManager<DebugLevel>::writeToFile(filename, str, length, mode);
-        }
-    };
-
-    int32_t createdFilesCount() {
-        return static_cast<int32_t>(savedFiles.size());
-    }
-
-    bool wasFileCreated(std::string filename) {
-        return savedFiles.find(filename) != savedFiles.end();
-    }
-
-    std::string getFileString(std::string filename) {
-        return savedFiles[filename].str();
-    }
-
-  protected:
-    bool mockFileSystem = true;
-    std::map<std::string, std::stringstream> savedFiles;
-};
-
-template <bool DebugFunctionality>
-class TestDebugSettingsApiEnterWrapper : public DebugSettingsApiEnterWrapper<DebugFunctionality> {
-  public:
-    TestDebugSettingsApiEnterWrapper(const char *functionName, int *errCode) : DebugSettingsApiEnterWrapper<DebugFunctionality>(functionName, errCode), loggedEnter(false) {
-        if (DebugFunctionality) {
-            loggedEnter = true;
-        }
-    }
-
-    bool loggedEnter;
-};
-
-using FullyEnabledTestDebugManager = TestDebugSettingsManager<DebugFunctionalityLevel::Full>;
-using FullyDisabledTestDebugManager = TestDebugSettingsManager<DebugFunctionalityLevel::None>;
+#include <memory>
+#include <sstream>
+#include <string>
 
 TEST(DebugSettingsManager, WithDebugFunctionality) {
     FullyEnabledTestDebugManager debugManager;
@@ -159,6 +42,10 @@ TEST(DebugSettingsManager, WithDebugFunctionalityCreatesAndDumpsToLogFile) {
     SettingsFileCreator settingsFile(settings);
 
     FullyEnabledTestDebugManager debugManager;
+    if (debugManager.registryReadAvailable()) {
+        debugManager.setReaderImpl(SettingsReader::create());
+        debugManager.injectSettingsFromReader();
+    }
     debugManager.logApiCall("searchString", true, 0);
     debugManager.logApiCall("searchString2", false, 0);
     debugManager.logInputs("searchString3", "any");
@@ -331,6 +218,34 @@ TEST(DebugSettingsManager, WithDebugFunctionalityGetEventsNegative) {
     EXPECT_EQ(0u, event.size());
 }
 
+TEST(DebugSettingsManager, GivenDebugManagerWithDebugFunctionalityWhenGetMemObjectsIsCalledThenCorrectStringIsReturned) {
+    FullyEnabledTestDebugManager debugManager;
+    debugManager.flags.LogApiCalls.set(true);
+    MockBuffer buffer;
+    MemObj *memoryObject = &buffer;
+    cl_mem clMem = memoryObject;
+    cl_mem clMemObjects[] = {clMem, clMem};
+    cl_uint numObjects = 2;
+
+    string memObjectString = debugManager.getMemObjects(reinterpret_cast<const uintptr_t *>(clMemObjects), numObjects);
+    EXPECT_NE(0u, memObjectString.size());
+    stringstream output;
+    output << "cl_mem " << clMem << ", MemObj " << memoryObject;
+    EXPECT_THAT(memObjectString, ::testing::HasSubstr(output.str()));
+}
+
+TEST(DebugSettingsManager, GivenDebugManagerWithDebugFunctionalityWhenGetMemObjectsIsCalledWithNullptrThenStringIsEmpty) {
+    FullyEnabledTestDebugManager debugManager;
+    string memObjectString = debugManager.getMemObjects(nullptr, 2);
+    EXPECT_EQ(0u, memObjectString.size());
+}
+
+TEST(DebugSettingsManager, GivenDebugManagerWithoutDebugFunctionalityWhenGetMemObjectsIsCalledThenCallReturnsImmediately) {
+    FullyDisabledTestDebugManager debugManager;
+    string memObjectString = debugManager.getMemObjects(nullptr, 2);
+    EXPECT_EQ(0u, memObjectString.size());
+}
+
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernel) {
     FullyEnabledTestDebugManager debugManager;
     string kernelDumpFile = "testDumpKernel";
@@ -397,9 +312,10 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDontDumpKernelArgsForNullMdi) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsForMdi) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
     auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    MockProgram program(*device->getExecutionEnvironment());
     auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
     auto multiDispatchInfo = unique_ptr<MockMultiDispatchInfo>(new MockMultiDispatchInfo(kernel.get()));
 
@@ -439,9 +355,10 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelNullKernel) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityAndEmptyKernelDontDumpKernelArgs) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
     auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    MockProgram program(*device->getExecutionEnvironment());
     auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
 
     FullyEnabledTestDebugManager debugManager;
@@ -453,9 +370,10 @@ TEST(DebugSettingsManager, WithDebugFunctionalityAndEmptyKernelDontDumpKernelArg
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsImmediate) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
     auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    MockProgram program(*device->getExecutionEnvironment());
     auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
 
     KernelArgPatchInfo kernelArgPatchInfo;
@@ -484,9 +402,10 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsImmediate) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsImmediateZeroSize) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
     auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    MockProgram program(*device->getExecutionEnvironment());
     auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
 
     KernelArgPatchInfo kernelArgPatchInfo;
@@ -512,9 +431,10 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsImmediateZeroSize
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsLocalBuffer) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
     auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    MockProgram program(*device->getExecutionEnvironment());
     auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
 
     KernelArgPatchInfo kernelArgPatchInfo;
@@ -533,10 +453,11 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsLocalBuffer) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsBufferNotSet) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
-    auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
-    auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
+    auto kernelInfo = std::make_unique<KernelInfo>();
+    unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    auto context = clUniquePtr(new MockContext(device.get()));
+    auto program = clUniquePtr(new MockProgram(*device->getExecutionEnvironment(), context.get(), false));
+    auto kernel = clUniquePtr(new MockKernel(program.get(), *kernelInfo, *device));
 
     KernelArgPatchInfo kernelArgPatchInfo;
 
@@ -560,14 +481,14 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsBufferNotSet) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsBuffer) {
-    MockContext context;
-    auto buffer = BufferHelper<>::create(&context);
+    unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    auto context = clUniquePtr(new MockContext(device.get()));
+    auto buffer = BufferHelper<>::create(context.get());
     cl_mem clObj = buffer;
 
-    MockProgram program(&context, false);
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
-    auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
-    auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
+    auto kernelInfo = std::make_unique<KernelInfo>();
+    auto program = clUniquePtr(new MockProgram(*device->getExecutionEnvironment(), context.get(), false));
+    auto kernel = clUniquePtr(new MockKernel(program.get(), *kernelInfo, *device));
 
     KernelArgPatchInfo kernelArgPatchInfo;
 
@@ -598,10 +519,11 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsBuffer) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsSampler) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
-    auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
-    auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
+    auto kernelInfo = std::make_unique<KernelInfo>();
+    unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    auto context = clUniquePtr(new MockContext(device.get()));
+    auto program = clUniquePtr(new MockProgram(*device->getExecutionEnvironment(), context.get(), false));
+    auto kernel = clUniquePtr(new MockKernel(program.get(), *kernelInfo, *device));
 
     KernelArgPatchInfo kernelArgPatchInfo;
 
@@ -621,10 +543,12 @@ TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsSampler) {
 }
 
 TEST(DebugSettingsManager, WithDebugFunctionalityDumpKernelArgsImageNotSet) {
-    MockProgram program;
-    auto kernelInfo = unique_ptr<KernelInfo>(KernelInfo::create());
-    auto device = unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
-    auto kernel = unique_ptr<MockKernel>(new MockKernel(&program, *kernelInfo, *device));
+
+    auto kernelInfo = std::make_unique<KernelInfo>();
+    unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    auto context = clUniquePtr(new MockContext(device.get()));
+    auto program = clUniquePtr(new MockProgram(*device->getExecutionEnvironment(), context.get(), false));
+    auto kernel = clUniquePtr(new MockKernel(program.get(), *kernelInfo, *device));
 
     SKernelBinaryHeaderCommon kernelHeader;
     char surfaceStateHeap[0x80];
@@ -697,7 +621,7 @@ TEST(DebugSettingsManager, WithoutDebugFunctionality) {
         bool isEqual = TestDebugFlagsChecker::isEqual(debugManager.flags.variableName.get(), defaultValue); \
         EXPECT_TRUE(isEqual);                                                                               \
     }
-#include "runtime/os_interface/DebugVariables.inl"
+#include "debug_variables.inl"
 #undef DECLARE_DEBUG_VARIABLE
 
     // test kernel dumping
@@ -800,25 +724,25 @@ TEST(DebugSettingsApiEnterWrapper, WithoutDebugFunctionality) {
     delete debugApiWrapper2;
 }
 
-TEST(DebugSettingsManager, deviceInfoPointerToStringReturnsCorrectString) {
+TEST(DebugSettingsManager, infoPointerToStringReturnsCorrectString) {
     FullyEnabledTestDebugManager debugManager;
 
     uint64_t value64bit = 64;
-    string string64bit = debugManager.deviceInfoPointerToString(&value64bit, sizeof(uint64_t));
+    string string64bit = debugManager.infoPointerToString(&value64bit, sizeof(uint64_t));
     uint32_t value32bit = 32;
-    string string32bit = debugManager.deviceInfoPointerToString(&value32bit, sizeof(uint32_t));
+    string string32bit = debugManager.infoPointerToString(&value32bit, sizeof(uint32_t));
     uint8_t value8bit = 0;
-    string string8bit = debugManager.deviceInfoPointerToString(&value8bit, sizeof(uint8_t));
+    string string8bit = debugManager.infoPointerToString(&value8bit, sizeof(uint8_t));
 
     EXPECT_STREQ("64", string64bit.c_str());
     EXPECT_STREQ("32", string32bit.c_str());
     EXPECT_STREQ("0", string8bit.c_str());
 
-    string stringNonValue = debugManager.deviceInfoPointerToString(nullptr, 56);
+    string stringNonValue = debugManager.infoPointerToString(nullptr, 56);
     EXPECT_STREQ("", stringNonValue.c_str());
 
     char valueChar = 0;
-    stringNonValue = debugManager.deviceInfoPointerToString(&valueChar, 56);
+    stringNonValue = debugManager.infoPointerToString(&valueChar, 56);
     EXPECT_STREQ("", stringNonValue.c_str());
 }
 
@@ -899,4 +823,140 @@ TEST(DebugSettingsManager, whenOnlyRegKeysAreEnabledThenAllOtherDebugFunctionali
     static_assert(false == debugManager.debugKernelDumpingAvailable(), "");
     static_assert(false == debugManager.kernelArgDumpingAvailable(), "");
     static_assert(debugManager.registryReadAvailable(), "");
+}
+
+TEST(DebugSettingsManager, givenTwoPossibleVariantsOfHardwareInfoOverrideStringThenOutputStringIsTheSame) {
+    FullyEnabledTestDebugManager debugManager;
+    std::string hwInfoConfig;
+
+    // Set HardwareInfoOverride as regular string (i.e. as in Windows Registry)
+    std::string str1 = "1x4x8";
+    debugManager.flags.HardwareInfoOverride.set(str1);
+    debugManager.getHardwareInfoOverride(hwInfoConfig);
+    EXPECT_EQ(str1, hwInfoConfig);
+
+    // Set HardwareInfoOverride as quoted string (i.e. as in igdrcl.config file)
+    std::string str2 = "\"1x4x8\"";
+    debugManager.flags.HardwareInfoOverride.set(str2);
+    hwInfoConfig = debugManager.flags.HardwareInfoOverride.get();
+    EXPECT_EQ(str2, hwInfoConfig);
+    debugManager.getHardwareInfoOverride(hwInfoConfig);
+    EXPECT_EQ(str1, hwInfoConfig);
+}
+
+TEST(DebugSettingsManager, givenStringDebugVariableWhenLongValueExeedingSmallStringOptimizationIsAssignedThenMemoryLeakIsNotReported) {
+    DebugManagerStateRestore debugManagerStateRestore;
+    DebugManager.flags.AUBDumpCaptureFileName.set("ThisIsVeryLongStringValueThatExceedSizeSpecifiedBySmallStringOptimizationAndCausesInternalStringBufferResize");
+}
+
+TEST(DebugSettingsManager, givenNullAsReaderImplInDebugManagerWhenSettingReaderImplThenItsSetProperly) {
+    FullyDisabledTestDebugManager debugManager;
+    auto readerImpl = SettingsReader::create();
+    debugManager.setReaderImpl(readerImpl);
+    EXPECT_EQ(readerImpl, debugManager.getReaderImpl());
+}
+TEST(DebugSettingsManager, givenReaderImplInDebugManagerWhenSettingDifferentReaderImplThenItsSetProperly) {
+    FullyDisabledTestDebugManager debugManager;
+    auto readerImpl = SettingsReader::create();
+    debugManager.setReaderImpl(readerImpl);
+
+    auto readerImpl2 = SettingsReader::create();
+    debugManager.setReaderImpl(readerImpl2);
+    EXPECT_EQ(readerImpl2, debugManager.getReaderImpl());
+}
+
+TEST(DebugSettingsManager, givenPrintDebugSettingsEnabledWhenCallingDumpFlagsThenFlagsAreWrittenToDumpFile) {
+    FullyEnabledTestDebugManager debugManager;
+    debugManager.flags.PrintDebugSettings.set(true);
+    debugManager.flags.LoopAtPlatformInitialize.set(true);
+    debugManager.flags.Enable64kbpages.set(1);
+    debugManager.flags.TbxServer.set("192.168.0.1");
+
+    // Clear dump files and generate new
+    std::remove(FullyEnabledTestDebugManager::settingsDumpFileName);
+    debugManager.dumpFlags();
+
+    // Validate allSettingsDumpFile
+    SettingsFileReader allSettingsReader{FullyEnabledTestDebugManager::settingsDumpFileName};
+#define DECLARE_DEBUG_VARIABLE(dataType, varName, defaultValue, description) \
+    EXPECT_EQ(debugManager.flags.varName.get(), allSettingsReader.getSetting(#varName, defaultValue));
+
+#include "debug_variables.inl"
+#undef DECLARE_DEBUG_VARIABLE
+    std::remove(FullyEnabledTestDebugManager::settingsDumpFileName);
+}
+
+struct AllocationTypeTestCase {
+    GraphicsAllocation::AllocationType type;
+    const char *str;
+};
+
+AllocationTypeTestCase allocationTypeValues[] = {
+    {GraphicsAllocation::AllocationType::UNKNOWN, "UNKNOWN"},
+    {GraphicsAllocation::AllocationType::BUFFER_COMPRESSED, "BUFFER_COMPRESSED"},
+    {GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY, "BUFFER_HOST_MEMORY"},
+    {GraphicsAllocation::AllocationType::BUFFER, "BUFFER"},
+    {GraphicsAllocation::AllocationType::IMAGE, "IMAGE"},
+    {GraphicsAllocation::AllocationType::TAG_BUFFER, "TAG_BUFFER"},
+    {GraphicsAllocation::AllocationType::LINEAR_STREAM, "LINEAR_STREAM"},
+    {GraphicsAllocation::AllocationType::FILL_PATTERN, "FILL_PATTERN"},
+    {GraphicsAllocation::AllocationType::PIPE, "PIPE"},
+    {GraphicsAllocation::AllocationType::TIMESTAMP_PACKET_TAG_BUFFER, "TIMESTAMP_PACKET_TAG_BUFFER"},
+    {GraphicsAllocation::AllocationType::PROFILING_TAG_BUFFER, "PROFILING_TAG_BUFFER"},
+    {GraphicsAllocation::AllocationType::COMMAND_BUFFER, "COMMAND_BUFFER"},
+    {GraphicsAllocation::AllocationType::PRINTF_SURFACE, "PRINTF_SURFACE"},
+    {GraphicsAllocation::AllocationType::GLOBAL_SURFACE, "GLOBAL_SURFACE"},
+    {GraphicsAllocation::AllocationType::PRIVATE_SURFACE, "PRIVATE_SURFACE"},
+    {GraphicsAllocation::AllocationType::CONSTANT_SURFACE, "CONSTANT_SURFACE"},
+    {GraphicsAllocation::AllocationType::SCRATCH_SURFACE, "SCRATCH_SURFACE"},
+    {GraphicsAllocation::AllocationType::INSTRUCTION_HEAP, "INSTRUCTION_HEAP"},
+    {GraphicsAllocation::AllocationType::INDIRECT_OBJECT_HEAP, "INDIRECT_OBJECT_HEAP"},
+    {GraphicsAllocation::AllocationType::SURFACE_STATE_HEAP, "SURFACE_STATE_HEAP"},
+    {GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY, "SHARED_RESOURCE_COPY"},
+    {GraphicsAllocation::AllocationType::SVM_ZERO_COPY, "SVM_ZERO_COPY"},
+    {GraphicsAllocation::AllocationType::SVM_CPU, "SVM_CPU"},
+    {GraphicsAllocation::AllocationType::SVM_GPU, "SVM_GPU"},
+    {GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR, "EXTERNAL_HOST_PTR"},
+    {GraphicsAllocation::AllocationType::UNDECIDED, "UNDECIDED"}};
+
+class AllocationTypeLogging : public ::testing::TestWithParam<AllocationTypeTestCase> {};
+
+TEST_P(AllocationTypeLogging, givenGraphicsAllocationTypeWhenConvertingToStringThenCorrectStringIsReturned) {
+    FullyEnabledTestDebugManager debugManager;
+    auto input = GetParam();
+
+    GraphicsAllocation graphicsAllocation(input.type, nullptr, 0u, 0, MemoryPool::MemoryNull, true);
+
+    auto result = debugManager.getAllocationTypeString(&graphicsAllocation);
+
+    EXPECT_STREQ(result, input.str);
+}
+
+INSTANTIATE_TEST_CASE_P(AllAllocationTypes,
+                        AllocationTypeLogging,
+                        ::testing::ValuesIn(allocationTypeValues));
+
+TEST(AllocationTypeLoggingSingle, givenGraphicsAllocationTypeWhenConvertingToStringIllegalValueThenILLEGAL_VALUEIsReturned) {
+    FullyEnabledTestDebugManager debugManager;
+
+    GraphicsAllocation graphicsAllocation(static_cast<GraphicsAllocation::AllocationType>(999), nullptr, 0u, 0, MemoryPool::MemoryNull, true);
+
+    auto result = debugManager.getAllocationTypeString(&graphicsAllocation);
+
+    EXPECT_STREQ(result, "ILLEGAL_VALUE");
+}
+
+TEST(AllocationTypeLoggingSingle, givenGraphicsAllocationTypeWhenDebugManagerDisabledThennullptrReturned) {
+    FullyDisabledTestDebugManager debugManager;
+
+    GraphicsAllocation graphicsAllocation(GraphicsAllocation::AllocationType::BUFFER, nullptr, 0u, 0, MemoryPool::MemoryNull, true);
+
+    auto result = debugManager.getAllocationTypeString(&graphicsAllocation);
+
+    EXPECT_STREQ(result, nullptr);
+}
+
+TEST(AllocationInfoLogging, givenBaseGraphicsAllocationWhenGettingImplementationSpecificAllocationInfoThenReturnEmptyInfoString) {
+    GraphicsAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, 0u, 0, MemoryPool::MemoryNull, true);
+    EXPECT_STREQ(graphicsAllocation.getAllocationInfoString().c_str(), "");
 }

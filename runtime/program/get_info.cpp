@@ -1,32 +1,19 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#include "runtime/helpers/get_info.h"
 
 #include "runtime/context/context.h"
 #include "runtime/helpers/base_object.h"
-#include "runtime/helpers/get_info.h"
 #include "runtime/helpers/validators.h"
+
 #include "program.h"
 
-namespace OCLRT {
+namespace NEO {
 
 cl_int Program::getInfo(cl_program_info paramName, size_t paramValueSize,
                         void *paramValue, size_t *paramValueSizeRet) {
@@ -48,7 +35,7 @@ cl_int Program::getInfo(cl_program_info paramName, size_t paramValueSize,
 
     case CL_PROGRAM_BINARIES:
         resolveProgramBinary();
-        pSrc = elfBinary;
+        pSrc = elfBinary.data();
         retSize = sizeof(void **);
         srcSize = elfBinarySize;
         if (paramValue != nullptr) {
@@ -104,8 +91,15 @@ cl_int Program::getInfo(cl_program_info paramName, size_t paramValueSize,
         break;
 
     case CL_PROGRAM_SOURCE:
-        pSrc = sourceCode.c_str();
-        retSize = srcSize = strlen(sourceCode.c_str()) + 1;
+        if (createdFrom == CreatedFrom::SOURCE) {
+            pSrc = sourceCode.c_str();
+            retSize = srcSize = strlen(sourceCode.c_str()) + 1;
+        } else {
+            if (paramValueSizeRet) {
+                *paramValueSizeRet = 0;
+            }
+            return CL_SUCCESS;
+        }
         break;
 
     case CL_PROGRAM_IL:
@@ -221,4 +215,4 @@ cl_int Program::getBuildInfo(cl_device_id device, cl_program_build_info paramNam
 
     return retVal;
 }
-} // namespace OCLRT
+} // namespace NEO

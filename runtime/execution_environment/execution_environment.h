@@ -1,50 +1,75 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
 #pragma once
+#include "runtime/helpers/hw_info.h"
+#include "runtime/helpers/options.h"
+#include "runtime/memory_manager/memory_constants.h"
 #include "runtime/os_interface/device_factory.h"
 #include "runtime/utilities/reference_tracked_object.h"
 
-namespace OCLRT {
-class GmmHelper;
+#include "engine_node.h"
+
+#include <mutex>
+#include <vector>
+
+namespace NEO {
+class AubCenter;
+class BuiltIns;
 class CommandStreamReceiver;
+class CompilerInterface;
+class GmmHelper;
 class MemoryManager;
 class SourceLevelDebugger;
+class OSInterface;
+struct EngineControl;
 struct HardwareInfo;
+
+using CsrContainer = std::vector<std::vector<std::unique_ptr<CommandStreamReceiver>>>;
+
 class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment> {
   private:
+    std::mutex mtx;
     DeviceFactoryCleaner cleaner;
 
   protected:
     std::unique_ptr<GmmHelper> gmmHelper;
+    const HardwareInfo *hwInfo = nullptr;
 
   public:
     ExecutionEnvironment();
     ~ExecutionEnvironment() override;
-    void initGmm(const HardwareInfo *hwInfo);
-    bool initializeCommandStreamReceiver(const HardwareInfo *pHwInfo);
-    void initializeMemoryManager(bool enable64KBpages);
-    void initSourceLevelDebugger(const HardwareInfo &hwInfo);
+
+    MOCKABLE_VIRTUAL void initAubCenter(bool localMemoryEnabled, const std::string &aubFileName, CommandStreamReceiverType csrType);
+    void initGmm();
+    bool initializeCommandStreamReceiver(uint32_t deviceIndex, uint32_t deviceCsrIndex);
+    void initializeSpecialCommandStreamReceiver();
+    void initializeMemoryManager();
+    void initSourceLevelDebugger();
+    void setHwInfo(const HardwareInfo *hwInfo);
+    const HardwareInfo *getHardwareInfo() const {
+        return this->hwInfo;
+    }
+    bool isFullRangeSvm() const {
+        return hwInfo->capabilityTable.gpuAddressSpace == MemoryConstants::max48BitAddress;
+    }
+
+    GmmHelper *getGmmHelper() const;
+    MOCKABLE_VIRTUAL CompilerInterface *getCompilerInterface();
+    BuiltIns *getBuiltIns();
+    EngineControl *getEngineControlForSpecialCsr();
+
+    std::unique_ptr<OSInterface> osInterface;
     std::unique_ptr<MemoryManager> memoryManager;
-    std::unique_ptr<CommandStreamReceiver> commandStreamReceiver;
+    std::unique_ptr<AubCenter> aubCenter;
+    CsrContainer commandStreamReceivers;
+    std::unique_ptr<CommandStreamReceiver> specialCommandStreamReceiver;
+    std::unique_ptr<BuiltIns> builtins;
+    std::unique_ptr<CompilerInterface> compilerInterface;
     std::unique_ptr<SourceLevelDebugger> sourceLevelDebugger;
 };
-} // namespace OCLRT
+} // namespace NEO

@@ -1,27 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gtest/gtest.h"
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/program/create.inl"
 #include "runtime/program/program.h"
+
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 extern GFXCORE_FAMILY renderCoreFamily;
 
@@ -31,11 +21,12 @@ inline void PushBackToken(ContainerT &container, const TokenT &token) {
                      reinterpret_cast<const typename ContainerT::value_type *>(&token) + sizeof(token));
 }
 
-struct MockProgramRecordUnhandledTokens : OCLRT::Program {
+struct MockProgramRecordUnhandledTokens : public Program {
     bool allowUnhandledTokens;
     mutable int lastUnhandledTokenFound;
 
-    using Program::Program;
+    MockProgramRecordUnhandledTokens(ExecutionEnvironment &executionEnvironment) : Program(executionEnvironment) {}
+    MockProgramRecordUnhandledTokens(ExecutionEnvironment &executionEnvironment, Context *context, bool isBuiltinKernel) : Program(executionEnvironment, context, isBuiltinKernel) {}
 
     bool isSafeToSkipUnhandledToken(unsigned int token) const override {
         lastUnhandledTokenFound = static_cast<int>(token);
@@ -49,13 +40,15 @@ struct MockProgramRecordUnhandledTokens : OCLRT::Program {
 
 inline cl_int GetDecodeErrorCode(const std::vector<char> &binary, bool allowUnhandledTokens,
                                  int defaultUnhandledTokenId, int &foundUnhandledTokenId) {
+    NEO::ExecutionEnvironment executionEnvironment;
     using PT = MockProgramRecordUnhandledTokens;
     std::unique_ptr<PT> prog;
     cl_int errorCode = CL_INVALID_BINARY;
-    prog.reset(OCLRT::Program::createFromGenBinary<PT>(nullptr,
-                                                       binary.data(),
-                                                       binary.size(),
-                                                       false, &errorCode));
+    prog.reset(NEO::Program::createFromGenBinary<PT>(executionEnvironment,
+                                                     nullptr,
+                                                     binary.data(),
+                                                     binary.size(),
+                                                     false, &errorCode));
     prog->allowUnhandledTokens = allowUnhandledTokens;
     prog->lastUnhandledTokenFound = defaultUnhandledTokenId;
     auto ret = prog->processGenBinary();
@@ -127,7 +120,8 @@ inline std::vector<char> CreateBinary(bool addUnhandledProgramScopePatchToken, b
 constexpr int32_t unhandledTokenId = iOpenCL::NUM_PATCH_TOKENS;
 
 TEST(EvaluateUnhandledToken, ByDefaultSkippingOfUnhandledTokensInUnitTestsIsSafe) {
-    MockProgramRecordUnhandledTokens program;
+    ExecutionEnvironment executionEnvironment;
+    MockProgramRecordUnhandledTokens program(executionEnvironment);
     EXPECT_TRUE(program.getDefaultIsSafeToSkipUnhandledToken());
 }
 

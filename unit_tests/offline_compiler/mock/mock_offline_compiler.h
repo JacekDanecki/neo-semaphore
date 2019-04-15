@@ -1,51 +1,41 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "offline_compiler/offline_compiler.h"
+
 #include <string>
 
-namespace OCLRT {
+namespace NEO {
 
 class MockOfflineCompiler : public OfflineCompiler {
   public:
+    using OfflineCompiler::deviceName;
     using OfflineCompiler::generateFilePathForIr;
     using OfflineCompiler::generateOptsSuffix;
+    using OfflineCompiler::igcDeviceCtx;
     using OfflineCompiler::inputFileLlvm;
+    using OfflineCompiler::inputFileSpirV;
     using OfflineCompiler::isSpirV;
     using OfflineCompiler::options;
     using OfflineCompiler::outputDirectory;
     using OfflineCompiler::outputFile;
+    using OfflineCompiler::sourceCode;
     using OfflineCompiler::useLlvmText;
     using OfflineCompiler::useOptionsSuffix;
 
     MockOfflineCompiler() : OfflineCompiler() {
     }
 
-    int initialize(uint32_t numArgs, const char **argv) {
+    int initialize(size_t numArgs, const char *const *argv) {
         return OfflineCompiler::initialize(numArgs, argv);
     }
 
-    int parseCommandLine(uint32_t numArgs, const char **argv) {
+    int parseCommandLine(size_t numArgs, const char *const *argv) {
         return OfflineCompiler::parseCommandLine(numArgs, argv);
     }
 
@@ -90,7 +80,7 @@ class MockOfflineCompiler : public OfflineCompiler {
     }
 
     char *getElfBinary() {
-        return elfBinary;
+        return elfBinary.data();
     }
 
     size_t getElfBinarySize() {
@@ -105,4 +95,4 @@ class MockOfflineCompiler : public OfflineCompiler {
         return genBinarySize;
     }
 };
-} // namespace OCLRT
+} // namespace NEO

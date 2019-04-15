@@ -1,55 +1,40 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/mocks/mock_device.h"
-#include "runtime/command_stream/command_stream_receiver.h"
+
 #include "runtime/device/driver_info.h"
-#include "runtime/memory_manager/os_agnostic_memory_manager.h"
-#include "runtime/os_interface/os_time.h"
+#include "runtime/os_interface/os_context.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
 #include "unit_tests/mocks/mock_memory_manager.h"
 #include "unit_tests/mocks/mock_ostime.h"
+#include "unit_tests/tests_configuration.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 MockDevice::MockDevice(const HardwareInfo &hwInfo)
-    : MockDevice(hwInfo, new ExecutionEnvironment) {
-    CommandStreamReceiver *commandStreamReceiver = createCommandStream(&hwInfo);
-    executionEnvironment->commandStreamReceiver.reset(commandStreamReceiver);
-    commandStreamReceiver->setMemoryManager(this->mockMemoryManager.get());
+    : MockDevice(hwInfo, new MockExecutionEnvironment(&hwInfo), 0u) {
+    CommandStreamReceiver *commandStreamReceiver = createCommandStream(*this->executionEnvironment);
+    executionEnvironment->commandStreamReceivers.resize(getDeviceIndex() + 1);
+    executionEnvironment->commandStreamReceivers[getDeviceIndex()].resize(defaultEngineIndex + 1);
+    executionEnvironment->commandStreamReceivers[getDeviceIndex()][defaultEngineIndex].reset(commandStreamReceiver);
     this->executionEnvironment->memoryManager = std::move(this->mockMemoryManager);
+    this->engines.resize(defaultEngineIndex + 1);
+    this->engines[defaultEngineIndex] = {commandStreamReceiver, nullptr};
 }
-
-OCLRT::MockDevice::MockDevice(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment)
-    : Device(hwInfo, executionEnvironment) {
-    this->mockMemoryManager.reset(new OsAgnosticMemoryManager);
+MockDevice::MockDevice(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex)
+    : Device(hwInfo, executionEnvironment, deviceIndex) {
+    bool enableLocalMemory = HwHelper::get(hwInfo.pPlatform->eRenderCoreFamily).getEnableLocalMemory(hwInfo);
+    bool aubUsage = (testMode == TestMode::AubTests) || (testMode == TestMode::AubTestsWithTbx);
+    this->mockMemoryManager.reset(new MemoryManagerCreate<OsAgnosticMemoryManager>(false, enableLocalMemory, aubUsage, *executionEnvironment));
     this->osTime = MockOSTime::create();
     mockWaTable = *hwInfo.pWaTable;
-}
-
-void MockDevice::setMemoryManager(MemoryManager *memoryManager) {
-    executionEnvironment->memoryManager.reset(memoryManager);
-    if (executionEnvironment->commandStreamReceiver) {
-        executionEnvironment->commandStreamReceiver->setMemoryManager(memoryManager);
-    }
+    executionEnvironment->setHwInfo(&hwInfo);
+    executionEnvironment->initializeMemoryManager();
 }
 
 void MockDevice::setOSTime(OSTime *osTime) {
@@ -64,33 +49,34 @@ bool MockDevice::hasDriverInfo() {
     return driverInfo.get() != nullptr;
 };
 
-void MockDevice::injectMemoryManager(MockMemoryManager *memoryManager) {
-    memoryManager->setCommandStreamReceiver(executionEnvironment->commandStreamReceiver.get());
-    executionEnvironment->commandStreamReceiver->setMemoryManager(memoryManager);
-    setMemoryManager(memoryManager);
-    memoryManager->setDevice(this);
+void MockDevice::injectMemoryManager(MemoryManager *memoryManager) {
+    executionEnvironment->memoryManager.reset(memoryManager);
 }
 
 void MockDevice::resetCommandStreamReceiver(CommandStreamReceiver *newCsr) {
-    auto tagAllocation = this->disconnectCurrentTagAllocationAndReturnIt();
-    executionEnvironment->commandStreamReceiver.reset(newCsr);
-    executionEnvironment->commandStreamReceiver->setMemoryManager(executionEnvironment->memoryManager.get());
-    executionEnvironment->commandStreamReceiver->setTagAllocation(tagAllocation);
-    executionEnvironment->commandStreamReceiver->setPreemptionCsrAllocation(preemptionAllocation);
-    executionEnvironment->memoryManager->csr = executionEnvironment->commandStreamReceiver.get();
+    resetCommandStreamReceiver(newCsr, defaultEngineIndex);
 }
 
-OCLRT::FailMemoryManager::FailMemoryManager() : MockMemoryManager() {
-    agnostic = nullptr;
-    fail = 0;
+void MockDevice::resetCommandStreamReceiver(CommandStreamReceiver *newCsr, uint32_t engineIndex) {
+    executionEnvironment->commandStreamReceivers[getDeviceIndex()][engineIndex].reset(newCsr);
+    executionEnvironment->commandStreamReceivers[getDeviceIndex()][engineIndex]->initializeTagAllocation();
+    executionEnvironment->commandStreamReceivers[getDeviceIndex()][engineIndex]->setPreemptionCsrAllocation(preemptionAllocation);
+    this->engines[engineIndex].commandStreamReceiver = newCsr;
+
+    auto osContext = this->engines[engineIndex].osContext;
+    executionEnvironment->memoryManager->getRegisteredEngines()[osContext->getContextId()].commandStreamReceiver = newCsr;
+    this->engines[engineIndex].commandStreamReceiver->setupContext(*osContext);
+    UNRECOVERABLE_IF(getDeviceIndex() != 0u);
 }
 
-OCLRT::FailMemoryManager::FailMemoryManager(int32_t fail) : MockMemoryManager() {
-    allocations.reserve(fail);
-    agnostic = new OsAgnosticMemoryManager(false);
-    this->fail = fail;
+MockAlignedMallocManagerDevice::MockAlignedMallocManagerDevice(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex) : MockDevice(hwInfo, executionEnvironment, deviceIndex) {
+    this->mockMemoryManager.reset(new MockAllocSysMemAgnosticMemoryManager(*executionEnvironment));
 }
-
-MockAlignedMallocManagerDevice::MockAlignedMallocManagerDevice(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment) : MockDevice(hwInfo, executionEnvironment) {
-    this->mockMemoryManager.reset(new MockAllocSysMemAgnosticMemoryManager());
+FailDevice::FailDevice(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex)
+    : MockDevice(hwInfo, executionEnvironment, deviceIndex) {
+    this->mockMemoryManager.reset(new FailMemoryManager(*executionEnvironment));
+}
+FailDeviceAfterOne::FailDeviceAfterOne(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex)
+    : MockDevice(hwInfo, executionEnvironment, deviceIndex) {
+    this->mockMemoryManager.reset(new FailMemoryManager(1, *executionEnvironment));
 }

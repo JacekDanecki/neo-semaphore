@@ -1,42 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "CL/cl.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
+#include "test.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
 #include "unit_tests/kernel/kernel_arg_buffer_fixture.h"
-#include "test.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
+
+#include "CL/cl.h"
 #include "gtest/gtest.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef Test<KernelArgBufferFixture> KernelArgBufferTest;
 
@@ -91,11 +77,10 @@ HWTEST_F(KernelArgBufferTest, SetKernelArgValidSvmPtrStateful) {
 
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
     auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
-        ptrOffset(pKernel->getSurfaceStateHeap(),
-                  pKernelInfo->kernelArgInfo[0].offsetHeap));
+        ptrOffset(pKernel->getSurfaceStateHeap(), pKernelInfo->kernelArgInfo[0].offsetHeap));
 
-    void *surfaceAddress = reinterpret_cast<void *>(surfaceState->getSurfaceBaseAddress());
-    EXPECT_EQ(buffer->getCpuAddress(), surfaceAddress);
+    auto surfaceAddress = surfaceState->getSurfaceBaseAddress();
+    EXPECT_EQ(buffer->getGraphicsAllocation()->getGpuAddress(), surfaceAddress);
 
     delete buffer;
 }
@@ -182,4 +167,43 @@ TEST_F(KernelArgBufferTest, given32BitDeviceWhenArgPassedIsNullThenOnly4BytesAre
 
     EXPECT_EQ(0u, *pKernelArg32bit);
     EXPECT_NE(expValue, *pKernelArg64bit);
+}
+
+TEST_F(KernelArgBufferTest, givenWritableBufferWhenSettingAsArgThenDoNotExpectAllocationInCacheFlushVector) {
+    auto buffer = std::make_unique<MockBuffer>();
+    buffer->mockGfxAllocation.setMemObjectsAllocationWithWritableFlags(true);
+    buffer->mockGfxAllocation.setFlushL3Required(false);
+
+    auto val = static_cast<cl_mem>(buffer.get());
+    auto pVal = &val;
+
+    auto retVal = pKernel->setArg(0, sizeof(cl_mem *), pVal);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pKernel->kernelArgRequiresCacheFlush[0]);
+}
+
+TEST_F(KernelArgBufferTest, givenCacheFlushBufferWhenSettingAsArgThenExpectAllocationInCacheFlushVector) {
+    auto buffer = std::make_unique<MockBuffer>();
+    buffer->mockGfxAllocation.setMemObjectsAllocationWithWritableFlags(false);
+    buffer->mockGfxAllocation.setFlushL3Required(true);
+
+    auto val = static_cast<cl_mem>(buffer.get());
+    auto pVal = &val;
+
+    auto retVal = pKernel->setArg(0, sizeof(cl_mem *), pVal);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(&buffer->mockGfxAllocation, pKernel->kernelArgRequiresCacheFlush[0]);
+}
+
+TEST_F(KernelArgBufferTest, givenNoCacheFlushBufferWhenSettingAsArgThenNotExpectAllocationInCacheFlushVector) {
+    auto buffer = std::make_unique<MockBuffer>();
+    buffer->mockGfxAllocation.setMemObjectsAllocationWithWritableFlags(false);
+    buffer->mockGfxAllocation.setFlushL3Required(false);
+
+    auto val = static_cast<cl_mem>(buffer.get());
+    auto pVal = &val;
+
+    auto retVal = pKernel->setArg(0, sizeof(cl_mem *), pVal);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pKernel->kernelArgRequiresCacheFlush[0]);
 }

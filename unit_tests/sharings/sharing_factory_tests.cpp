@@ -1,26 +1,11 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gtest/gtest.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/string.h"
@@ -28,9 +13,12 @@
 #include "runtime/sharings/sharing.h"
 #include "runtime/sharings/sharing_factory.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
+#include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 class SharingFactoryStateRestore : public SharingFactory {
   public:
@@ -114,6 +102,22 @@ bool MockSharingContextBuilder::processProperties(cl_context_properties &propert
     return false;
 }
 
+class VASharingFunctionsMock : public SharingFunctions {
+  public:
+    static const uint32_t sharingId = VA_SHARING;
+    uint32_t getId() const override { return sharingId; }
+};
+
+struct VAMockSharingContextBuilder : public MockSharingContextBuilder {
+    bool finalizeProperties(Context &context, int32_t &errcodeRet) override;
+};
+
+bool VAMockSharingContextBuilder::finalizeProperties(Context &context, int32_t &errcodeRet) {
+    auto &mockContext = static_cast<MockContext &>(context);
+    mockContext.registerSharingWithId(new VASharingFunctionsMock(), VA_SHARING);
+    return true;
+}
+
 bool MockSharingContextBuilder::finalizeProperties(Context &context, int32_t &errcodeRet) {
     if (value == mockContextPassFinalize) {
         return true;
@@ -133,6 +137,13 @@ class MockSharingBuilderFactory : public TestedSharingBuilderFactory {
         } else {
             return nullptr;
         }
+    }
+};
+
+class VAMockSharingBuilderFactory : public TestedSharingBuilderFactory {
+  public:
+    std::unique_ptr<SharingContextBuilder> createContextBuilder() override {
+        return std::unique_ptr<SharingContextBuilder>(new VAMockSharingContextBuilder());
     }
 };
 
@@ -202,27 +213,81 @@ TEST(Context, givenMockSharingBuilderWhenContextWithInvalidPropertiesThenContext
     stateRestore.clearCurrentState();
     stateRestore.registerSharing<MockSharingBuilderFactory>(SharingType::CLGL_SHARING);
 
-    std::unique_ptr<MockDevice> device(new MockDevice(*platformDevices[0]));
+    auto device = std::make_unique<MockDevice>(*platformDevices[0]);
     cl_device_id clDevice = static_cast<cl_device_id>(device.get());
-    DeviceVector deviceVector((cl_device_id *)&clDevice, 1);
+    auto deviceVector = DeviceVector(&clDevice, 1);
     cl_int retVal;
 
-    auto pPlatform = OCLRT::platform();
-    cl_platform_id platformId[1];
-    platformId[0] = pPlatform;
+    cl_platform_id platformId[] = {platform()};
 
     cl_context_properties validProperties[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0], clContextPropertyMock, mockContextPassFinalize, 0};
-    cl_context_properties inValidProperties[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0], clContextPropertyMock, 0, 0};
-    cl_context_properties inValidPropertiesFailFinalize[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0], clContextPropertyMock, mockContextFailFinalize, 0};
+    cl_context_properties invalidProperties[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0], clContextPropertyMock, 0, 0};
+    cl_context_properties invalidPropertiesFailFinalize[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0], clContextPropertyMock, mockContextFailFinalize, 0};
 
     std::unique_ptr<Context> context;
 
-    context.reset(Context::create<Context>(inValidProperties, deviceVector, nullptr, nullptr, retVal));
+    context.reset(Context::create<Context>(invalidProperties, deviceVector, nullptr, nullptr, retVal));
     EXPECT_EQ(nullptr, context.get());
 
-    context.reset(Context::create<Context>(inValidPropertiesFailFinalize, deviceVector, nullptr, nullptr, retVal));
+    context.reset(Context::create<Context>(invalidPropertiesFailFinalize, deviceVector, nullptr, nullptr, retVal));
     EXPECT_EQ(nullptr, context.get());
 
     context.reset(Context::create<Context>(validProperties, deviceVector, nullptr, nullptr, retVal));
     EXPECT_NE(nullptr, context.get());
 };
+
+TEST(Context, GivenVaContextWhenItIsCreatedItInitializesPowerSavingMode) {
+    SharingFactoryStateRestore stateRestore;
+    stateRestore.clearCurrentState();
+    stateRestore.registerSharing<VAMockSharingBuilderFactory>(SharingType::VA_SHARING);
+
+    auto device = std::make_unique<MockDevice>(*platformDevices[0]);
+    cl_device_id clDevice = static_cast<cl_device_id>(device.get());
+    cl_int retVal;
+
+    cl_platform_id platformId[] = {platform()};
+
+    auto &commandStreamReceiver = device->getCommandStreamReceiver();
+    auto kmdNotifyHelper = commandStreamReceiver.peekKmdNotifyHelper();
+
+    int64_t timeout = 0;
+    kmdNotifyHelper->obtainTimeoutParams(timeout, true, 1, 10, 2, false);
+    EXPECT_NE(1, timeout);
+
+    cl_context_properties validProperties[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0],
+                                                clContextPropertyMock, mockContextPassFinalize, 0};
+
+    std::unique_ptr<MockContext> ctx(Context::create<MockContext>(validProperties, DeviceVector(&clDevice, 1), nullptr, nullptr, retVal));
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_NE(nullptr, ctx);
+    kmdNotifyHelper->obtainTimeoutParams(timeout, true, 1, 10, 2, false);
+    EXPECT_EQ(1, timeout);
+}
+
+TEST(Context, GivenNonVaContextWhenItIsCreatedItInitializesPowerSavingMode) {
+    SharingFactoryStateRestore stateRestore;
+    stateRestore.clearCurrentState();
+    stateRestore.registerSharing<MockSharingBuilderFactory>(SharingType::CLGL_SHARING);
+
+    auto device = std::make_unique<MockDevice>(*platformDevices[0]);
+    cl_device_id clDevice = static_cast<cl_device_id>(device.get());
+    cl_int retVal;
+
+    cl_platform_id platformId[] = {platform()};
+
+    auto &commandStreamReceiver = device->getCommandStreamReceiver();
+    auto kmdNotifyHelper = commandStreamReceiver.peekKmdNotifyHelper();
+
+    int64_t timeout = 0;
+    kmdNotifyHelper->obtainTimeoutParams(timeout, true, 1, 10, 2, false);
+    EXPECT_NE(1, timeout);
+
+    cl_context_properties validProperties[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)platformId[0],
+                                                clContextPropertyMock, mockContextPassFinalize, 0};
+
+    std::unique_ptr<MockContext> ctx(Context::create<MockContext>(validProperties, DeviceVector(&clDevice, 1), nullptr, nullptr, retVal));
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_NE(nullptr, ctx);
+    kmdNotifyHelper->obtainTimeoutParams(timeout, true, 1, 10, 2, false);
+    EXPECT_NE(1, timeout);
+}

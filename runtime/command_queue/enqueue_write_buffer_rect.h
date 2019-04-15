@@ -1,35 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
+#include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/built_ins/built_ins.h"
+
 #include <new>
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
 cl_int CommandQueueHw<GfxFamily>::enqueueWriteBufferRect(
@@ -76,9 +62,9 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBufferRect(
 
         return CL_SUCCESS;
     }
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRect,
-                                                                          this->getContext(), this->getDevice());
-    builder.takeOwnership(this->context);
+    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRect,
+                                                                                                        this->getContext(), this->getDevice());
+    BuiltInOwnershipWrapper builtInLock(builder, this->context);
 
     size_t hostPtrSize = Buffer::calculateHostPtrSize(hostOrigin, region, hostRowPitch, hostSlicePitch);
     void *srcPtr = const_cast<void *>(ptr);
@@ -90,18 +76,21 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBufferRect(
     if (region[0] != 0 &&
         region[1] != 0 &&
         region[2] != 0) {
-        bool status = createAllocationForHostSurface(hostPtrSurf);
+        bool status = getCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, false);
         if (!status) {
-            builder.releaseOwnership();
             return CL_OUT_OF_RESOURCES;
         }
-        srcPtr = reinterpret_cast<void *>(hostPtrSurf.getAllocation()->getGpuAddressToPatch());
+        srcPtr = reinterpret_cast<void *>(hostPtrSurf.getAllocation()->getGpuAddress());
     }
 
+    void *alignedSrcPtr = alignDown(srcPtr, 4);
+    size_t srcPtrOffset = ptrDiff(srcPtr, alignedSrcPtr);
+
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
-    dc.srcPtr = srcPtr;
+    dc.srcPtr = alignedSrcPtr;
     dc.dstMemObj = buffer;
     dc.srcOffset = hostOrigin;
+    dc.srcOffset.x += srcPtrOffset;
     dc.dstOffset = bufferOrigin;
     dc.size = region;
     dc.srcRowPitch = hostRowPitch;
@@ -118,12 +107,10 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBufferRect(
         eventWaitList,
         event);
 
-    builder.releaseOwnership();
-
     if (context->isProvidingPerformanceHints()) {
         context->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, CL_ENQUEUE_WRITE_BUFFER_RECT_REQUIRES_COPY_DATA, static_cast<cl_mem>(buffer));
     }
 
     return CL_SUCCESS;
 }
-} // namespace OCLRT
+} // namespace NEO

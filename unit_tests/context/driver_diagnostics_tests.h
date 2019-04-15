@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -25,8 +10,8 @@
 #include "runtime/context/context.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/options.h"
-#include "runtime/mem_obj/buffer.h"
 #include "runtime/kernel/kernel.h"
+#include "runtime/mem_obj/buffer.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/fixtures/platform_fixture.h"
@@ -34,9 +19,10 @@
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_kernel.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 const int maxHintCounter = 4;
 
@@ -91,7 +77,7 @@ struct PerformanceHintTest : public DriverDiagnosticsTest,
         DriverDiagnosticsTest::SetUp();
         cl_device_id deviceID = devices[0];
         cl_context_properties validProperties[3] = {CL_CONTEXT_SHOW_DIAGNOSTICS_INTEL, CL_CONTEXT_DIAGNOSTICS_LEVEL_ALL_INTEL, 0};
-        context = Context::create<OCLRT::MockContext>(validProperties, DeviceVector(&deviceID, 1), callbackFunction, (void *)userData, retVal);
+        context = Context::create<NEO::MockContext>(validProperties, DeviceVector(&deviceID, 1), callbackFunction, (void *)userData, retVal);
         EXPECT_EQ(CL_SUCCESS, retVal);
     }
 
@@ -145,7 +131,7 @@ struct PerformanceHintCommandQueueTest : public PerformanceHintTest,
 struct PerformanceHintEnqueueTest : public PerformanceHintTest {
     void SetUp() override {
         PerformanceHintTest::SetUp();
-        pCmdQ = createCommandQueue(pPlatform->getDevice(0), 0);
+        pCmdQ = createCommandQueue(pPlatform->getDevice(0));
     }
 
     void TearDown() override {

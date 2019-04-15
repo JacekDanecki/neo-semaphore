@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue_hw.h"
@@ -32,7 +17,7 @@
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "unit_tests/mocks/mock_context.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 namespace ULT {
 
@@ -44,18 +29,19 @@ class CommandStreamReceiverMock : public UltCommandStreamReceiver<FamilyType> {
 
   public:
     size_t expectedToFreeCount = (size_t)-1;
-    CommandStreamReceiverMock(Device *pDevice) : UltCommandStreamReceiver<FamilyType>(*platformDevices[0]) {
+    CommandStreamReceiverMock(Device *pDevice) : UltCommandStreamReceiver<FamilyType>(*pDevice->getExecutionEnvironment()) {
         this->pDevice = pDevice;
     }
 
-    FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineType, ResidencyContainer *allocationsForResidency) override {
+    FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
         EXPECT_NE(nullptr, batchBuffer.commandBufferAllocation->getUnderlyingBuffer());
 
         toFree.push_back(batchBuffer.commandBufferAllocation);
         batchBuffer.stream->replaceBuffer(nullptr, 0);
         batchBuffer.stream->replaceGraphicsAllocation(nullptr);
 
-        EXPECT_TRUE(pDevice->hasOwnership());
+        EXPECT_TRUE(this->ownershipMutex.try_lock());
+        this->ownershipMutex.unlock();
         return 0;
     }
 
@@ -149,6 +135,7 @@ HWTEST_F(EnqueueThreading, enqueueReadBuffer) {
                              0,
                              1024u,
                              ptr,
+                             nullptr,
                              0,
                              nullptr,
                              nullptr);
@@ -172,6 +159,7 @@ HWTEST_F(EnqueueThreading, enqueueWriteBuffer) {
                               0,
                               1024u,
                               ptr,
+                              nullptr,
                               0,
                               nullptr,
                               nullptr);
@@ -387,7 +375,8 @@ HWTEST_F(EnqueueThreading, enqueueWriteBufferRect) {
     size_t hostOrigin[3] = {1024u, 1, 0};
     size_t region[3] = {1024u, 1, 1};
 
-    void *ptr = ::alignedMalloc(1024u, 4096);
+    auto hostPtrSize = Buffer::calculateHostPtrSize(hostOrigin, region, 0, 0);
+    void *ptr = ::alignedMalloc(hostPtrSize, MemoryConstants::pageSize);
     ASSERT_NE(nullptr, ptr);
 
     pCmdQ->enqueueWriteBufferRect(buffer.get(), CL_TRUE, bufferOrigin, hostOrigin, region, 0, 0, 0, 0, ptr, 0, nullptr, nullptr);
@@ -431,71 +420,9 @@ HWTEST_F(EnqueueThreading, finish) {
     // set something to finish
     pCmdQ->taskCount = 1;
     pCmdQ->taskLevel = 1;
-    auto csr = (CommandStreamReceiverMock<FamilyType> *)&this->pDevice->getCommandStreamReceiver();
+    auto csr = (CommandStreamReceiverMock<FamilyType> *)&this->pCmdQ->getCommandStreamReceiver();
     csr->expectedToFreeCount = 0u;
 
     pCmdQ->finish(false);
-}
-
-HWTEST_F(EnqueueThreading, flushWaitList) {
-    createCQ<FamilyType>();
-    auto csr = (CommandStreamReceiverMock<FamilyType> *)&this->pDevice->getCommandStreamReceiver();
-    csr->expectedToFreeCount = 0u;
-    pCmdQ->flushWaitList(0, nullptr, 0);
-}
-
-HWTEST_F(EnqueueThreading, flushWaitList_ReleaseOwnershipWhenQueueIsBlocked) {
-
-    class MyMockDevice : public MockDevice {
-
-      public:
-        MyMockDevice() : MockDevice(*platformDevices[0]) {}
-
-        bool takeOwnership(bool waitUntilGet) const override {
-            ++takeOwnershipCount;
-            Device::takeOwnership(true);
-            return true;
-        }
-
-        void releaseOwnership() const override {
-            ++releaseOwnershipCount;
-            Device::releaseOwnership();
-        }
-
-        mutable uint32_t takeOwnershipCount = 0;
-        mutable uint32_t releaseOwnershipCount = 0;
-    };
-
-    class MockCommandQueue : public CommandQueue {
-
-      public:
-        MockCommandQueue(MyMockDevice *device) : CommandQueue(nullptr, device, 0) {
-            this->myDevice = device;
-        }
-
-        bool isQueueBlocked() override {
-            isQueueBlockedCount++;
-            return (isQueueBlockedCount < 5) ? true : false;
-        }
-        uint32_t isQueueBlockedCount = 0;
-        MyMockDevice *myDevice;
-    };
-
-    auto pMyDevice = new MyMockDevice();
-    ASSERT_NE(nullptr, pMyDevice);
-
-    auto pMyCmdQ = new MockCommandQueue(pMyDevice);
-    ASSERT_NE(nullptr, pMyCmdQ);
-
-    EXPECT_TRUE(pMyCmdQ->isQueueBlocked());
-
-    pMyCmdQ->flushWaitList(0, nullptr, 0);
-
-    EXPECT_EQ(pMyDevice->takeOwnershipCount, 0u);
-    EXPECT_EQ(pMyDevice->releaseOwnershipCount, 0u);
-
-    delete pMyCmdQ;
-
-    delete pMyDevice;
 }
 } // namespace ULT

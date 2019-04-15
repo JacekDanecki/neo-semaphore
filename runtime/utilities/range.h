@@ -1,49 +1,83 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
-namespace OCLRT {
+#include <iterator>
 
-template <typename T>
+namespace NEO {
+
+template <typename DataType>
 struct Range {
-    Range(T *base, size_t count)
-        : Beg(base), End(base + count) {
+    using iterator = DataType *;
+    using const_iterator = const DataType *;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+    Range(DataType *base, size_t count)
+        : begIt(base), endIt(base + count) {
     }
 
-    T *begin() {
-        return Beg;
+    template <typename SequentialContainerT, typename BeginT = decltype(((SequentialContainerT *)nullptr)->size())>
+    Range(SequentialContainerT &container)
+        : Range(&*container.begin(), container.size()) {
     }
 
-    T *end() {
-        return End;
+    template <typename T, size_t S>
+    Range(T (&base)[S])
+        : Range(&base[0], S) {
     }
 
-    T *Beg;
-    T *End;
+    iterator begin() {
+        return begIt;
+    }
+
+    iterator end() {
+        return endIt;
+    }
+
+    const_iterator begin() const {
+        return begIt;
+    }
+
+    const_iterator end() const {
+        return endIt;
+    }
+
+    reverse_iterator rbegin() {
+        return reverse_iterator(end());
+    }
+
+    const_reverse_iterator rbegin() const {
+        return const_reverse_iterator(end());
+    }
+
+    reverse_iterator rend() {
+        return reverse_iterator(end()) + (endIt - begIt);
+    }
+
+    const_reverse_iterator rend() const {
+        return const_reverse_iterator(end()) + (endIt - begIt);
+    }
+
+    bool empty() const {
+        return begIt == endIt;
+    }
+
+    size_t size() const {
+        return endIt - begIt;
+    }
+
+    iterator begIt;
+    iterator endIt;
 };
 
 template <typename T>
-Range<T> CreateRange(T *base, size_t count) {
+inline Range<T> CreateRange(T *base, size_t count) {
     return Range<T>(base, count);
 }
-} // namespace OCLRT
+} // namespace NEO

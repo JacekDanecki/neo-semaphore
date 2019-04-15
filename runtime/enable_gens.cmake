@@ -1,32 +1,16 @@
-# Copyright (c) 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2018 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 set(RUNTIME_SRCS_GENX_CPP_WINDOWS
   windows/command_stream_receiver
-  windows/translationtable_callbacks
-  windows/wddm
+  windows/gmm_callbacks
 )
 
 set(RUNTIME_SRCS_GENX_CPP_LINUX
   linux/command_stream_receiver
-  linux/drm_engine_mapper
 )
 
 set(RUNTIME_SRCS_GENX_H_BASE
@@ -46,9 +30,9 @@ set(RUNTIME_SRCS_GENX_CPP_BASE
   buffer
   command_queue
   command_stream_receiver_hw
+  command_stream_receiver_simulated_common_hw
   device_queue
   experimental_command_buffer
-  flat_batch_buffer_helper_hw
   gpgpu_walker
   hw_helper
   hw_info
@@ -122,7 +106,7 @@ macro(macro_for_each_gen)
   if(UNIX)
     list(APPEND HW_SRC_LINK ${${GEN_TYPE}_SRC_LINK_LINUX})
   endif()
-  if(GTPIN_HEADERS_DIR)
+  if(NOT DISABLED_GTPIN_SUPPORT)
     list(APPEND ${GEN_TYPE}_SRC_LINK_BASE ${GENX_PREFIX}/gtpin_setup_${GEN_TYPE_LOWER}.cpp)
   endif()
 

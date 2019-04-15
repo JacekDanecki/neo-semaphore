@@ -1,35 +1,20 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/sampler/sampler.h"
+#include "test.h"
 #include "unit_tests/aub_tests/fixtures/aub_parent_kernel_fixture.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
 
-#include "test.h"
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef AUBParentKernelFixture GEN8AUBParentKernelFixture;
 
@@ -47,7 +32,7 @@ GEN8TEST_F(GEN8AUBParentKernelFixture, EnqueueParentKernel) {
             properties[0],
             retVal));
 
-        BuiltIns &builtIns = BuiltIns::getInstance();
+        auto &builtIns = *pDevice->getExecutionEnvironment()->getBuiltIns();
         SchedulerKernel &scheduler = builtIns.getSchedulerKernel(pCmdQ->getContext());
         // Aub execution takes huge time for bigger GWS
         scheduler.setGws(24);
@@ -90,10 +75,10 @@ GEN8TEST_F(GEN8AUBParentKernelFixture, EnqueueParentKernel) {
             CL_FILTER_LINEAR,
             retVal));
 
-        size_t argScalar = 2;
+        uint64_t argScalar = 2;
         pKernel->setArg(
             3,
-            sizeof(size_t),
+            sizeof(uint64_t),
             &argScalar);
 
         pKernel->setArg(

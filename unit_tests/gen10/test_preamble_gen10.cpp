@@ -1,38 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "reg_configs_common.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/gen10/reg_configs.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/preamble/preamble_fixture.h"
-#include "runtime/command_stream/preemption.h"
 
-namespace OCLRT {
+#include "reg_configs_common.h"
+
+namespace NEO {
 struct HardwareInfo;
 extern const HardwareInfo **platformDevices;
-} // namespace OCLRT
+} // namespace NEO
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef PreambleFixture CnlSlm;
 
@@ -58,14 +43,14 @@ struct CnlPreambleWaCmds : public PreambleFixture {
         memset(reinterpret_cast<void *>(&waTable), 0, sizeof(waTable));
     }
     void SetUp() override {
-        pHwInfo = const_cast<HardwareInfo *>(*OCLRT::platformDevices);
+        pHwInfo = const_cast<HardwareInfo *>(*NEO::platformDevices);
         pOldWaTable = pHwInfo->pWaTable;
         pHwInfo->pWaTable = &waTable;
 
         DeviceFixture::SetUpImpl(pHwInfo);
         HardwareParse::SetUp();
         if (pDevice->getPreemptionMode() == PreemptionMode::MidThread) {
-            preemptionLocation.reset(new GraphicsAllocation(nullptr, 0));
+            preemptionLocation.reset(new MockGraphicsAllocation);
         }
     }
 
@@ -127,8 +112,8 @@ CNLTEST_F(Gen10PreambleVfeState, WaOn) {
 
 TEST(L3CNTLREGConfig, checkValidValues) {
 
-    uint32_t validCNLNoSLMConfigs[] = {0x80000180, 0x00418180, 0x00420160, 0x00030140, 0xc0000140, 0x00428140};
-    uint32_t validCNLSLMConfigs[] = {0, 0xa0000121, 0x01008121, 0xc0000101};
+    uint32_t validCNLNoSLMConfigs[] = {0x80000180, 0x00418180, 0x00420160, 0x00030140, 0xc0000340, 0x00428140};
+    uint32_t validCNLSLMConfigs[] = {0, 0xa0000321, 0x01008121, 0xc0000101};
 
     bool noSLMConfigValid = false;
     bool SLMConfigValid = false;
@@ -151,6 +136,19 @@ TEST(L3CNTLREGConfig, checkValidValues) {
     EXPECT_TRUE(noSLMConfigValid);
 }
 
+typedef PreambleFixture L3ErrorDetectionBit;
+GEN10TEST_F(L3ErrorDetectionBit, GivenGen10WhenProgrammingL3ThenErrorDetectionBehaviorControlBitSet) {
+    uint32_t l3Config = 0;
+
+    l3Config = getL3ConfigHelper<IGFX_CANNONLAKE>(true);
+
+    uint32_t errorDetectionBehaviorControlBit = 1 << 9;
+    EXPECT_TRUE((l3Config & errorDetectionBehaviorControlBit) != 0);
+
+    l3Config = getL3ConfigHelper<IGFX_CANNONLAKE>(false);
+    EXPECT_TRUE((l3Config & errorDetectionBehaviorControlBit) != 0);
+}
+
 typedef PreambleFixture PreemptionWatermarkGen10;
 GEN10TEST_F(PreemptionWatermarkGen10, givenPreambleThenPreambleWorkAroundsIsNotProgrammed) {
     typedef CNLFamily::MI_LOAD_REGISTER_IMM MI_LOAD_REGISTER_IMM;
@@ -160,10 +158,7 @@ GEN10TEST_F(PreemptionWatermarkGen10, givenPreambleThenPreambleWorkAroundsIsNotP
     parseCommands<FamilyType>(linearStream);
 
     auto cmd = findMmioCmd<FamilyType>(cmdList.begin(), cmdList.end(), FfSliceCsChknReg2::address);
-    ASSERT_EQ(nullptr, cmd);
-
-    size_t expectedSize = PreemptionHelper::getRequiredPreambleSize<FamilyType>(MockDevice(*platformDevices[0]));
-    EXPECT_EQ(expectedSize, PreambleHelper<FamilyType>::getAdditionalCommandsSize(MockDevice(*platformDevices[0])));
+    EXPECT_EQ(nullptr, cmd);
 }
 
 typedef PreambleFixture ThreadArbitrationGen10;
@@ -195,39 +190,4 @@ GEN10TEST_F(ThreadArbitrationGen10, givenPreambleWhenItIsProgrammedThenThreadArb
 
 GEN10TEST_F(ThreadArbitrationGen10, defaultArbitrationPolicy) {
     EXPECT_EQ(ThreadArbitrationPolicy::RoundRobinAfterDependency, PreambleHelper<CNLFamily>::getDefaultThreadArbitrationPolicy());
-}
-
-using PreambleTestGen10 = ::testing::Test;
-
-GEN10TEST_F(PreambleTestGen10, givenProgrammingPreambleWhenPreemptionIsTakenIntoAccountThenCSRBaseAddressIsEqualCSRGpuAddress) {
-    using GPGPU_CSR_BASE_ADDRESS = typename FamilyType::GPGPU_CSR_BASE_ADDRESS;
-    auto mockDevice = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
-
-    mockDevice->setPreemptionMode(PreemptionMode::MidThread);
-    auto cmdSizePreemptionMidThread = PreemptionHelper::getRequiredPreambleSize<FamilyType>(*mockDevice);
-    std::array<char, 8192> preambleBuffer{};
-    LinearStream preambleStream(&preambleBuffer, preambleBuffer.size());
-    StackVec<char, 4096> preemptionBuffer;
-    preemptionBuffer.resize(cmdSizePreemptionMidThread);
-    LinearStream preemptionStream(&*preemptionBuffer.begin(), preemptionBuffer.size());
-
-    uintptr_t csrGpuAddr = 256 * MemoryConstants::kiloByte;
-    MockGraphicsAllocation csrSurface(reinterpret_cast<void *>(csrGpuAddr), 1024);
-
-    PreambleHelper<FamilyType>::programPreamble(&preambleStream, *mockDevice, 0U,
-                                                ThreadArbitrationPolicy::RoundRobin, &csrSurface);
-
-    PreemptionHelper::programPreamble<FamilyType>(preemptionStream, *mockDevice, &csrSurface);
-
-    HardwareParse hwParserFullPreamble;
-    hwParserFullPreamble.parseCommands<FamilyType>(preambleStream, 0);
-    auto cmd = hwParserFullPreamble.getCommand<GPGPU_CSR_BASE_ADDRESS>();
-    EXPECT_NE(nullptr, cmd);
-    EXPECT_EQ(static_cast<uint64_t>(csrGpuAddr), cmd->getGpgpuCsrBaseAddress());
-
-    HardwareParse hwParserOnlyPreemption;
-    hwParserOnlyPreemption.parseCommands<FamilyType>(preemptionStream, 0);
-    cmd = hwParserOnlyPreemption.getCommand<GPGPU_CSR_BASE_ADDRESS>();
-    EXPECT_NE(nullptr, cmd);
-    EXPECT_EQ(static_cast<uint64_t>(csrGpuAddr), cmd->getGpgpuCsrBaseAddress());
 }

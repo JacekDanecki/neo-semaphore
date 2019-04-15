@@ -1,33 +1,19 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
-#include "unit_tests/program/program_tests.h"
-#include "unit_tests/mocks/mock_program.h"
-#include "program_debug_data.h"
 #include "test.h"
+#include "unit_tests/mocks/mock_program.h"
+#include "unit_tests/program/program_tests.h"
+
+#include "program_debug_data.h"
 
 #include <memory>
 using namespace iOpenCL;
-using namespace OCLRT;
+using namespace NEO;
 
 TEST_F(ProgramTests, GivenProgramWithDebugDataForTwoKernelsWhenPorcessedThenDebugDataIsSetInKernelInfos) {
     const char kernelName1[] = "kernel1";
@@ -38,11 +24,11 @@ TEST_F(ProgramTests, GivenProgramWithDebugDataForTwoKernelsWhenPorcessedThenDebu
     size_t debugDataSize = sizeof(SProgramDebugDataHeaderIGC) + 2 * (sizeof(SKernelDebugDataHeaderIGC) + kernelNameSize + genIsaSize + visaSize);
     std::unique_ptr<char[]> debugData(new char[debugDataSize]);
 
-    KernelInfo *kernelInfo1 = new KernelInfo();
+    auto kernelInfo1 = new KernelInfo();
     kernelInfo1->name = kernelName1;
-    KernelInfo *kernelInfo2 = new KernelInfo();
+    auto kernelInfo2 = new KernelInfo();
     kernelInfo2->name = kernelName2;
-    std::unique_ptr<MockProgram> program(new MockProgram());
+    auto program = std::make_unique<MockProgram>(*pDevice->getExecutionEnvironment());
 
     SProgramDebugDataHeaderIGC *programDebugHeader = reinterpret_cast<SProgramDebugDataHeaderIGC *>(debugData.get());
     programDebugHeader->NumberOfKernels = 2;
@@ -92,4 +78,20 @@ TEST_F(ProgramTests, GivenProgramWithDebugDataForTwoKernelsWhenPorcessedThenDebu
     EXPECT_EQ(visaSize, kernelInfo2->debugData.vIsaSize);
     EXPECT_EQ(ptrDiff(vIsa2, debugData.get()), ptrDiff(kernelInfo2->debugData.vIsa, program->getDebugDataBinary(programDebugDataSize)));
     EXPECT_EQ(ptrDiff(genIsa2, debugData.get()), ptrDiff(kernelInfo2->debugData.genIsa, program->getDebugDataBinary(programDebugDataSize)));
+}
+
+TEST_F(ProgramTests, GivenProgramWithoutDebugDataWhenPorcessedThenDebugDataIsNotSetInKernelInfo) {
+    const char kernelName1[] = "kernel1";
+
+    auto kernelInfo1 = new KernelInfo();
+    kernelInfo1->name = kernelName1;
+    auto program = std::make_unique<MockProgram>(*pDevice->getExecutionEnvironment());
+
+    program->addKernelInfo(kernelInfo1);
+    program->processDebugData();
+
+    size_t programDebugDataSize = 0;
+    EXPECT_EQ(0u, kernelInfo1->debugData.genIsaSize);
+    EXPECT_EQ(0u, kernelInfo1->debugData.vIsaSize);
+    EXPECT_EQ(nullptr, program->getDebugDataBinary(programDebugDataSize));
 }

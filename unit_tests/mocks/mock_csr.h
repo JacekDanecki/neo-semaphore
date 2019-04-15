@@ -1,35 +1,25 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/flat_batch_buffer_helper_hw.h"
-#include "runtime/memory_manager/graphics_allocation.h"
-#include "runtime/helpers/options.h"
 #include "runtime/helpers/flush_stamp.h"
+#include "runtime/helpers/hw_info.h"
+#include "runtime/helpers/options.h"
 #include "runtime/helpers/string.h"
+#include "runtime/memory_manager/graphics_allocation.h"
+#include "runtime/os_interface/os_context.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
+
 #include "gmock/gmock.h"
+
 #include <vector>
 
 #if defined(__clang__)
@@ -37,28 +27,26 @@
 #pragma clang diagnostic ignored "-Winconsistent-missing-override"
 #endif
 
-using namespace OCLRT;
+using namespace NEO;
 
 template <typename GfxFamily>
 class MockCsrBase : public UltCommandStreamReceiver<GfxFamily> {
   public:
     using BaseUltCsrClass = UltCommandStreamReceiver<GfxFamily>;
+    using BaseUltCsrClass::BaseUltCsrClass;
 
     MockCsrBase() = delete;
 
-    MockCsrBase(int32_t &execStamp)
-        : BaseUltCsrClass(*platformDevices[0]), executionStamp(&execStamp), flushTaskStamp(-1) {
-    }
-
-    MockCsrBase(const HardwareInfo &hwInfoIn) : BaseUltCsrClass(hwInfoIn) {
+    MockCsrBase(int32_t &execStamp, ExecutionEnvironment &executionEnvironment)
+        : BaseUltCsrClass(executionEnvironment), executionStamp(&execStamp), flushTaskStamp(-1) {
     }
 
     void makeResident(GraphicsAllocation &gfxAllocation) override {
         madeResidentGfxAllocations.push_back(&gfxAllocation);
         if (this->getMemoryManager()) {
-            this->getMemoryManager()->getResidencyAllocations().push_back(&gfxAllocation);
+            this->getResidencyAllocations().push_back(&gfxAllocation);
         }
-        gfxAllocation.residencyTaskCount = this->taskCount;
+        gfxAllocation.updateResidencyTaskCount(this->taskCount, this->osContext->getContextId());
     }
     void makeNonResident(GraphicsAllocation &gfxAllocation) override {
         madeNonResidentGfxAllocations.push_back(&gfxAllocation);
@@ -90,11 +78,17 @@ class MockCsrBase : public UltCommandStreamReceiver<GfxFamily> {
         processEvictionCalled = true;
     }
 
+    void waitForTaskCountAndCleanAllocationList(uint32_t requiredTaskCount, uint32_t allocationUsage) override {
+        waitForTaskCountRequiredTaskCount = requiredTaskCount;
+        BaseUltCsrClass::waitForTaskCountAndCleanAllocationList(requiredTaskCount, allocationUsage);
+    }
+
     ResidencyContainer madeResidentGfxAllocations;
     ResidencyContainer madeNonResidentGfxAllocations;
     int32_t *executionStamp;
     int32_t flushTaskStamp;
     bool processEvictionCalled = false;
+    uint32_t waitForTaskCountRequiredTaskCount = 0;
 };
 
 template <typename GfxFamily>
@@ -108,10 +102,10 @@ class MockCsr : public MockCsrBase<GfxFamily> {
 
     MockCsr() = delete;
     MockCsr(const HardwareInfo &hwInfoIn) = delete;
-    MockCsr(int32_t &execStamp) : BaseClass(execStamp) {
+    MockCsr(int32_t &execStamp, ExecutionEnvironment &executionEnvironment) : BaseClass(execStamp, executionEnvironment) {
     }
 
-    FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineType, ResidencyContainer *allocationsForResidency) override {
+    FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
         return 0;
     }
 
@@ -122,7 +116,8 @@ class MockCsr : public MockCsrBase<GfxFamily> {
         const IndirectHeap &ioh,
         const IndirectHeap &ssh,
         uint32_t taskLevel,
-        DispatchFlags &dispatchFlags) override {
+        DispatchFlags &dispatchFlags,
+        Device &device) override {
         this->flushTaskStamp = *this->executionStamp;
         (*this->executionStamp)++;
         slmUsedInLastFlushTask = dispatchFlags.useSLM;
@@ -136,7 +131,8 @@ class MockCsr : public MockCsrBase<GfxFamily> {
             ioh,
             ssh,
             taskLevel,
-            dispatchFlags);
+            dispatchFlags,
+            device);
     }
 
     bool peekMediaVfeStateDirty() const { return mediaVfeStateDirty; }
@@ -148,6 +144,7 @@ class MockCsr : public MockCsrBase<GfxFamily> {
 template <typename GfxFamily>
 class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
   public:
+    using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiverHw;
     using CommandStreamReceiverHw<GfxFamily>::flushStamp;
     using CommandStreamReceiverHw<GfxFamily>::programL3;
     using CommandStreamReceiverHw<GfxFamily>::csrSizeRequestFlags;
@@ -158,8 +155,7 @@ class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
     using CommandStreamReceiver::mediaVfeStateDirty;
     using CommandStreamReceiver::taskCount;
     using CommandStreamReceiver::taskLevel;
-
-    MockCsrHw2(const HardwareInfo &hwInfoIn) : CommandStreamReceiverHw<GfxFamily>(hwInfoIn) {}
+    using CommandStreamReceiver::timestampPacketWriteEnabled;
 
     SubmissionAggregator *peekSubmissionAggregator() {
         return this->submissionAggregator.get();
@@ -175,31 +171,25 @@ class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
 
     bool peekMediaVfeStateDirty() const { return mediaVfeStateDirty; }
 
-    FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineType,
-                     ResidencyContainer *allocationsForResidency) override {
+    FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override {
         flushCalledCount++;
-        recordedCommandBuffer.batchBuffer = batchBuffer;
-        copyOfAllocations.clear();
-
-        if (allocationsForResidency) {
-            copyOfAllocations = *allocationsForResidency;
-        } else {
-            copyOfAllocations = this->getMemoryManager()->getResidencyAllocations();
-        }
+        recordedCommandBuffer->batchBuffer = batchBuffer;
+        copyOfAllocations = allocationsForResidency;
         flushStamp->setStamp(flushStamp->peekStamp() + 1);
         return flushStamp->peekStamp();
     }
 
     CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
                               const IndirectHeap &dsh, const IndirectHeap &ioh,
-                              const IndirectHeap &ssh, uint32_t taskLevel, DispatchFlags &dispatchFlags) override {
+                              const IndirectHeap &ssh, uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) override {
         passedDispatchFlags = dispatchFlags;
+        recordedCommandBuffer = std::unique_ptr<CommandBuffer>(new CommandBuffer(device));
         return CommandStreamReceiverHw<GfxFamily>::flushTask(commandStream, commandStreamStart,
-                                                             dsh, ioh, ssh, taskLevel, dispatchFlags);
+                                                             dsh, ioh, ssh, taskLevel, dispatchFlags, device);
     }
 
     int flushCalledCount = 0;
-    CommandBuffer recordedCommandBuffer;
+    std::unique_ptr<CommandBuffer> recordedCommandBuffer = nullptr;
     ResidencyContainer copyOfAllocations;
     DispatchFlags passedDispatchFlags = {};
 };
@@ -207,26 +197,34 @@ class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
 template <typename GfxFamily>
 class MockFlatBatchBufferHelper : public FlatBatchBufferHelperHw<GfxFamily> {
   public:
-    MockFlatBatchBufferHelper(MemoryManager *memoryManager) : FlatBatchBufferHelperHw<GfxFamily>(memoryManager) {}
+    using FlatBatchBufferHelperHw<GfxFamily>::FlatBatchBufferHelperHw;
     MOCK_METHOD1(setPatchInfoData, bool(const PatchInfoData &));
     MOCK_METHOD1(removePatchInfoData, bool(uint64_t));
     MOCK_METHOD1(registerCommandChunk, bool(CommandChunk &));
     MOCK_METHOD2(registerBatchBufferStartAddress, bool(uint64_t, uint64_t));
-    MOCK_METHOD3(flattenBatchBuffer, void *(BatchBuffer &batchBuffer, size_t &sizeBatchBuffer, DispatchMode dispatchMode));
+    MOCK_METHOD3(flattenBatchBuffer,
+                 GraphicsAllocation *(BatchBuffer &batchBuffer, size_t &sizeBatchBuffer, DispatchMode dispatchMode));
 };
 
 class MockCommandStreamReceiver : public CommandStreamReceiver {
   public:
+    using CommandStreamReceiver::CommandStreamReceiver;
+    using CommandStreamReceiver::internalAllocationStorage;
     using CommandStreamReceiver::latestFlushedTaskCount;
     using CommandStreamReceiver::latestSentTaskCount;
     using CommandStreamReceiver::tagAddress;
     std::vector<char> instructionHeapReserveredData;
     int *flushBatchedSubmissionsCallCounter = nullptr;
+    uint32_t waitForCompletionWithTimeoutCalled = 0;
 
     ~MockCommandStreamReceiver() {
     }
 
-    FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineType, ResidencyContainer *allocationsForResidency) override;
+    bool waitForCompletionWithTimeout(bool enableTimeout, int64_t timeoutMicroseconds, uint32_t taskCountToWait) override {
+        waitForCompletionWithTimeoutCalled++;
+        return true;
+    }
+    FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override;
 
     CompletionStamp flushTask(
         LinearStream &commandStream,
@@ -235,7 +233,8 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
         const IndirectHeap &ioh,
         const IndirectHeap &ssh,
         uint32_t taskLevel,
-        DispatchFlags &dispatchFlags) override;
+        DispatchFlags &dispatchFlags,
+        Device &device) override;
 
     void flushBatchedSubmissions() override {
         if (flushBatchedSubmissionsCallCounter) {
@@ -243,11 +242,10 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
         }
     }
 
-    void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool quickKmdSleep) override {
+    void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool quickKmdSleep, bool forcePowerSavingMode) override {
     }
 
-    void addPipeControl(LinearStream &commandStream, bool dcFlush) override {
-    }
+    void blitFromHostPtr(MemObj &destinationMemObj, void *sourceHostPtr, uint64_t sourceSize) override{};
 
     void setOSInterface(OSInterface *osInterface);
 

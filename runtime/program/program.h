@@ -1,45 +1,34 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "block_kernel_manager.h"
 #include "elf/reader.h"
-#include "kernel_info.h"
+#include "elf/writer.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/base_object.h"
 #include "runtime/helpers/stdio.h"
 #include "runtime/helpers/string_helpers.h"
+
+#include "block_kernel_manager.h"
 #include "igfxfmid.h"
+#include "kernel_info.h"
 #include "patch_list.h"
-#include <vector>
-#include <string>
+
 #include <map>
+#include <string>
+#include <vector>
 
 #define OCLRT_ALIGN(a, b) ((((a) % (b)) != 0) ? ((a) - ((a) % (b)) + (b)) : (a))
 
-namespace OCLRT {
+namespace NEO {
 class Context;
 class CompilerInterface;
+class ExecutionEnvironment;
 template <>
 struct OpenCLObjectMapper<_cl_program> {
     typedef class Program DerivedType;
@@ -50,6 +39,13 @@ bool isSafeToSkipUnhandledToken(unsigned int token);
 class Program : public BaseObject<_cl_program> {
   public:
     static const cl_ulong objectMagic = 0x5651C89100AAACFELL;
+
+    enum class CreatedFrom {
+        SOURCE,
+        IL,
+        BINARY,
+        UNKNOWN
+    };
 
     // Create program from binary
     template <typename T = Program>
@@ -81,34 +77,12 @@ class Program : public BaseObject<_cl_program> {
 
     template <typename T = Program>
     static T *createFromGenBinary(
+        ExecutionEnvironment &executionEnvironment,
         Context *context,
         const void *binary,
         size_t size,
         bool isBuiltIn,
-        cl_int *errcodeRet) {
-        cl_int retVal = CL_SUCCESS;
-        T *program = nullptr;
-
-        if ((binary == nullptr) || (size == 0)) {
-            retVal = CL_INVALID_VALUE;
-        }
-
-        if (CL_SUCCESS == retVal) {
-            program = new T(context, isBuiltIn);
-            program->numDevices = 1;
-            program->storeGenBinary(binary, size);
-            program->isCreatedFromBinary = true;
-            program->programBinaryType = CL_PROGRAM_BINARY_TYPE_EXECUTABLE;
-            program->isProgramBinaryResolved = true;
-            program->buildStatus = CL_BUILD_SUCCESS;
-        }
-
-        if (errcodeRet) {
-            *errcodeRet = retVal;
-        }
-
-        return program;
-    }
+        cl_int *errcodeRet);
 
     template <typename T = Program>
     static T *createFromIL(Context *context,
@@ -116,7 +90,7 @@ class Program : public BaseObject<_cl_program> {
                            size_t length,
                            cl_int &errcodeRet);
 
-    Program(Context *context, bool isBuiltIn);
+    Program(ExecutionEnvironment &executionEnvironment, Context *context, bool isBuiltIn);
     ~Program() override;
 
     Program(const Program &) = delete;
@@ -153,12 +127,20 @@ class Program : public BaseObject<_cl_program> {
     cl_int getBuildInfo(cl_device_id device, cl_program_build_info paramName,
                         size_t paramValueSize, void *paramValue, size_t *paramValueSizeRet) const;
 
+    cl_build_status getBuildStatus() const {
+        return buildStatus;
+    }
+
     Context &getContext() const {
         return *context;
     }
 
     Context *getContextPtr() const {
         return context;
+    }
+
+    ExecutionEnvironment &peekExecutionEnvironment() const {
+        return executionEnvironment;
     }
 
     const Device &getDevice(cl_uint deviceOrdinal) const {
@@ -174,9 +156,11 @@ class Program : public BaseObject<_cl_program> {
     MOCKABLE_VIRTUAL cl_int processElfBinary(const void *pBinary, size_t binarySize, uint32_t &binaryVersion);
     cl_int processSpirBinary(const void *pBinary, size_t binarySize, bool isSpirV);
 
-    void setSource(char *pSourceString);
+    void setSource(const char *pSourceString);
 
     cl_int getSource(char *&pBinary, unsigned int &dataSize) const;
+
+    cl_int getSource(std::string &binary) const;
 
     void storeGenBinary(const void *pSrc, const size_t srcSize);
 
@@ -246,8 +230,16 @@ class Program : public BaseObject<_cl_program> {
         return kernelDebugEnabled;
     }
 
+    char *getDebugData() {
+        return debugData;
+    }
+
+    size_t getDebugDataSize() {
+        return debugDataSize;
+    }
+
   protected:
-    Program();
+    Program(ExecutionEnvironment &executionEnvironment);
 
     MOCKABLE_VIRTUAL bool isSafeToSkipUnhandledToken(unsigned int token) const;
 
@@ -277,19 +269,23 @@ class Program : public BaseObject<_cl_program> {
 
     std::string getKernelNamesString() const;
 
-    MOCKABLE_VIRTUAL CompilerInterface *getCompilerInterface() const;
-
     void separateBlockKernels();
 
     void updateNonUniformFlag();
     void updateNonUniformFlag(const Program **inputProgram, size_t numInputPrograms);
+
+    void extractInternalOptions(std::string &options);
+    MOCKABLE_VIRTUAL void applyAdditionalOptions();
+
+    MOCKABLE_VIRTUAL bool appendKernelDebugOptions();
+    void notifyDebuggerWithSourceCode(std::string &filename);
 
     static const std::string clOptNameClVer;
     static const std::string clOptNameUniformWgs;
     // clang-format off
     cl_program_binary_type    programBinaryType;
     bool                      isSpirV = false;
-    char*                     elfBinary;
+    CLElfLib::ElfBinaryStorage elfBinary;
     size_t                    elfBinarySize;
 
     char*                     genBinary;
@@ -300,6 +296,8 @@ class Program : public BaseObject<_cl_program> {
 
     char*                     debugData;
     size_t                    debugDataSize;
+
+    CreatedFrom               createdFrom = CreatedFrom::UNKNOWN;
 
     std::vector<KernelInfo*>  kernelInfoArray;
     std::vector<KernelInfo*>  parentKernelInfoArray;
@@ -321,6 +319,7 @@ class Program : public BaseObject<_cl_program> {
     std::string               sourceCode;
     std::string               options;
     std::string               internalOptions;
+    static const std::vector<std::string> internalOptionsToExtract;
     std::string               hashFileName;
     std::string               hashFilePath;
 
@@ -329,6 +328,7 @@ class Program : public BaseObject<_cl_program> {
 
     std::map<const Device*, std::string>  buildLog;
 
+    ExecutionEnvironment&     executionEnvironment;
     Context*                  context;
     Device*                   pDevice;
     cl_uint                   numDevices;
@@ -338,4 +338,4 @@ class Program : public BaseObject<_cl_program> {
     friend class OfflineCompiler;
     // clang-format on
 };
-} // namespace OCLRT
+} // namespace NEO

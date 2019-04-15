@@ -1,29 +1,17 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 project(igdrcl_aub_tests)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/common.cmake)
 
-add_executable(igdrcl_aub_tests
+list(APPEND IGDRCL_AUB_TESTS__TARGET_OBJECTS
   ${CMAKE_CURRENT_SOURCE_DIR}/aub_tests_configuration.cpp
+  ${IGDRCL_SOURCE_DIR}/runtime/aub/aub_stream_interface.cpp
+  ${IGDRCL_SOURCE_DIR}/unit_tests/libult/os_interface.cpp
   $<TARGET_OBJECTS:${BUILTINS_SOURCES_LIB_NAME}>
   $<TARGET_OBJECTS:${SCHEDULER_BINARY_LIB_NAME}>
   $<TARGET_OBJECTS:igdrcl_libult>
@@ -31,7 +19,21 @@ add_executable(igdrcl_aub_tests
   $<TARGET_OBJECTS:igdrcl_libult_env>
 )
 
+if(DEFINED AUB_STREAM_DIR)
+  list(APPEND IGDRCL_AUB_TESTS__TARGET_OBJECTS $<TARGET_OBJECTS:${AUB_STREAM_PROJECT_NAME}_all_hw>)
+endif()
+
+add_executable(igdrcl_aub_tests
+  ${IGDRCL_AUB_TESTS__TARGET_OBJECTS}
+)
+
 set_target_properties(igdrcl_aub_tests PROPERTIES FOLDER ${TEST_PROJECTS_FOLDER})
+
+if(WIN32)
+  set_target_properties(igdrcl_aub_tests PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY ${TargetDir}
+  )
+endif()
 
 add_custom_target(run_aub_tests)
 set_target_properties(run_aub_tests PROPERTIES FOLDER ${TEST_PROJECTS_FOLDER})
@@ -42,8 +44,11 @@ if(WIN32)
   )
 endif()
 
+target_include_directories(igdrcl_aub_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 target_sources(igdrcl_aub_tests PRIVATE
   ${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/resource_info.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_mode.h
 )
 
 if(WIN32)
@@ -61,7 +66,7 @@ target_link_libraries(igdrcl_aub_tests ${NEO_MOCKABLE_LIB_NAME})
 target_link_libraries(igdrcl_aub_tests igdrcl_mocks)
 target_link_libraries(igdrcl_aub_tests gmock-gtest ${IGDRCL_EXTRA_LIBS})
 
-target_include_directories(igdrcl_aub_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common)
+target_include_directories(igdrcl_aub_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common${BRANCH_DIR_SUFFIX})
 
 macro(macro_for_each_test_config)
   neo_run_aub_target(${PLATFORM_IT_LOWER} "${PLATFORM_IT} ${SLICES}x${SUBSLICES}x${EU_PER_SS}" ${PLATFORM_IT_LOWER} ${SLICES} ${SUBSLICES} ${EU_PER_SS})
@@ -87,6 +92,13 @@ macro(macro_for_each_platform)
   add_dependencies(run_aub_tests run_${PLATFORM_IT_LOWER}_aub_tests)
   set_target_properties(${PLATFORM_IT_LOWER}_aub_tests PROPERTIES FOLDER "${PLATFORM_SPECIFIC_TARGETS_FOLDER}/${PLATFORM_IT_LOWER}")
   set_target_properties(run_${PLATFORM_IT_LOWER}_aub_tests PROPERTIES FOLDER "${PLATFORM_SPECIFIC_TARGETS_FOLDER}/${PLATFORM_IT_LOWER}")
+  add_custom_command(
+    TARGET ${PLATFORM_IT_LOWER}_aub_tests
+    POST_BUILD
+    COMMAND WORKING_DIRECTORY ${TargetDir}
+    COMMAND echo Creating output directory for ${PLATFORM_IT_LOWER} AUBs generation...
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${TargetDir}/${PLATFORM_IT_LOWER}_aub/aub_out"
+  )
   if(WIN32)
     add_dependencies(${PLATFORM_IT_LOWER}_aub_tests mock_gdi)
   endif()

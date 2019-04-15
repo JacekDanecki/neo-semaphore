@@ -1,84 +1,94 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
+#include "runtime/command_stream/preemption.h"
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/os_interface/windows/gdi_interface.h"
-#include "unit_tests/fixtures/gmm_environment_fixture.h"
-#include "unit_tests/mocks/mock_wddm20.h"
-#include "unit_tests/os_interface/windows/mock_gdi_interface.h"
-#include "unit_tests/os_interface/windows/gdi_dll_fixture.h"
-#include "mock_gmm_memory.h"
+#include "runtime/os_interface/windows/os_context_win.h"
+#include "runtime/os_interface/windows/os_interface.h"
+#include "runtime/platform/platform.h"
 #include "test.h"
+#include "unit_tests/mocks/mock_wddm.h"
+#include "unit_tests/os_interface/windows/gdi_dll_fixture.h"
+#include "unit_tests/os_interface/windows/mock_gdi_interface.h"
 
-namespace OCLRT {
-struct WddmFixture : public GmmEnvironmentFixture {
-    void SetUp() override {
-        GmmEnvironmentFixture::SetUp();
-        wddm.reset(static_cast<WddmMock *>(Wddm::createWddm(WddmInterfaceVersion::Wddm20)));
+#include "mock_gmm_memory.h"
+
+namespace NEO {
+struct WddmFixture : ::testing::Test {
+    void SetUp() {
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
+        wddm = static_cast<WddmMock *>(Wddm::createWddm());
+        executionEnvironment->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->osInterface->get()->setWddm(wddm);
+        osInterface = executionEnvironment->osInterface.get();
         gdi = new MockGdi();
         wddm->gdi.reset(gdi);
+        auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]);
+        wddm->init(preemptionMode);
+        osContext = std::make_unique<OsContextWin>(*osInterface->get()->getWddm(), 0u, 1u, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0], preemptionMode, false);
+        ASSERT_TRUE(wddm->isInitialized());
     }
 
-    void TearDown() override {
-        GmmEnvironmentFixture::TearDown();
-    };
+    WddmMock *wddm = nullptr;
+    OSInterface *osInterface;
+    std::unique_ptr<OsContextWin> osContext;
+    ExecutionEnvironment *executionEnvironment;
 
-    std::unique_ptr<WddmMock> wddm;
     MockGdi *gdi = nullptr;
 };
 
-struct WddmFixtureWithMockGdiDll : public GmmEnvironmentFixture, public GdiDllFixture {
+struct WddmFixtureWithMockGdiDll : public GdiDllFixture {
     void SetUp() override {
-        GmmEnvironmentFixture::SetUp();
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
         GdiDllFixture::SetUp();
-        wddm.reset(static_cast<WddmMock *>(Wddm::createWddm(WddmInterfaceVersion::Wddm20)));
+        wddm = static_cast<WddmMock *>(Wddm::createWddm());
+        executionEnvironment->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->osInterface->get()->setWddm(wddm);
+        osInterface = executionEnvironment->osInterface.get();
+    }
+
+    void init() {
+        auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]);
+        EXPECT_TRUE(wddm->init(preemptionMode));
+        osContext = std::make_unique<OsContextWin>(*osInterface->get()->getWddm(), 0u, 1, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0], preemptionMode, false);
+        ASSERT_TRUE(wddm->isInitialized());
     }
 
     void TearDown() override {
         GdiDllFixture::TearDown();
-        GmmEnvironmentFixture::TearDown();
     }
 
-    std::unique_ptr<WddmMock> wddm;
+    WddmMock *wddm = nullptr;
+    OSInterface *osInterface;
+    std::unique_ptr<OsContextWin> osContext;
+    ExecutionEnvironment *executionEnvironment;
 };
 
-struct WddmInstrumentationGmmFixture : public GmmEnvironmentFixture {
-    void SetUp() override {
-        GmmEnvironmentFixture::SetUp();
-        wddm.reset(static_cast<WddmMock *>(Wddm::createWddm(WddmInterfaceVersion::Wddm20)));
+struct WddmInstrumentationGmmFixture {
+    void SetUp() {
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
+        wddm.reset(static_cast<WddmMock *>(Wddm::createWddm()));
         gmmMem = new ::testing::NiceMock<GmockGmmMemory>();
         wddm->gmmMemory.reset(gmmMem);
     }
-    void TearDown() override {
-        GmmEnvironmentFixture::TearDown();
+    void TearDown() {
     }
 
     std::unique_ptr<WddmMock> wddm;
     GmockGmmMemory *gmmMem = nullptr;
+    ExecutionEnvironment *executionEnvironment;
 };
 
-using WddmTest = Test<WddmFixture>;
+using WddmTest = WddmFixture;
 using WddmTestWithMockGdiDll = Test<WddmFixtureWithMockGdiDll>;
 using WddmInstrumentationTest = Test<WddmInstrumentationGmmFixture>;
 using WddmTestSingle = ::testing::Test;
-} // namespace OCLRT
+} // namespace NEO

@@ -1,72 +1,37 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/os_interface/windows/os_time_win.h"
 #include "mock_gdi.h"
+
+#include "runtime/memory_manager/memory_constants.h"
 
 ADAPTER_INFO gAdapterInfo = {0};
 D3DDDI_MAPGPUVIRTUALADDRESS gLastCallMapGpuVaArg = {0};
+D3DDDI_RESERVEGPUVIRTUALADDRESS gLastCallReserveGpuVaArg = {0};
 uint32_t gMapGpuVaFailConfigCount = 0;
 uint32_t gMapGpuVaFailConfigMax = 0;
+uint64_t gGpuAddressSpace = 0ull;
 
 #ifdef __cplusplus // If used by C++ code,
 extern "C" {       // we need to export the C interface
 #endif
-
 BOOLEAN WINAPI DllMain(IN HINSTANCE hDllHandle,
                        IN DWORD nReason,
                        IN LPVOID Reserved) {
-    BOOLEAN bRet = TRUE;
-
-    switch (nReason) {
-    case DLL_PROCESS_ATTACH:
-        gAdapterInfo.GfxPartition.Standard.Base = 0x0000800400000000;
-        gAdapterInfo.GfxPartition.Standard.Limit = 0x0000eeffffffffff;
-        gAdapterInfo.GfxPartition.SVM.Base = 0;
-        gAdapterInfo.GfxPartition.SVM.Limit = 0x00007fffffffffff;
-        gAdapterInfo.GfxPartition.Heap32[0].Base = 0x0000800000000000;
-        gAdapterInfo.GfxPartition.Heap32[0].Limit = 0x00008000ffffefff;
-        gAdapterInfo.GfxPartition.Heap32[1].Base = 0x0000800100000000;
-        gAdapterInfo.GfxPartition.Heap32[1].Limit = 0x00008001ffffefff;
-        gAdapterInfo.GfxPartition.Heap32[2].Base = 0x0000800200000000;
-        gAdapterInfo.GfxPartition.Heap32[2].Limit = 0x00008002ffffefff;
-        gAdapterInfo.GfxPartition.Heap32[3].Base = 0x0000800300000000;
-        gAdapterInfo.GfxPartition.Heap32[3].Limit = 0x00008003ffffefff;
-        break;
-    case DLL_PROCESS_DETACH:
-        break;
-    default:
-        break;
-    }
-    return bRet;
+    return TRUE;
 }
 
 NTSTATUS __stdcall D3DKMTEscape(IN CONST D3DKMT_ESCAPE *pData) {
     static int PerfTicks = 0;
-    ((OCLRT::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.RetCode = OCLRT::GTDI_RET_OK;
-    ((OCLRT::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.gpuPerfTicks = ++PerfTicks;
-    ((OCLRT::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.cpuPerfTicks = PerfTicks;
-    ((OCLRT::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.gpuPerfFreq = 1;
-    ((OCLRT::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.cpuPerfFreq = 1;
+    ((NEO::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.RetCode = NEO::GTDI_RET_OK;
+    ((NEO::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.gpuPerfTicks = ++PerfTicks;
+    ((NEO::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.cpuPerfTicks = PerfTicks;
+    ((NEO::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.gpuPerfFreq = 1;
+    ((NEO::TimeStampDataHeader *)pData->pPrivateDriverData)->m_Data.m_Out.cpuPerfFreq = 1;
 
     return STATUS_SUCCESS;
 }
@@ -75,13 +40,15 @@ DECL_FUNCTIONS()
 
 UINT64 PagingFence = 0;
 
-void __stdcall MockSetAdapterInfo(const void *pGfxPlatform, const void *pGTSystemInfo) {
+void __stdcall MockSetAdapterInfo(const void *pGfxPlatform, const void *pGTSystemInfo, uint64_t gpuAddressSpace) {
     if (pGfxPlatform != NULL) {
         gAdapterInfo.GfxPlatform = *(PLATFORM *)pGfxPlatform;
     }
     if (pGTSystemInfo != NULL) {
         gAdapterInfo.SystemInfo = *(GT_SYSTEM_INFO *)pGTSystemInfo;
     }
+    gGpuAddressSpace = gpuAddressSpace;
+    InitGfxPartition();
 }
 
 NTSTATUS __stdcall D3DKMTOpenAdapterFromLuid(IN OUT CONST D3DKMT_OPENADAPTERFROMLUID *openAdapter) {
@@ -226,7 +193,6 @@ NTSTATUS __stdcall D3DKMTDestroyAllocation2(IN CONST D3DKMT_DESTROYALLOCATION2 *
 }
 
 NTSTATUS __stdcall D3DKMTMapGpuVirtualAddress(IN OUT D3DDDI_MAPGPUVIRTUALADDRESS *mapGpuVA) {
-    uint64_t maxSvmAddress = sizeof(size_t) == 8 ? 0x7fffffffffff : 0xffffffff;
     if (mapGpuVA == nullptr) {
         memset(&gLastCallMapGpuVaArg, 0, sizeof(gLastCallMapGpuVaArg));
         return STATUS_INVALID_PARAMETER;
@@ -251,9 +217,13 @@ NTSTATUS __stdcall D3DKMTMapGpuVirtualAddress(IN OUT D3DDDI_MAPGPUVIRTUALADDRESS
         }
     }
     if (mapGpuVA->BaseAddress == 0) {
-        mapGpuVA->VirtualAddress = mapGpuVA->MinimumAddress;
+        if (mapGpuVA->MinimumAddress) {
+            mapGpuVA->VirtualAddress = mapGpuVA->MinimumAddress;
+        } else {
+            mapGpuVA->VirtualAddress = MemoryConstants::pageSize64k;
+        }
     } else {
-        if (maxSvmAddress != mapGpuVA->MaximumAddress) {
+        if (MemoryConstants::maxSvmAddress != mapGpuVA->MaximumAddress && gLastCallReserveGpuVaArg.MinimumAddress != mapGpuVA->BaseAddress) {
             return STATUS_INVALID_PARAMETER;
         }
         mapGpuVA->VirtualAddress = mapGpuVA->BaseAddress;
@@ -268,6 +238,12 @@ NTSTATUS __stdcall D3DKMTMapGpuVirtualAddress(IN OUT D3DDDI_MAPGPUVIRTUALADDRESS
 
     mapGpuVA->PagingFenceValue = 1;
     return STATUS_PENDING;
+}
+
+NTSTATUS __stdcall D3DKMTReserveGpuVirtualAddress(IN OUT D3DDDI_RESERVEGPUVIRTUALADDRESS *reserveGpuVirtualAddress) {
+    gLastCallReserveGpuVaArg = *reserveGpuVirtualAddress;
+    reserveGpuVirtualAddress->VirtualAddress = reserveGpuVirtualAddress->MinimumAddress;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS __stdcall D3DKMTQueryAdapterInfo(IN CONST D3DKMT_QUERYADAPTERINFO *queryAdapterInfo) {
@@ -286,6 +262,8 @@ NTSTATUS __stdcall D3DKMTQueryAdapterInfo(IN CONST D3DKMT_QUERYADAPTERINFO *quer
 
     adapterInfo->GfxPlatform = gAdapterInfo.GfxPlatform;
     adapterInfo->SystemInfo = gAdapterInfo.SystemInfo;
+    adapterInfo->SkuTable = gAdapterInfo.SkuTable;
+    adapterInfo->WaTable = gAdapterInfo.WaTable;
     adapterInfo->CacheLineSize = 64;
     adapterInfo->MinRenderFreq = 350;
     adapterInfo->MaxRenderFreq = 1150;
@@ -297,6 +275,8 @@ NTSTATUS __stdcall D3DKMTQueryAdapterInfo(IN CONST D3DKMT_QUERYADAPTERINFO *quer
 
     adapterInfo->GfxPartition.Standard.Base = gAdapterInfo.GfxPartition.Standard.Base;
     adapterInfo->GfxPartition.Standard.Limit = gAdapterInfo.GfxPartition.Standard.Limit;
+    adapterInfo->GfxPartition.Standard64KB.Base = gAdapterInfo.GfxPartition.Standard64KB.Base;
+    adapterInfo->GfxPartition.Standard64KB.Limit = gAdapterInfo.GfxPartition.Standard64KB.Limit;
 
     adapterInfo->GfxPartition.SVM.Base = gAdapterInfo.GfxPartition.SVM.Base;
     adapterInfo->GfxPartition.SVM.Limit = gAdapterInfo.GfxPartition.SVM.Limit;
@@ -384,6 +364,8 @@ NTSTATUS __stdcall D3DKMTCreateSynchronizationObject2(IN OUT D3DKMT_CREATESYNCHR
     }
 
     synchObject->Info.MonitoredFence.FenceValueCPUVirtualAddress = &cpuFence;
+    synchObject->Info.MonitoredFence.FenceValueGPUVirtualAddress = 3;
+    synchObject->hSyncObject = 4;
     return STATUS_SUCCESS;
 }
 
@@ -456,6 +438,10 @@ ADAPTER_INFO *getAdapterInfoAddress() {
 
 D3DDDI_MAPGPUVIRTUALADDRESS *getLastCallMapGpuVaArg() {
     return &gLastCallMapGpuVaArg;
+}
+
+D3DDDI_RESERVEGPUVIRTUALADDRESS *getLastCallReserveGpuVaArg() {
+    return &gLastCallReserveGpuVaArg;
 }
 
 void setMapGpuVaFailConfig(uint32_t count, uint32_t max) {

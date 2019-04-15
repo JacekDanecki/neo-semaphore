@@ -1,65 +1,58 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
-#include "gmm_client_context.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_helper.h"
+
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/resource_info.h"
-#include "runtime/helpers/get_info.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/debug_helpers.h"
-#include "runtime/memory_manager/graphics_allocation.h"
-#include "runtime/helpers/surface_formats.h"
+#include "runtime/helpers/get_info.h"
 #include "runtime/helpers/hw_info.h"
-#include "runtime/sku_info/operations/sku_info_transfer.h"
+#include "runtime/helpers/surface_formats.h"
+#include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/os_interface/os_library.h"
+#include "runtime/platform/platform.h"
+#include "runtime/sku_info/operations/sku_info_transfer.h"
 
-namespace OCLRT {
+#include "gmm_client_context.h"
+
+namespace NEO {
+
+GmmClientContext *GmmHelper::getClientContext() {
+    return getInstance()->gmmClientContext.get();
+}
+
+const HardwareInfo *GmmHelper::getHardwareInfo() {
+    return hwInfo;
+}
+
+GmmHelper *GmmHelper::getInstance() {
+    return platform()->peekExecutionEnvironment()->getGmmHelper();
+}
+
+void GmmHelper::setSimplifiedMocsTableUsage(bool value) {
+    useSimplifiedMocsTable = value;
+}
+
 void GmmHelper::initContext(const PLATFORM *pPlatform,
                             const FeatureTable *pSkuTable,
                             const WorkaroundTable *pWaTable,
                             const GT_SYSTEM_INFO *pGtSysInfo) {
-    if (!GmmHelper::gmmClientContext) {
-        _SKU_FEATURE_TABLE gmmFtrTable = {};
-        _WA_TABLE gmmWaTable = {};
-        SkuInfoTransfer::transferFtrTableForGmm(&gmmFtrTable, pSkuTable);
-        SkuInfoTransfer::transferWaTableForGmm(&gmmWaTable, pWaTable);
-        loadLib();
-        bool success = GMM_SUCCESS == initGlobalContextFunc(*pPlatform, &gmmFtrTable, &gmmWaTable, pGtSysInfo);
-        UNRECOVERABLE_IF(!success);
-        GmmHelper::gmmClientContext = GmmHelper::createGmmContextWrapperFunc(GMM_CLIENT::GMM_OCL_VISTA);
-    }
-    UNRECOVERABLE_IF(!GmmHelper::gmmClientContext);
-}
-
-void GmmHelper::destroyContext() {
-    if (GmmHelper::gmmClientContext) {
-        delete GmmHelper::gmmClientContext;
-        GmmHelper::gmmClientContext = nullptr;
-        if (gmmLib) {
-            delete gmmLib;
-            gmmLib = nullptr;
-        }
-    }
+    _SKU_FEATURE_TABLE gmmFtrTable = {};
+    _WA_TABLE gmmWaTable = {};
+    SkuInfoTransfer::transferFtrTableForGmm(&gmmFtrTable, pSkuTable);
+    SkuInfoTransfer::transferWaTableForGmm(&gmmWaTable, pWaTable);
+    loadLib();
+    bool success = GMM_SUCCESS == gmmEntries.pfnCreateSingletonContext(*pPlatform, &gmmFtrTable, &gmmWaTable, pGtSysInfo);
+    UNRECOVERABLE_IF(!success);
+    gmmClientContext = GmmHelper::createGmmContextWrapperFunc(GMM_CLIENT::GMM_OCL_VISTA, gmmEntries);
+    UNRECOVERABLE_IF(!gmmClientContext);
 }
 
 uint32_t GmmHelper::getMOCS(uint32_t type) {
@@ -70,7 +63,7 @@ uint32_t GmmHelper::getMOCS(uint32_t type) {
             return cacheEnabledIndex;
         }
     }
-    MEMORY_OBJECT_CONTROL_STATE mocs = GmmHelper::gmmClientContext->cachePolicyGetMemoryObject(nullptr, static_cast<GMM_RESOURCE_USAGE_TYPE>(type));
+    MEMORY_OBJECT_CONTROL_STATE mocs = gmmClientContext->cachePolicyGetMemoryObject(nullptr, static_cast<GMM_RESOURCE_USAGE_TYPE>(type));
 
     return static_cast<uint32_t>(mocs.DwordValue);
 }
@@ -125,18 +118,6 @@ uint32_t GmmHelper::getRenderAlignment(uint32_t alignment) {
     return returnAlign;
 }
 
-uint32_t GmmHelper::getRenderTileMode(uint32_t tileWalk) {
-    uint32_t tileMode = 0; // TILE_MODE_LINEAR
-    if (tileWalk == 0) {
-        tileMode = 2; // TILE_MODE_XMAJOR;
-    } else if (tileWalk == 1) {
-        tileMode = 3; // TILE_MODE_YMAJOR;
-    } else if (tileWalk == 2) {
-        tileMode = 1; // TILE_MODE_WMAJOR;
-    }
-    return tileMode;
-}
-
 uint32_t GmmHelper::getRenderMultisamplesCount(uint32_t numSamples) {
     if (numSamples == 2) {
         return 1;
@@ -161,19 +142,11 @@ GMM_YUV_PLANE GmmHelper::convertPlane(OCLPlane oclPlane) {
 
     return GMM_NO_PLANE;
 }
-GmmHelper::GmmHelper(const HardwareInfo *pHwInfo) {
-    GmmHelper::hwInfo = pHwInfo;
+GmmHelper::GmmHelper(const HardwareInfo *pHwInfo) : hwInfo(pHwInfo) {
     initContext(pHwInfo->pPlatform, pHwInfo->pSkuTable, pHwInfo->pWaTable, pHwInfo->pSysInfo);
 }
 GmmHelper::~GmmHelper() {
-    if (isLoaded) {
-        destroyContext();
-    }
-}
-bool GmmHelper::useSimplifiedMocsTable = false;
-GmmClientContext *GmmHelper::gmmClientContext = nullptr;
-GmmClientContext *(*GmmHelper::createGmmContextWrapperFunc)(GMM_CLIENT) = GmmClientContextBase::create<GmmClientContext>;
-
-const HardwareInfo *GmmHelper::hwInfo = nullptr;
-OsLibrary *GmmHelper::gmmLib = nullptr;
-} // namespace OCLRT
+    gmmEntries.pfnDestroySingletonContext();
+};
+decltype(GmmHelper::createGmmContextWrapperFunc) GmmHelper::createGmmContextWrapperFunc = GmmClientContextBase::create<GmmClientContext>;
+} // namespace NEO

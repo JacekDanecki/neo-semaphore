@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -29,8 +14,9 @@
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
 
-namespace OCLRT {
+namespace NEO {
 
 struct UltCommandStreamReceiverTest
     : public DeviceFixture,
@@ -40,7 +26,7 @@ struct UltCommandStreamReceiverTest
         DeviceFixture::SetUp();
         HardwareParse::SetUp();
 
-        size_t sizeStream = 256;
+        size_t sizeStream = 512;
         size_t alignmentStream = 0x1000;
         cmdBuffer = alignedMalloc(sizeStream, alignmentStream);
         dshBuffer = alignedMalloc(sizeStream, alignmentStream);
@@ -53,21 +39,23 @@ struct UltCommandStreamReceiverTest
         ASSERT_NE(nullptr, sshBuffer);
 
         commandStream.replaceBuffer(cmdBuffer, sizeStream);
-        auto graphicsAllocation = new GraphicsAllocation(cmdBuffer, sizeStream);
+        auto graphicsAllocation = new MockGraphicsAllocation(cmdBuffer, sizeStream);
         commandStream.replaceGraphicsAllocation(graphicsAllocation);
 
         dsh.replaceBuffer(dshBuffer, sizeStream);
-        graphicsAllocation = new GraphicsAllocation(dshBuffer, sizeStream);
+        graphicsAllocation = new MockGraphicsAllocation(dshBuffer, sizeStream);
         dsh.replaceGraphicsAllocation(graphicsAllocation);
 
         ioh.replaceBuffer(iohBuffer, sizeStream);
 
-        graphicsAllocation = new GraphicsAllocation(iohBuffer, sizeStream);
+        graphicsAllocation = new MockGraphicsAllocation(iohBuffer, sizeStream);
         ioh.replaceGraphicsAllocation(graphicsAllocation);
 
         ssh.replaceBuffer(sshBuffer, sizeStream);
-        graphicsAllocation = new GraphicsAllocation(sshBuffer, sizeStream);
+        graphicsAllocation = new MockGraphicsAllocation(sshBuffer, sizeStream);
         ssh.replaceGraphicsAllocation(graphicsAllocation);
+
+        pDevice->getCommandStreamReceiver().setupContext(*pDevice->getDefaultEngine().osContext);
     }
 
     void TearDown() override {
@@ -104,7 +92,8 @@ struct UltCommandStreamReceiverTest
             ioh,
             ssh,
             taskLevel,
-            flushTaskFlags);
+            flushTaskFlags,
+            *pDevice);
     }
 
     template <typename GfxFamily>
@@ -127,7 +116,7 @@ struct UltCommandStreamReceiverTest
         auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<GfxFamily>();
         commandStreamReceiver.isPreambleSent = true;
         commandStreamReceiver.lastPreemptionMode = pDevice->getPreemptionMode();
-        commandStreamReceiver.overrideMediaVFEStateDirty(false);
+        commandStreamReceiver.setMediaVFEStateDirty(false);
         commandStreamReceiver.latestSentStatelessMocsConfig = CacheSettings::l3CacheOn;
         commandStreamReceiver.lastSentL3Config = L3Config;
         configureCSRHeapStatesToNonDirty<GfxFamily>();
@@ -160,4 +149,4 @@ struct UltCommandStreamReceiverTest
     uint32_t latestSentNonDcFlushTaskCount;
     uint32_t dcFlushRequiredTaskCount;
 };
-} // namespace OCLRT
+} // namespace NEO

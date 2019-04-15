@@ -1,38 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/device/device.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/indirect_heap/indirect_heap.h"
+#include "runtime/os_interface/os_context.h"
+#include "runtime/platform/platform.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/variable_backup.h"
 #include "unit_tests/libult/create_command_stream.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_csr.h"
+
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef Test<DeviceFixture> DeviceTest;
 
@@ -50,10 +40,6 @@ TEST_F(DeviceTest, getCommandStreamReceiver) {
     EXPECT_NE(nullptr, &pDevice->getCommandStreamReceiver());
 }
 
-TEST_F(DeviceTest, givenDeviceWhenPeekCommandStreamReceiverIsCalledThenCommandStreamReceiverIsReturned) {
-    EXPECT_NE(nullptr, pDevice->peekCommandStreamReceiver());
-}
-
 TEST_F(DeviceTest, getSupportedClVersion) {
     auto version = pDevice->getSupportedClVersion();
     auto version2 = pDevice->getHardwareInfo().capabilityTable.clVersionSupport;
@@ -61,14 +47,37 @@ TEST_F(DeviceTest, getSupportedClVersion) {
     EXPECT_EQ(version, version2);
 }
 
-TEST_F(DeviceTest, getTagAddress) {
-    auto pTagAddress = pDevice->getTagAddress();
-    ASSERT_NE(nullptr, const_cast<uint32_t *>(pTagAddress));
-    EXPECT_EQ(initialHardwareTag, *pTagAddress);
+TEST_F(DeviceTest, givenDeviceWhenEngineIsCreatedThenSetInitialValueForTag) {
+    for (auto &engine : pDevice->engines) {
+        auto tagAddress = engine.commandStreamReceiver->getTagAddress();
+        ASSERT_NE(nullptr, const_cast<uint32_t *>(tagAddress));
+        EXPECT_EQ(initialHardwareTag, *tagAddress);
+    }
+}
+
+TEST_F(DeviceTest, givenDeviceWhenAskedForSpecificEngineThenRetrunIt) {
+    auto &engines = HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances();
+    for (uint32_t i = 0; i < engines.size(); i++) {
+        bool lowPriority = (HwHelper::lowPriorityGpgpuEngineIndex == i);
+        auto &deviceEngine = pDevice->getEngine(engines[i], lowPriority);
+        EXPECT_EQ(deviceEngine.osContext->getEngineType(), engines[i]);
+        EXPECT_EQ(deviceEngine.osContext->isLowPriority(), lowPriority);
+    }
+
+    EXPECT_THROW(pDevice->getEngine(aub_stream::ENGINE_VCS, false), std::exception);
+}
+
+TEST_F(DeviceTest, givenDebugVariableToAlwaysChooseEngineZeroWhenNotExistingEngineSelectedThenIndexZeroEngineIsReturned) {
+    DebugManagerStateRestore restore;
+    DebugManager.flags.OverrideInvalidEngineWithDefault.set(true);
+    auto &engines = HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances();
+    auto &deviceEngine = pDevice->getEngine(engines[0], false);
+    auto &notExistingEngine = pDevice->getEngine(aub_stream::ENGINE_VCS, false);
+    EXPECT_EQ(&notExistingEngine, &deviceEngine);
 }
 
 TEST_F(DeviceTest, WhenGetOSTimeThenNotNull) {
-    auto pDevice = std::unique_ptr<Device>(DeviceHelper<>::create());
+    auto pDevice = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
     OSTime *osTime = pDevice->getOSTime();
     ASSERT_NE(nullptr, osTime);
@@ -76,7 +85,7 @@ TEST_F(DeviceTest, WhenGetOSTimeThenNotNull) {
 
 TEST_F(DeviceTest, GivenDebugVariableForcing32BitAllocationsWhenDeviceIsCreatedThenMemoryManagerHasForce32BitFlagSet) {
     DebugManager.flags.Force32bitAddressing.set(true);
-    auto pDevice = std::unique_ptr<Device>(DeviceHelper<>::create());
+    auto pDevice = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     if (is64bit) {
         EXPECT_TRUE(pDevice->getDeviceInfo().force32BitAddressess);
         EXPECT_TRUE(pDevice->getMemoryManager()->peekForce32BitAllocations());
@@ -99,36 +108,19 @@ TEST_F(DeviceTest, retainAndRelease) {
     ASSERT_EQ(1, pDevice->getReference());
 }
 
-TEST_F(DeviceTest, givenMemoryManagerWhenDeviceIsCreatedThenItHasAccessToDevice) {
-    auto memoryManager = pDevice->getMemoryManager();
-    EXPECT_EQ(memoryManager->device, pDevice);
-}
-
 TEST_F(DeviceTest, getEngineTypeDefault) {
     auto pTestDevice = std::unique_ptr<Device>(createWithUsDeviceId(0));
 
-    EngineType actualEngineType = pDevice->getEngineType();
-    EngineType defaultEngineType = hwInfoHelper.capabilityTable.defaultEngineType;
+    auto actualEngineType = pDevice->getDefaultEngine().osContext->getEngineType();
+    auto defaultEngineType = pDevice->getHardwareInfo().capabilityTable.defaultEngineType;
 
+    EXPECT_EQ(&pDevice->getDefaultEngine().commandStreamReceiver->getOsContext(), pDevice->getDefaultEngine().osContext);
     EXPECT_EQ(defaultEngineType, actualEngineType);
-}
-
-TEST_F(DeviceTest, givenDebugVariableOverrideEngineTypeWhenDeviceIsCreatedThenUseDebugNotDefaul) {
-    EngineType expectedEngine = EngineType::ENGINE_VCS;
-    DebugManagerStateRestore dbgRestorer;
-    DebugManager.flags.NodeOrdinal.set(static_cast<int32_t>(expectedEngine));
-    auto pTestDevice = std::unique_ptr<Device>(createWithUsDeviceId(0));
-
-    EngineType actualEngineType = pTestDevice->getEngineType();
-    EngineType defaultEngineType = hwInfoHelper.capabilityTable.defaultEngineType;
-
-    EXPECT_NE(defaultEngineType, actualEngineType);
-    EXPECT_EQ(expectedEngine, actualEngineType);
 }
 
 TEST(DeviceCleanup, givenDeviceWhenItIsDestroyedThenFlushBatchedSubmissionsIsCalled) {
     auto mockDevice = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
-    MockCommandStreamReceiver *csr = new MockCommandStreamReceiver;
+    MockCommandStreamReceiver *csr = new MockCommandStreamReceiver(*mockDevice->getExecutionEnvironment());
     mockDevice->resetCommandStreamReceiver(csr);
     int flushedBatchedSubmissionsCalledCount = 0;
     csr->flushBatchedSubmissionsCallCounter = &flushedBatchedSubmissionsCalledCount;
@@ -141,7 +133,7 @@ TEST(DeviceCreation, givenSelectedAubCsrInDebugVarsWhenDeviceIsCreatedThenIsSimu
     DebugManagerStateRestore dbgRestorer;
     DebugManager.flags.SetCommandStreamReceiver.set(CommandStreamReceiverType::CSR_AUB);
 
-    overrideCommandStreamReceiverCreation = true;
+    VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, true);
     auto mockDevice = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
     EXPECT_TRUE(mockDevice->isSimulation());
 }
@@ -150,7 +142,7 @@ TEST(DeviceCreation, givenSelectedTbxCsrInDebugVarsWhenDeviceIsCreatedThenIsSimu
     DebugManagerStateRestore dbgRestorer;
     DebugManager.flags.SetCommandStreamReceiver.set(CommandStreamReceiverType::CSR_TBX);
 
-    overrideCommandStreamReceiverCreation = true;
+    VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, true);
     auto device = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
     EXPECT_TRUE(device->isSimulation());
 }
@@ -159,7 +151,7 @@ TEST(DeviceCreation, givenSelectedTbxWithAubCsrInDebugVarsWhenDeviceIsCreatedThe
     DebugManagerStateRestore dbgRestorer;
     DebugManager.flags.SetCommandStreamReceiver.set(CommandStreamReceiverType::CSR_TBX_WITH_AUB);
 
-    overrideCommandStreamReceiverCreation = true;
+    VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, true);
     auto device = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
     EXPECT_TRUE(device->isSimulation());
 }
@@ -173,11 +165,76 @@ TEST(DeviceCreation, givenHwWithAubCsrInDebugVarsWhenDeviceIsCreatedThenIsSimula
 }
 
 TEST(DeviceCreation, givenDefaultHwCsrInDebugVarsWhenDeviceIsCreatedThenIsSimulationReturnsFalse) {
-    int32_t defaultHwCsr = CommandStreamReceiverType::CSR_HW;
-    EXPECT_EQ(defaultHwCsr, DebugManager.flags.SetCommandStreamReceiver.get());
-
     auto device = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
     EXPECT_FALSE(device->isSimulation());
+}
+
+TEST(DeviceCreation, givenDeviceWhenItIsCreatedThenOsContextIsRegistredInMemoryManager) {
+    auto device = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<Device>(nullptr));
+    auto memoryManager = device->getMemoryManager();
+    EXPECT_EQ(HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances().size(), memoryManager->getRegisteredEnginesCount());
+}
+
+TEST(DeviceCreation, givenMultiDeviceWhenTheyAreCreatedThenEachOsContextHasUniqueId) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    const size_t numDevices = 2;
+    const auto &numGpgpuEngines = static_cast<uint32_t>(HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances().size());
+
+    auto device1 = std::unique_ptr<MockDevice>(Device::create<MockDevice>(nullptr, executionEnvironment, 0u));
+    auto device2 = std::unique_ptr<MockDevice>(Device::create<MockDevice>(nullptr, executionEnvironment, 1u));
+
+    auto &registeredEngines = executionEnvironment->memoryManager->getRegisteredEngines();
+    EXPECT_EQ(numGpgpuEngines * numDevices, registeredEngines.size());
+
+    for (uint32_t i = 0; i < numGpgpuEngines; i++) {
+        EXPECT_EQ(i, device1->engines[i].osContext->getContextId());
+        EXPECT_EQ(1u, device1->engines[i].osContext->getDeviceBitfield().to_ulong());
+        EXPECT_EQ(i + numGpgpuEngines, device2->engines[i].osContext->getContextId());
+        EXPECT_EQ(2u, device2->engines[i].osContext->getDeviceBitfield().to_ulong());
+
+        EXPECT_EQ(registeredEngines[i].commandStreamReceiver,
+                  device1->engines[i].commandStreamReceiver);
+        EXPECT_EQ(registeredEngines[i + numGpgpuEngines].commandStreamReceiver,
+                  device2->engines[i].commandStreamReceiver);
+    }
+    EXPECT_EQ(numGpgpuEngines * numDevices, executionEnvironment->memoryManager->getRegisteredEnginesCount());
+}
+
+TEST(DeviceCreation, givenMultiDeviceWhenTheyAreCreatedThenEachDeviceHasSeperateDeviceIndex) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    auto device = std::unique_ptr<Device>(Device::create<MockDevice>(nullptr, executionEnvironment, 0u));
+    auto device2 = std::unique_ptr<Device>(Device::create<MockDevice>(nullptr, executionEnvironment, 1u));
+
+    EXPECT_EQ(0u, device->getDeviceIndex());
+    EXPECT_EQ(1u, device2->getDeviceIndex());
+}
+
+TEST(DeviceCreation, givenMultiDeviceWhenTheyAreCreatedThenEachDeviceHasSeperateCommandStreamReceiver) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    const size_t numDevices = 2;
+    const auto &numGpgpuEngines = HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances().size();
+    auto device1 = std::unique_ptr<MockDevice>(Device::create<MockDevice>(nullptr, executionEnvironment, 0u));
+    auto device2 = std::unique_ptr<MockDevice>(Device::create<MockDevice>(nullptr, executionEnvironment, 1u));
+
+    EXPECT_EQ(numDevices, executionEnvironment->commandStreamReceivers.size());
+    EXPECT_EQ(numGpgpuEngines, executionEnvironment->commandStreamReceivers[0].size());
+    EXPECT_EQ(numGpgpuEngines, executionEnvironment->commandStreamReceivers[1].size());
+
+    for (uint32_t i = 0; i < static_cast<uint32_t>(numGpgpuEngines); i++) {
+        EXPECT_NE(nullptr, executionEnvironment->commandStreamReceivers[0][i]);
+        EXPECT_NE(nullptr, executionEnvironment->commandStreamReceivers[1][i]);
+        EXPECT_EQ(executionEnvironment->commandStreamReceivers[0][i].get(), device1->engines[i].commandStreamReceiver);
+        EXPECT_EQ(executionEnvironment->commandStreamReceivers[1][i].get(), device2->engines[i].commandStreamReceiver);
+    }
+}
+
+TEST(DeviceCreation, givenDeviceWhenAskingForDefaultEngineThenReturnValidValue) {
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    auto device = std::unique_ptr<MockDevice>(Device::create<MockDevice>(platformDevices[0], executionEnvironment, 0));
+    auto osContext = device->getDefaultEngine().osContext;
+
+    EXPECT_EQ(platformDevices[0]->capabilityTable.defaultEngineType, osContext->getEngineType());
+    EXPECT_FALSE(osContext->isLowPriority());
 }
 
 TEST(DeviceCreation, givenFtrSimulationModeFlagTrueWhenNoOtherSimulationFlagsArePresentThenIsSimulationReturnsTrue) {
@@ -186,9 +243,6 @@ TEST(DeviceCreation, givenFtrSimulationModeFlagTrueWhenNoOtherSimulationFlagsAre
 
     HardwareInfo hwInfo = {platformDevices[0]->pPlatform, &skuTable, platformDevices[0]->pWaTable,
                            platformDevices[0]->pSysInfo, platformDevices[0]->capabilityTable};
-
-    int32_t defaultHwCsr = CommandStreamReceiverType::CSR_HW;
-    EXPECT_EQ(defaultHwCsr, DebugManager.flags.SetCommandStreamReceiver.get());
 
     bool simulationFromDeviceId = hwInfo.capabilityTable.isSimulation(hwInfo.pPlatform->usDeviceID);
     EXPECT_FALSE(simulationFromDeviceId);

@@ -1,27 +1,12 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/event/event.h"
+#include "runtime/event/user_event.h"
 #include "test.h"
 #include "unit_tests/command_queue/command_enqueue_fixture.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
@@ -31,7 +16,7 @@
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct EnqueueMapImageTest : public DeviceFixture,
                              public CommandQueueHwFixture,
@@ -118,7 +103,7 @@ TEST_F(EnqueueMapImageTest, givenAllocatedMapPtrAndMapWithDifferentOriginIsCalle
 
 typedef EnqueueMapImageParamsTest MipMapMapImageParamsTest;
 
-TEST_P(MipMapMapImageParamsTest, givenAllocatedMapPtrAndMapWithDifferentMipMapsIsCalledThenReturnDifferentPointers) {
+TEST_P(MipMapMapImageParamsTest, givenAllocatedMapPtrWhenMapsWithDifferentMipMapsAreCalledThenReturnDifferentPointers) {
     auto image_type = (cl_mem_object_type)GetParam();
     cl_int retVal = CL_SUCCESS;
     cl_image_desc imageDesc = {};
@@ -130,6 +115,7 @@ TEST_P(MipMapMapImageParamsTest, givenAllocatedMapPtrAndMapWithDifferentMipMapsI
     const size_t origin1[4] = {0, 0, 0, 0};
     size_t origin2[4] = {0, 0, 0, 0};
     std::unique_ptr<Image> image;
+    size_t mapOffset = 16u;
     switch (image_type) {
     case CL_MEM_OBJECT_IMAGE1D:
         origin2[1] = 1;
@@ -174,7 +160,6 @@ TEST_P(MipMapMapImageParamsTest, givenAllocatedMapPtrAndMapWithDifferentMipMapsI
         EXPECT_NE(nullptr, image->getAllocatedMapPtr());
     }
 
-    size_t mapOffset = 16u;
     EXPECT_EQ(ptr2, ptrOffset(ptr1, mapOffset));
 }
 
@@ -224,6 +209,8 @@ HWTEST_F(EnqueueMapImageTest, givenTiledImageWhenMapImageIsCalledThenStorageIsSe
         region, nullptr, nullptr, 0,
         nullptr, nullptr, retVal);
     EXPECT_TRUE(mockImage.ownershipTaken);
+    pDevice->getMemoryManager()->freeGraphicsMemory(mockImage.getMapAllocation());
+    mockImage.releaseAllocatedMapPtr();
 }
 
 TEST_F(EnqueueMapImageTest, checkPointer) {
@@ -303,7 +290,7 @@ TEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEven
 
     MockKernelWithInternals kernel(*pDevice);
     *pTagMemory = tagHW;
-    auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
+    auto &commandStreamReceiver = pCmdQ->getCommandStreamReceiver();
     auto tag_address = commandStreamReceiver.getTagAddress();
     EXPECT_TRUE(pTagMemory == tag_address);
 
@@ -382,7 +369,7 @@ TEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEventAn
     const size_t region[3] = {1, 1, 1};
     *pTagMemory = 5;
 
-    auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
+    auto &commandStreamReceiver = pCmdQ->getCommandStreamReceiver();
 
     EXPECT_EQ(1u, commandStreamReceiver.peekTaskCount());
 
@@ -865,7 +852,7 @@ TEST_F(EnqueueMapImageTest, givenNonZeroCopyImageWhenMappedOnGpuThenReturnHostRo
     EXPECT_EQ(image->getHostPtrSlicePitch(), retImageSlicePitch);
 }
 
-TEST_F(EnqueueMapImageTest, givenMipMapImageWhenMappedThenReturnHostRowAndSlicePitchForMap) {
+TEST_F(EnqueueMapImageTest, givenMipMapImageWhenMappedThenReturnHostRowAndSlicePitch) {
     const size_t origin[4] = {0, 0, 0, 1};
     const size_t region[3] = {1, 1, 1};
     size_t retImageRowPitch = 0;
@@ -887,8 +874,8 @@ TEST_F(EnqueueMapImageTest, givenMipMapImageWhenMappedThenReturnHostRowAndSliceP
                            0, nullptr, nullptr, retVal);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
-    EXPECT_EQ(image->getHostPtrRowPitchForMap(static_cast<uint32_t>(origin[3])), retImageRowPitch);
-    EXPECT_EQ(image->getHostPtrSlicePitchForMap(static_cast<uint32_t>(origin[3])), retImageSlicePitch);
+    EXPECT_EQ(image->getHostPtrRowPitch(), retImageRowPitch);
+    EXPECT_EQ(image->getHostPtrSlicePitch(), retImageSlicePitch);
 }
 
 TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenReturnRowAndSlicePitchAreEqual) {
@@ -910,8 +897,6 @@ TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenRetu
         void setSurfaceMemoryObjectControlStateIndexToMocsTable(void *memory, uint32_t value) override {}
         void transformImage2dArrayTo3d(void *memory) override {}
         void transformImage3dTo2dArray(void *memory) override {}
-        size_t getHostPtrRowPitchForMap(uint32_t mipLevel) override { return getHostPtrRowPitch(); }
-        size_t getHostPtrSlicePitchForMap(uint32_t mipLevel) override { return getHostPtrSlicePitch(); }
     };
 
     const size_t origin[3] = {0, 0, 0};
@@ -936,7 +921,7 @@ TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenRetu
     imageFormat.image_channel_data_type = CL_UNSIGNED_INT16;
 
     const SurfaceFormatInfo *surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
-    auto allocation = context->getMemoryManager()->allocateGraphicsMemory(imgSize);
+    auto allocation = context->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{imgSize});
     ASSERT_NE(allocation, nullptr);
 
     MockImage image(context, flags, allocation, *surfaceFormat, imageFormat, imageDesc);
@@ -1017,17 +1002,17 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueMapImageTypeTest, blockingEnqueueRequiresPCWi
     auto *cmd = (PIPE_CONTROL *)*itorCmd;
     EXPECT_NE(cmdList.end(), itorCmd);
 
-    if (::renderCoreFamily != IGFX_GEN8_CORE) {
-        // SKL+: two PIPE_CONTROLs following GPGPU_WALKER: first has DcFlush and second has Write HwTag
-        EXPECT_TRUE(cmd->getDcFlushEnable());
+    if (::renderCoreFamily == IGFX_GEN9_CORE) {
+        // SKL: two PIPE_CONTROLs following GPGPU_WALKER: first has DcFlush and second has Write HwTag
+        EXPECT_FALSE(cmd->getDcFlushEnable());
         // Move to next PPC
         auto itorCmdP = ++((GenCmdList::iterator)itorCmd);
         EXPECT_NE(cmdList.end(), itorCmdP);
         auto itorCmd2 = find<PIPE_CONTROL *>(itorCmdP, cmdList.end());
         cmd = (PIPE_CONTROL *)*itorCmd2;
-        EXPECT_FALSE(cmd->getDcFlushEnable());
+        EXPECT_TRUE(cmd->getDcFlushEnable());
     } else {
-        // BDW: single PIPE_CONTROL following GPGPU_WALKER has DcFlush and Write HwTag
+        // single PIPE_CONTROL following GPGPU_WALKER has DcFlush and Write HwTag
         EXPECT_TRUE(cmd->getDcFlushEnable());
     }
 }

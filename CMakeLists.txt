@@ -1,22 +1,8 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 cmake_minimum_required(VERSION 3.2.0 FATAL_ERROR)
 include(ExternalProject)
@@ -27,14 +13,23 @@ project(igdrcl)
 
 if(CMAKE_CONFIGURATION_TYPES)
     # Set custom build types for multi-configuration generators
-    set(CMAKE_CONFIGURATION_TYPES ${CMAKE_BUILD_TYPE})
+    set(CMAKE_CONFIGURATION_TYPES "Release;ReleaseInternal;Debug")
+    if(DEFINED CMAKE_BUILD_TYPE)
+        list(APPEND CMAKE_CONFIGURATION_TYPES ${CMAKE_BUILD_TYPE})
+    endif()
+    list(REMOVE_DUPLICATES CMAKE_CONFIGURATION_TYPES)
 endif()
 
-set(BRANCH_DIR_SUFFIX "/")
+set(BRANCH_TYPE "")
+set(BRANCH_DIR_SUFFIX "/${BRANCH_TYPE}")
 
 if(TR_DEPRECATED)
     add_definitions(-D_SILENCE_TR1_NAMESPACE_DEPRECATION_WARNING=1)
 endif(TR_DEPRECATED)
+
+if(RELEASE_WITH_REGKEYS)
+    add_definitions(-D_RELEASE_BUILD_WITH_REGKEYS)
+endif(RELEASE_WITH_REGKEYS)
 
 if(NOT CMAKE_BUILD_TYPE)
 	message(STATUS "CMAKE_BUILD_TYPE not specified, using Release")
@@ -44,13 +39,19 @@ endif()
 add_definitions(-DCL_USE_DEPRECATED_OPENCL_1_1_APIS -DCL_USE_DEPRECATED_OPENCL_1_2_APIS -DCL_USE_DEPRECATED_OPENCL_2_0_APIS)
 
 if(WIN32)
-    add_definitions(-D_CRT_SECURE_NO_WARNINGS -DWDDM_VERSION_NUMBER=23)
+    add_definitions(-D_CRT_SECURE_NO_WARNINGS -DWDDM_VERSION_NUMBER=23 -DNOMINMAX)
 endif()
 
-set(CMAKE_C_FLAGS_RELEASEINTERNAL ${CMAKE_C_FLAGS_RELEASE})
-set(CMAKE_CXX_FLAGS_RELEASEINTERNAL ${CMAKE_CXX_FLAGS_RELEASE})
-set(CMAKE_SHARED_LINKER_FLAGS_RELEASEINTERNAL ${CMAKE_SHARED_LINKER_FLAGS_RELEASE})
-set(CMAKE_EXE_LINKER_FLAGS_RELEASEINTERNAL ${CMAKE_EXE_LINKER_FLAGS_RELEASE})
+set(CMAKE_C_FLAGS_RELEASEINTERNAL "${CMAKE_C_FLAGS_RELEASE}")
+set(CMAKE_CXX_FLAGS_RELEASEINTERNAL "${CMAKE_CXX_FLAGS_RELEASE}")
+set(CMAKE_SHARED_LINKER_FLAGS_RELEASEINTERNAL "${CMAKE_SHARED_LINKER_FLAGS_RELEASE}")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASEINTERNAL "${CMAKE_EXE_LINKER_FLAGS_RELEASE}")
+if(MSVC AND ENABLE_VS_FASTLINK)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS_DEBUG " /debug:FASTLINK")
+    string(APPEND CMAKE_SHARED_LINKER_FLAGS_DEBUG " /debug:FASTLINK")
+    string(APPEND CMAKE_STATIC_LINKER_FLAGS_DEBUG " /debug:FASTLINK")
+    string(APPEND CMAKE_MODULE_LINKER_FLAGS_DEBUG " /debug:FASTLINK")
+endif()
 
 string(TOLOWER "${CMAKE_BUILD_TYPE}" BUILD_TYPE_lower)
 if("${BUILD_TYPE_lower}" STREQUAL "releaseinternal")
@@ -61,7 +62,7 @@ message(STATUS "${CMAKE_BUILD_TYPE} build configuration")
 
 # Set the runtime source directory
 if(NOT DEFINED IGDRCL_SOURCE_DIR)
-	set(IGDRCL_SOURCE_DIR ${CMAKE_SOURCE_DIR})
+	set(IGDRCL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # Set our build directory
@@ -101,13 +102,6 @@ else()
 	set(NEO_ARCH "x86")
 endif()
 
-if(NOT GTPIN_HEADERS_DIR)
-    if ((EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../internal/gtpin/gtpin_ocl_interface.h") AND (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../internal/gtpin/gtpin_driver_common.h"))
-	    get_filename_component(GTPIN_HEADERS_DIR "../internal/gtpin/" ABSOLUTE)
-        message(STATUS "GT-Pin headers dir: ${GTPIN_HEADERS_DIR}")
-    endif()
-endif(NOT GTPIN_HEADERS_DIR)
-
 if(NOT KMDAF_HEADERS_DIR)
     if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../kmdaf/inc/common/kmDaf.h")
         get_filename_component(KMDAF_HEADERS_DIR "../kmdaf/inc/common/" ABSOLUTE)
@@ -115,17 +109,34 @@ if(NOT KMDAF_HEADERS_DIR)
     endif()
 endif(NOT KMDAF_HEADERS_DIR)
 
-if(NOT SOURCE_LEVEL_DEBUGGER_HEADERS_DIR)
-    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../internal/source_level_debugger/igfx_debug_interchange_types.h")
-	    get_filename_component(SOURCE_LEVEL_DEBUGGER_HEADERS_DIR "../internal/source_level_debugger/" ABSOLUTE)
-        message(STATUS "Source Level Debugger headers dir: ${SOURCE_LEVEL_DEBUGGER_HEADERS_DIR}")
+if(NOT DEFINED SOURCE_LEVEL_DEBUGGER_HEADERS_DIR)
+    get_filename_component(SOURCE_LEVEL_DEBUGGER_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/source_level_debugger/" ABSOLUTE)
+    message(STATUS "Source Level Debugger headers dir: ${SOURCE_LEVEL_DEBUGGER_HEADERS_DIR}")
+endif()
+
+get_filename_component(AUB_STREAM_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/aub_stream/headers" ABSOLUTE)
+if(IS_DIRECTORY ${AUB_STREAM_HEADERS_DIR})
+    message(STATUS "Aub Stream Headers dir: ${AUB_STREAM_HEADERS_DIR}")
+else()
+    message(FATAL_ERROR "Aub Stream headers not available!")
+endif()
+
+if(NOT DEFINED AUB_STREAM_DIR)
+    get_filename_component(TEMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../aub_stream/aub_mem_dump" ABSOLUTE)
+    if(IS_DIRECTORY ${TEMP_DIR})
+        set(AUB_STREAM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../aub_stream")
+        message(STATUS "Aub Stream dir: ${AUB_STREAM_DIR}")
     endif()
-endif(NOT SOURCE_LEVEL_DEBUGGER_HEADERS_DIR)
+endif()
+
+if(DISABLE_AUB_STREAM)
+    unset(AUB_STREAM_DIR)
+endif()
 
 if(LIBDRM_DIR)
   get_filename_component(I915_INCLUDES_DIR "${LIBDRM_DIR}/include" ABSOLUTE)
 else()
-  get_filename_component(I915_INCLUDES_DIR "${IGDRCL_SOURCE_DIR}/third_party/uapi" ABSOLUTE)
+  get_filename_component(I915_INCLUDES_DIR "${IGDRCL_SOURCE_DIR}/third_party${BRANCH_DIR_SUFFIX}/uapi" ABSOLUTE)
 endif()
 message(STATUS "i915 includes dir: ${I915_INCLUDES_DIR}")
 
@@ -140,6 +151,15 @@ if(NOT DEFINED KHRONOS_HEADERS_DIR)
 endif()
 message(STATUS "Khronos OpenCL headers dir: ${KHRONOS_HEADERS_DIR}")
 set(OCL_HEADERS_DIR ${KHRONOS_HEADERS_DIR})
+
+if(NOT DEFINED KHRONOS_GL_HEADERS_DIR)
+  get_filename_component(GL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opengl_headers" ABSOLUTE)
+  if(IS_DIRECTORY ${GL_DIR})
+    set(KHRONOS_GL_HEADERS_DIR ${GL_DIR})
+    add_definitions(-DGL_TARGET_OPENGL_VERSION=210)
+  endif()
+endif()
+message(STATUS "Khronos OpenGL headers dir: ${KHRONOS_GL_HEADERS_DIR}")
 
 if(NOT THIRD_PARTY_DIR)
 	get_filename_component(THIRD_PARTY_DIR "../third_party/" ABSOLUTE)
@@ -174,6 +194,13 @@ if(WIN32)
 	endif()
 	message(STATUS "WDK Version is ${WindowsTargetPlatformVersion}")
 
+	if(${WindowsTargetPlatformVersion} VERSION_LESS "10.0.18328.0")
+		set(CONST_FROM_WDK_10_0_18328_0)
+	else()
+		set(CONST_FROM_WDK_10_0_18328_0 "CONST")
+	endif()
+	add_compile_options(-D CONST_FROM_WDK_10_0_18328_0=${CONST_FROM_WDK_10_0_18328_0})
+
 	set(WDK_INCLUDE_PATHS
 		"${WDK_DIR}/Include/${WindowsTargetPlatformVersion}/um"
 		"${WDK_DIR}/Include/${WindowsTargetPlatformVersion}/shared"
@@ -197,18 +224,18 @@ if(NOT IGC__IGC_TARGETS)
     if(UNIX)
         # on Unix-like use pkg-config
         find_package(PkgConfig)
-        if(IS_DIRECTORY "${IGC_DIR}/lib/pkgconfig/")
+        if(DEFINED IGC_DIR AND IS_DIRECTORY "${IGC_DIR}/lib/pkgconfig/")
+            set(OLD_PKG_CONFIG_PATH $ENV{PKG_CONFIG_PATH})
             set(ENV{PKG_CONFIG_PATH} "${IGC_DIR}/lib/pkgconfig/")
         endif()
         pkg_check_modules(IGDRCL__IGC igc-opencl)
-        if(IS_DIRECTORY "${IGC_DIR}/lib/pkgconfig/")
-            unset(ENV{PKG_CONFIG_PATH})
+        if(DEFINED IGC_DIR AND IS_DIRECTORY "${IGC_DIR}/lib/pkgconfig/")
+            set(ENV{PKG_CONFIG_PATH} ${OLD_PKG_CONFIG_PATH})
             set(IGDRCL__IGC_LIBRARY_PATH "${IGC_DIR}/lib/")
-            set(ENV{LD_LIBRARY_PATH} "${IGDRCL__IGC_LIBRARY_PATH}")
         endif()
 
         if(IGDRCL__IGC_FOUND)
-            if(IS_DIRECTORY "${IGC_DIR}/lib/pkgconfig/")
+            if(DEFINED IGC_DIR AND IS_DIRECTORY "${IGC_DIR}/lib/pkgconfig/")
                 string(REPLACE "${IGDRCL__IGC_INCLUDEDIR}" "${IGC_DIR}/include/igc" IGDRCL__IGC_INCLUDE_DIRS "${IGDRCL__IGC_INCLUDE_DIRS}")
             endif()
 
@@ -238,7 +265,9 @@ else()
     set(IGDRCL__IGC_TARGETS "${IGC__IGC_TARGETS}")
     foreach(TARGET_tmp ${IGDRCL__IGC_TARGETS})
         list(APPEND IGDRCL__IGC_INCLUDE_DIR $<TARGET_PROPERTY:${TARGET_tmp},INTERFACE_INCLUDE_DIRECTORIES>)
+        list(APPEND IGDRCL__IGC_LIBRARY_PATH $<TARGET_FILE_DIR:${TARGET_tmp}>)
     endforeach(TARGET_tmp)
+    string(REPLACE ";" ":" IGDRCL__IGC_LIBRARY_PATH "${IGDRCL__IGC_LIBRARY_PATH}")
     message(STATUS "IGC targets: ${IGDRCL__IGC_TARGETS}")
 endif()
 
@@ -248,9 +277,12 @@ if(WIN32)
 endif()
 
 # GmmLib detection
-if(NOT GMMUMD_LIB_NAME)
-  if(TARGET gmm_umd)
-    set(GMMUMD_LIB_NAME "gmm_umd")
+if(NOT DEFINED GMMUMD_LIB_NAME)
+  if(TARGET igfx_gmmumd_dll)
+    set(GMMUMD_LIB_NAME "igfx_gmmumd_dll")
+    if(UNIX)
+      set(IGDRCL__GMM_LIBRARY_PATH "$<TARGET_FILE_DIR:${GMMUMD_LIB_NAME}>")
+    endif()
   else()
     if(DEFINED GMM_SOURCE_DIR)
       get_filename_component(GMM_SOURCE_DIR "${GMM_SOURCE_DIR}" ABSOLUTE)
@@ -263,63 +295,54 @@ if(NOT GMMUMD_LIB_NAME)
 
     if(UNIX)
       find_package(PkgConfig)
-      if(IS_DIRECTORY "${GMM_SOURCE_DIR}/lib/pkgconfig/")
+      if(DEFINED GMM_SOURCE_DIR AND IS_DIRECTORY "${GMM_SOURCE_DIR}/lib/pkgconfig/")
+        set(OLD_PKG_CONFIG_PATH $ENV{PKG_CONFIG_PATH})
         set(ENV{PKG_CONFIG_PATH} "${GMM_SOURCE_DIR}/lib/pkgconfig/")
       endif()
       pkg_check_modules(IGDRCL__GMM igdgmm)
-      if(IS_DIRECTORY "${GMM_SOURCE_DIR}/lib/pkgconfig/")
-        unset(ENV{PKG_CONFIG_PATH})
+      if(DEFINED GMM_SOURCE_DIR AND IS_DIRECTORY "${GMM_SOURCE_DIR}/lib/pkgconfig/")
+        set(ENV{PKG_CONFIG_PATH} ${OLD_PKG_CONFIG_PATH})
       endif()
 
       if(IGDRCL__GMM_FOUND)
-        if(IS_DIRECTORY "${GMM_SOURCE_DIR}/lib/pkgconfig/")
+        if(DEFINED GMM_SOURCE_DIR AND IS_DIRECTORY "${GMM_SOURCE_DIR}/lib/pkgconfig/")
           string(REPLACE "${IGDRCL__GMM_INCLUDEDIR}" "${GMM_SOURCE_DIR}/include/igdgmm" IGDRCL__GMM_INCLUDE_DIRS "${IGDRCL__GMM_INCLUDE_DIRS}")
-          string(REPLACE "${IGDRCL__GMM_LIBDIR}" "${GMM_SOURCE_DIR}/lib/${BUILD_TYPE_lower}" IGDRCL__GMM_LIBDIR "${IGDRCL__GMM_LIBDIR}")
-          link_directories(${IGDRCL__GMM_LIBDIR})
+          string(REPLACE "${IGDRCL__GMM_LIBDIR}" "${GMM_SOURCE_DIR}/lib" IGDRCL__GMM_LIBDIR "${IGDRCL__GMM_LIBDIR}")
+          set(IGDRCL__GMM_LIBRARY_PATH "${IGDRCL__GMM_LIBDIR}")
         endif()
 
-        set(USE_STATIC_GMM TRUE)
-        set(GMMUMD_LIB_NAME "gmm_umd")
+        set(GMMUMD_LIB_NAME "igfx_gmmumd_dll")
 
         set(IGDRCL__GMM_INCLUDE_DIR ${IGDRCL__GMM_INCLUDE_DIRS})
         set(UMKM_SHAREDDATA_INCLUDE_PATHS "${IGDRCL__GMM_INCLUDE_DIR}")
         message(STATUS "GmmLib include dirs: ${IGDRCL__GMM_INCLUDE_DIR}")
+      else()
+        message(FATAL_ERROR "GmmLib not found!")
       endif()
-    endif()
-
-    if(IGDRCL__GMM_FOUND)
-      # do nothing
-    elseif(EXISTS "${GMM_SOURCE_DIR}/CMakeLists.txt")
-      message(STATUS "GmmLib source dir is: ${GMM_SOURCE_DIR}")
-      add_subdirectory("${GMM_SOURCE_DIR}" "${IGDRCL_BUILD_DIR}/gmmlib")
-
-      if(NOT GMMUMD_LIB_NAME)
-        set(GMMUMD_LIB_NAME "gmm_umd")
-      endif()
-
-      get_target_property(target_type ${GMMUMD_LIB_NAME} TYPE)
-
-      if(target_type STREQUAL "STATIC_LIBRARY")
-        set(USE_STATIC_GMM TRUE)
-      endif()
-      set(UMKM_SHAREDDATA_INCLUDE_PATHS $<TARGET_PROPERTY:${GMMUMD_LIB_NAME},INTERFACE_INCLUDE_DIRECTORIES>)
     else()
-      message(FATAL_ERROR "GmmLib not found!")
+      if(EXISTS "${GMM_SOURCE_DIR}/CMakeLists.txt")
+        message(STATUS "GmmLib source dir is: ${GMM_SOURCE_DIR}")
+        add_subdirectory("${GMM_SOURCE_DIR}" "${IGDRCL_BUILD_DIR}/gmmlib")
+
+        if(NOT DEFINED GMMUMD_LIB_NAME)
+          set(GMMUMD_LIB_NAME "igfx_gmmumd_dll")
+        endif()
+
+        set(UMKM_SHAREDDATA_INCLUDE_PATHS $<TARGET_PROPERTY:${GMMUMD_LIB_NAME},INTERFACE_INCLUDE_DIRECTORIES>)
+      else()
+        message(FATAL_ERROR "GmmLib not found!")
+      endif()
     endif()
   endif()
 else()
-  get_target_property(target_type ${GMMUMD_LIB_NAME} TYPE)
-
-  if(target_type STREQUAL "STATIC_LIBRARY")
-    set(USE_STATIC_GMM TRUE)
-  endif()
   set(UMKM_SHAREDDATA_INCLUDE_PATHS $<TARGET_PROPERTY:${GMMUMD_LIB_NAME},INTERFACE_INCLUDE_DIRECTORIES>)
+  if(UNIX)
+    set(IGDRCL__GMM_LIBRARY_PATH "$<TARGET_FILE_DIR:${GMMUMD_LIB_NAME}>")
+  endif()
 endif()
 
-set(GMM_LIBRARY_NAME "igdgmm${NEO_BITS}")
-
 macro(copy_gmm_dll_for target)
-  if(WIN32 AND NOT USE_STATIC_GMM)
+  if(NOT UNIX)
     add_dependencies(${target} ${GMMUMD_LIB_NAME})
     add_custom_command(
       TARGET ${target}
@@ -340,7 +363,7 @@ if(NOT INSTRUMENTATION_LIB_NAME)
         endif()
     endif()
     if(IS_DIRECTORY "${INSTRUMENTATION_SOURCE_DIR}")
-        message(STATUS "Intrumentation source dir is: ${INSTRUMENTATION_SOURCE_DIR}")
+        message(STATUS "Instrumentation source dir is: ${INSTRUMENTATION_SOURCE_DIR}")
         add_subdirectory("${INSTRUMENTATION_SOURCE_DIR}" "${IGDRCL_BUILD_DIR}/instrumentation")
         set(INSTRUMENTATION_LIB_NAME "instrumentation_umd")
         set(HAVE_INSTRUMENTATION TRUE)
@@ -350,12 +373,71 @@ else()
     message(STATUS "Instrumentation library name: ${INSTRUMENTATION_LIB_NAME}")
 endif()
 
+# LibVA detection
+if(UNIX)
+  set(IGDRCL__LIBVA_IS_REQUIRED "")
+  if(IGDRCL_FORCE_USE_LIBVA)
+    set(IGDRCL__LIBVA_IS_REQUIRED "REQUIRED")
+  endif()
+
+  if(DEFINED LIBVA_SOURCE_DIR)
+    get_filename_component(LIBVA_SOURCE_DIR "${LIBVA_SOURCE_DIR}" ABSOLUTE)
+  else()
+    get_filename_component(LIBVA_SOURCE_DIR_tmp "${CMAKE_SOURCE_DIR}/../libva" ABSOLUTE)
+    if(IS_DIRECTORY "${LIBVA_SOURCE_DIR_tmp}")
+      set(LIBVA_SOURCE_DIR "${LIBVA_SOURCE_DIR_tmp}")
+    endif()
+  endif()
+
+  find_package(PkgConfig)
+  if(DEFINED LIBVA_SOURCE_DIR AND IS_DIRECTORY "${LIBVA_SOURCE_DIR}/lib/pkgconfig/")
+    set(OLD_PKG_CONFIG_PATH $ENV{PKG_CONFIG_PATH})
+    set(ENV{PKG_CONFIG_PATH} "${LIBVA_SOURCE_DIR}/lib/pkgconfig/")
+  endif()
+  pkg_check_modules(IGDRCL__LIBVA ${IGDRCL__LIBVA_IS_REQUIRED} libva>=1.0.0)
+  include(CheckLibraryExists)
+  if(DEFINED LIBVA_SOURCE_DIR AND IS_DIRECTORY "${LIBVA_SOURCE_DIR}/lib/pkgconfig/")
+    set(ENV{PKG_CONFIG_PATH} ${OLD_PKG_CONFIG_PATH})
+  endif()
+
+  if(IGDRCL__LIBVA_FOUND)
+    CHECK_LIBRARY_EXISTS(va vaGetLibFunc ${IGDRCL__LIBVA_LIBDIR} HAVE_VAGETLIBFUNC)
+
+    add_definitions(-DLIBVA)
+    message(STATUS "Using libva ")
+
+    if(DEFINED LIBVA_SOURCE_DIR AND IS_DIRECTORY "${LIBVA_SOURCE_DIR}/lib/pkgconfig/")
+      string(REPLACE "${IGDRCL__LIBVA_INCLUDEDIR}" "${LIBVA_SOURCE_DIR}/include" IGDRCL__LIBVA_INCLUDE_DIRS "${IGDRCL__LIBVA_INCLUDE_DIRS}")
+      string(REPLACE "${IGDRCL__LIBVA_LIBDIR}" "${LIBVA_SOURCE_DIR}/lib" IGDRCL__LIBVA_LIBDIR "${IGDRCL__LIBVA_LIBDIR}")
+      set(IGDRCL__LIBVA_LIBRARY_PATH "${IGDRCL__LIBVA_LIBDIR}")
+    endif()
+
+    list(LENGTH IGDRCL__LIBVA_INCLUDE_DIRS __len)
+    if(__len GREATER 0)
+      set(IGDRCL__LIBVA_INCLUDE_DIR ${IGDRCL__LIBVA_INCLUDE_DIRS})
+      include_directories("${IGDRCL__LIBVA_INCLUDE_DIR}")
+      message(STATUS "LibVA include dirs: ${IGDRCL__LIBVA_INCLUDE_DIR}")
+    endif()
+  endif()
+endif()
+
 set(SLD_LIBRARY_NAME "igfxdbgxchg")
 if(NEO_BITS STREQUAL "64")
   set(SLD_LIBRARY_NAME "${SLD_LIBRARY_NAME}${NEO_BITS}")
 endif()
 
+
 add_subdirectory(third_party/gtest)
+
+message(STATUS "AUB_STREAM_DIR = ${AUB_STREAM_DIR}" )
+if(DEFINED AUB_STREAM_DIR)
+    set(AUB_STREAM_PROJECT_NAME "aub_stream")
+    add_subdirectory(${AUB_STREAM_DIR} ${CMAKE_BINARY_DIR}/aub_stream EXCLUDE_FROM_ALL)
+    set(ENGINE_NODE_DIR ${AUB_STREAM_DIR}/aub_mem_dump${BRANCH_DIR_SUFFIX}/includes)
+else()
+    set(ENGINE_NODE_DIR ${AUB_STREAM_HEADERS_DIR})
+endif()
+message(STATUS "Engine node dir: ${ENGINE_NODE_DIR}")
 
 add_definitions(-DGMM_OCL)
 
@@ -368,7 +450,7 @@ include(version.cmake)
 # Get available platfroms
 include(platforms.cmake)
 
-# Enable/Disable BuiltIns compilatoin during build
+# Enable/Disable BuiltIns compilation during build
 set(COMPILE_BUILT_INS TRUE CACHE BOOL "Enable built-in kernels compilation")
 
 # Changing the default executable and library output directories
@@ -379,7 +461,7 @@ set(CMAKE_SKIP_RPATH YES CACHE BOOL "" FORCE )
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -D_DEBUG")
 
-option(APPVERIFIER_ALLOWED "allow use of AppVerifier" TRUE)
+option(APPVERIFIER_ALLOWED "allow use of AppVerifier" OFF)
 
 option(CCACHE_ALLOWED "allow use of ccache" TRUE)
 find_program(CCACHE_EXE_FOUND ccache)
@@ -387,17 +469,6 @@ if(CCACHE_EXE_FOUND AND CCACHE_ALLOWED)
 	message(STATUS "Found ccache: ${CCACHE_EXE_FOUND}")
 	set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
 	set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
-endif()
-
-if(UNIX)
-	find_package(PkgConfig)
-	pkg_check_modules(LIBVA libva>=1.0.0)
-	if(LIBVA_FOUND)
-		include(CheckLibraryExists)
-		CHECK_LIBRARY_EXISTS(va vaGetLibFunc ${LIBVA_LIBDIR} HAVE_VAGETLIBFUNC)
-		add_definitions(-DLIBVA ${LIBVA_CFLAGS})
-		message(STATUS "Using libva ")
-	endif()
 endif()
 
 # Miscs options
@@ -414,12 +485,17 @@ endif()
 if(MSVC)
 	# Force to treat warnings as errors
 	if(NOT CMAKE_CXX_FLAGS MATCHES "/WX")
-		 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX")
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX")
+        if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /we4189")
+        endif()
 	endif()
+
+# Disable generating manifest
+	set(LINKER_FLAGS "/MANIFEST:NO")
 
 # Support for WUD
 	set(CMAKE_CXX_STANDARD_LIBRARIES "onecore.lib")
-	set(LINKER_FLAGS "")
 	foreach(IT kernel32.lib;user32.lib;gdi32.lib;advapi32.lib;ole32.lib;)
 		set(LINKER_FLAGS "${LINKER_FLAGS} /NODEFAULTLIB:${IT}")
 	endforeach()
@@ -435,22 +511,22 @@ else()
 	option(USE_ASAN "Link with address sanitization support" OFF)
 	if(USE_ASAN)
 		if(CMAKE_COMPILER_IS_GNUCC)
-			set(ASAN_FLAGS " -fsanitize=address -fno-omit-frame-pointer")
-			link_libraries(asan)
+			set(ASAN_FLAGS " -fsanitize=address -fno-omit-frame-pointer -DSANITIZER_BUILD")
+			set(ASAN_LIBS "asan")
 		else()
 			message(STATUS "Address sanitization with clang not yet support")
 		endif()
 	endif()
 	if(USE_TSAN)
 		if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
-			set(TSAN_FLAGS " -fsanitize=thread")
-			link_libraries(tsan)
+			set(TSAN_FLAGS " -fsanitize=thread -DSANITIZER_BUILD")
+			set(TSAN_LIBS "tsan")
 		else()
 			message(STATUS "Thread sanitization with gcc is not fully supported")
 		endif()
 	endif()
 
-endif(MSVC)
+endif()
 
 # setup variables needed for custom configuration type
 # generate PDB files even for release build on MSVC
@@ -462,6 +538,28 @@ if(MSVC)
 	set(CMAKE_CXX_FLAGS_RELEASEINTERNAL "${CMAKE_CXX_FLAGS_RELEASEINTERNAL} /Zi")
 	set(CMAKE_SHARED_LINKER_FLAGS_RELEASEINTERNAL "${CMAKE_SHARED_LINKER_FLAGS_RELEASEINTERNAL} /DEBUG /OPT:REF /OPT:ICF")
 endif()
+
+# spectre mitigation
+if(MSVC)
+	include(CheckCXXCompilerFlag)
+	check_cxx_compiler_flag(/Qspectre COMPILER_SUPPORTS_QSPECTRE)
+	check_cxx_compiler_flag(/d2guardspecload COMPILER_SUPPORTS_D2GUARDSPECLOAD)
+	if(COMPILER_SUPPORTS_QSPECTRE)
+		SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Qspectre")
+	elseif(COMPILER_SUPPORTS_D2GUARDSPECLOAD)
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /d2guardspecload")
+	else()
+		message(STATUS "Spectre mitigation is not supported by the compiler")
+	endif()
+else()
+	if(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
+		if (NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 6.0))
+			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mretpoline")
+		endif()
+	else()
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mindirect-branch=thunk -mfunction-return=thunk -mindirect-branch-register")
+    endif()
+endif(MSVC)
 
 if(NOT MSVC)
 	SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftemplate-depth=1024")
@@ -481,10 +579,10 @@ if(NOT MSVC)
 		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wshorten-64-to-32")
 		if(USE_SANITIZE_UB)
 			message(STATUS "Enabling undefined behavior sanitizer")
-			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fno-sanitize-recover=undefined -fsanitize-recover=vptr -fno-rtti")
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined -fno-sanitize-recover=undefined -fsanitize-recover=vptr -fno-rtti -DSANITIZER_BUILD")
 		endif(USE_SANITIZE_UB)
 		if (NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 3.6))
-			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-local-typedefs")
+			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-local-typedefs -DSANITIZER_BUILD")
 		endif()
 		if (NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 4.0))
 			set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-register") # Added for htons()
@@ -509,7 +607,7 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
 		set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /sdl")
 		set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /NXCompat")
 		set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DynamicBase")
-		if("${NEO_ARCH}" STREQUAL "x32")
+		if("${NEO_ARCH}" STREQUAL "x86")
 			set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /SafeSEH")
 		endif()
 	else()
@@ -537,10 +635,14 @@ endif()
 include_directories(${IGDRCL_SOURCE_DIR})
 include_directories(${IGDRCL_BUILD_DIR})
 include_directories(${IGDRCL_SOURCE_DIR}/runtime/sku_info/definitions${BRANCH_DIR_SUFFIX})
+include_directories(${IGDRCL_SOURCE_DIR}/runtime/os_interface/definitions${BRANCH_DIR_SUFFIX})
+include_directories(${IGDRCL_SOURCE_DIR}/runtime/command_stream/definitions${BRANCH_DIR_SUFFIX})
 include_directories(${IGDRCL_SOURCE_DIR}/runtime/gen_common/reg_configs${BRANCH_DIR_SUFFIX})
 include_directories(${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/${BRANCH_DIR_SUFFIX})
 include_directories(${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/client_context${BRANCH_DIR_SUFFIX})
 include_directories(${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/gmm_memory${BRANCH_DIR_SUFFIX})
+include_directories(${IGDRCL_SOURCE_DIR}/runtime/mem_obj/definitions${BRANCH_DIR_SUFFIX})
+include_directories(${IGDRCL_SOURCE_DIR}/runtime/memory_manager/definitions${BRANCH_DIR_SUFFIX})
 
 set(HW_SRC_INCLUDE_PATH ${IGDRCL_SOURCE_DIR}/runtime/gen_common)
 
@@ -564,7 +666,7 @@ else()
 endif(MSVC)
 
 add_subdirectory(offline_compiler ${IGDRCL_BUILD_DIR}/offline_compiler)
-target_compile_definitions(cloc PRIVATE MOCKABLE_VIRTUAL=)
+target_compile_definitions(ocloc PRIVATE MOCKABLE_VIRTUAL=)
 
 macro(generate_runtime_lib LIB_NAME MOCKABLE GENERATE_EXEC)
 	set(NEO_STATIC_LIB_NAME ${LIB_NAME})
@@ -603,10 +705,12 @@ if(DONT_CARE_OF_VIRTUALS)
     set(NEO_MOCKABLE_LIB_NAME ${NEO_RELEASE_LIB_NAME})
     generate_runtime_lib(${NEO_RELEASE_LIB_NAME} TRUE TRUE)
 else()
-    set(NEO_MOCKABLE_LIB_NAME "igdrcl_lib_mockable") # Used by ULTS
     set(NEO_RELEASE_LIB_NAME "igdrcl_lib_release") # Used by dll/so
     generate_runtime_lib(${NEO_RELEASE_LIB_NAME} FALSE TRUE)
-    generate_runtime_lib(${NEO_MOCKABLE_LIB_NAME} TRUE FALSE)
+    if(NOT SKIP_UNIT_TESTS)
+        set(NEO_MOCKABLE_LIB_NAME "igdrcl_lib_mockable") # Used by ULTS
+        generate_runtime_lib(${NEO_MOCKABLE_LIB_NAME} TRUE FALSE)
+    endif()
 endif()
 
 if(DEFAULT_TESTED_PLATFORM)
@@ -619,9 +723,10 @@ if(EXISTS ${IGDRCL_SOURCE_DIR}/../internal)
 endif(EXISTS ${IGDRCL_SOURCE_DIR}/../internal)
 
 include(package.cmake)
+add_subdirectory(scripts/lint)
 
 configure_file(config.h.in ${IGDRCL_BUILD_DIR}/config.h)
-if(NOT IGDRCL__IGC_FOUND)
+if(WIN32 AND NOT IGDRCL__IGC_FOUND)
     configure_file(igc.opencl.h.in ${IGDRCL_BUILD_DIR}/igc.opencl.h)
 endif()
 configure_file(driver_version.h.in ${IGDRCL_BUILD_DIR}/driver_version.h) # Put Driver version into define

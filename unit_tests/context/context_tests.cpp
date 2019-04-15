@@ -1,28 +1,12 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gtest/gtest.h"
-#include "runtime/context/context.inl"
 #include "runtime/command_queue/command_queue.h"
+#include "runtime/context/context.inl"
 #include "runtime/device/device.h"
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/helpers/options.h"
@@ -34,7 +18,9 @@
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_memory_manager.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 class WhiteBoxContext : public Context {
   public:
@@ -263,7 +249,7 @@ TEST_F(ContextTest, givenSpecialCmdQueueWithContextWhenBeingCreatedNextDeletedTh
 
 TEST_F(ContextTest, GivenInteropSyncParamWhenCreateContextThenSetContextParam) {
     cl_device_id deviceID = devices[0];
-    auto pPlatform = OCLRT::platform();
+    auto pPlatform = NEO::platform();
     cl_platform_id pid[1];
     pid[0] = pPlatform;
 
@@ -320,7 +306,7 @@ class ContextWithAsyncDeleterTest : public ::testing::WithParamInterface<bool>,
         memoryManager = new MockMemoryManager();
         device = new MockDevice(*platformDevices[0]);
         deleter = new MockDeferredDeleter();
-        device->setMemoryManager(memoryManager);
+        device->injectMemoryManager(memoryManager);
         memoryManager->setDeferredDeleter(deleter);
     }
     void TearDown() override {
@@ -355,3 +341,8 @@ TEST_P(ContextWithAsyncDeleterTest, givenContextWithMemoryManagerWhenAsyncDelete
 INSTANTIATE_TEST_CASE_P(ContextTests,
                         ContextWithAsyncDeleterTest,
                         ::testing::Bool());
+
+TEST(DefaultContext, givenDefaultContextWhenItIsQueriedForTypeThenDefaultTypeIsReturned) {
+    MockContext context;
+    EXPECT_EQ(ContextType::CONTEXT_TYPE_DEFAULT, context.peekContextType());
+}

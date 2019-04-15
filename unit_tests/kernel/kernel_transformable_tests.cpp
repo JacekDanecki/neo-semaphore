@@ -1,42 +1,27 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/program/kernel_info.h"
 #include "runtime/sampler/sampler.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_sampler.h"
 
-#include "test.h"
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class KernelTransformableTest : public ::testing::Test {
   public:
     void SetUp() override {
-        pKernelInfo.reset(KernelInfo::create());
+        pKernelInfo = std::make_unique<KernelInfo>();
         KernelArgPatchInfo kernelArgPatchInfo;
 
         kernelHeader.SurfaceStateHeapSize = sizeof(surfaceStateHeap);
@@ -60,7 +45,8 @@ class KernelTransformableTest : public ::testing::Test {
         pKernelInfo->kernelArgInfo[3].isImage = true;
         pKernelInfo->argumentsToPatchNum = 4;
 
-        pKernel.reset(new MockKernel(&program, *pKernelInfo, *context.getDevice(0)));
+        program = std::make_unique<MockProgram>(*context.getDevice(0)->getExecutionEnvironment());
+        pKernel.reset(new MockKernel(program.get(), *pKernelInfo, *context.getDevice(0)));
         ASSERT_EQ(CL_SUCCESS, pKernel->initialize());
 
         pKernel->setKernelArgHandler(0, &Kernel::setArgSampler);
@@ -81,12 +67,12 @@ class KernelTransformableTest : public ::testing::Test {
 
     cl_int retVal = CL_SUCCESS;
     MockContext context;
-    MockProgram program;
-    std::unique_ptr<MockKernel> pKernel;
+    std::unique_ptr<MockProgram> program;
+    std::unique_ptr<Sampler> sampler;
     std::unique_ptr<KernelInfo> pKernelInfo;
+    std::unique_ptr<MockKernel> pKernel;
 
     std::unique_ptr<Image> image;
-    std::unique_ptr<Sampler> sampler;
     SKernelBinaryHeaderCommon kernelHeader;
     char surfaceStateHeap[0x80];
 };
@@ -261,6 +247,7 @@ HWTEST_F(KernelTransformableTest, givenKernelWithTwoTransformableImagesAndTwoTra
     EXPECT_FALSE(firstSurfaceState->getSurfaceArray());
     EXPECT_EQ(SURFACE_TYPE::SURFACE_TYPE_SURFTYPE_3D, secondSurfaceState->getSurfaceType());
     EXPECT_FALSE(secondSurfaceState->getSurfaceArray());
+    pKernel.reset();
 }
 
 HWTEST_F(KernelTransformableTest, givenKernelWithNonTransformableSamplersWhenResetSamplerWithNontransformableThenImagesNotChangedAgain) {

@@ -1,32 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "host_ptr_manager.h"
-#include "runtime/helpers/ptr_math.h"
-#include "runtime/helpers/abort.h"
+#include "runtime/memory_manager/host_ptr_manager.h"
 
-using namespace OCLRT;
+#include "runtime/memory_manager/memory_manager.h"
 
-std::map<const void *, FragmentStorage>::iterator OCLRT::HostPtrManager::findElement(const void *ptr) {
+using namespace NEO;
+
+HostPtrFragmentsContainer::iterator HostPtrManager::findElement(const void *ptr) {
     auto nextElement = partialAllocations.lower_bound(ptr);
     auto element = nextElement;
     if (element != partialAllocations.end()) {
@@ -58,7 +43,7 @@ std::map<const void *, FragmentStorage>::iterator OCLRT::HostPtrManager::findEle
     return partialAllocations.end();
 }
 
-AllocationRequirements OCLRT::HostPtrManager::getAllocationRequirements(const void *inputPtr, size_t size) {
+AllocationRequirements HostPtrManager::getAllocationRequirements(const void *inputPtr, size_t size) {
     AllocationRequirements requiredAllocations;
 
     auto allocationCount = 0;
@@ -104,7 +89,7 @@ AllocationRequirements OCLRT::HostPtrManager::getAllocationRequirements(const vo
     return requiredAllocations;
 }
 
-OsHandleStorage OCLRT::HostPtrManager::populateAlreadyAllocatedFragments(AllocationRequirements &requirements, CheckedFragments *checkedFragments) {
+OsHandleStorage HostPtrManager::populateAlreadyAllocatedFragments(AllocationRequirements &requirements, CheckedFragments *checkedFragments) {
     OsHandleStorage handleStorage;
     for (unsigned int i = 0; i < requirements.requiredFragmentsCount; i++) {
         OverlapStatus overlapStatus = OverlapStatus::FRAGMENT_NOT_CHECKED;
@@ -121,7 +106,7 @@ OsHandleStorage OCLRT::HostPtrManager::populateAlreadyAllocatedFragments(Allocat
             fragmentStorage = getFragmentAndCheckForOverlaps(const_cast<void *>(requirements.AllocationFragments[i].allocationPtr), requirements.AllocationFragments[i].allocationSize, overlapStatus);
 
         if (overlapStatus == OverlapStatus::FRAGMENT_WITHIN_STORED_FRAGMENT) {
-            DEBUG_BREAK_IF(fragmentStorage == nullptr);
+            UNRECOVERABLE_IF(fragmentStorage == nullptr);
             fragmentStorage->refCount++;
             handleStorage.fragmentStorageData[i].osHandleStorage = fragmentStorage->osInternalStorage;
             handleStorage.fragmentStorageData[i].cpuPtr = requirements.AllocationFragments[i].allocationPtr;
@@ -148,8 +133,8 @@ OsHandleStorage OCLRT::HostPtrManager::populateAlreadyAllocatedFragments(Allocat
     return handleStorage;
 }
 
-void OCLRT::HostPtrManager::storeFragment(FragmentStorage &fragment) {
-    std::lock_guard<std::mutex> lock(allocationsMutex);
+void HostPtrManager::storeFragment(FragmentStorage &fragment) {
+    std::lock_guard<decltype(allocationsMutex)> lock(allocationsMutex);
     auto element = findElement(fragment.fragmentCpuPointer);
     if (element != partialAllocations.end()) {
         element->second.refCount++;
@@ -159,7 +144,7 @@ void OCLRT::HostPtrManager::storeFragment(FragmentStorage &fragment) {
     }
 }
 
-void OCLRT::HostPtrManager::storeFragment(AllocationStorageData &storageData) {
+void HostPtrManager::storeFragment(AllocationStorageData &storageData) {
     FragmentStorage fragment;
     fragment.fragmentCpuPointer = const_cast<void *>(storageData.cpuPtr);
     fragment.fragmentSize = storageData.fragmentSize;
@@ -168,16 +153,16 @@ void OCLRT::HostPtrManager::storeFragment(AllocationStorageData &storageData) {
     storeFragment(fragment);
 }
 
-void OCLRT::HostPtrManager::releaseHandleStorage(OsHandleStorage &fragments) {
-    for (int i = 0; i < max_fragments_count; i++) {
+void HostPtrManager::releaseHandleStorage(OsHandleStorage &fragments) {
+    for (int i = 0; i < maxFragmentsCount; i++) {
         if (fragments.fragmentStorageData[i].fragmentSize || fragments.fragmentStorageData[i].cpuPtr) {
             fragments.fragmentStorageData[i].freeTheFragment = releaseHostPtr(fragments.fragmentStorageData[i].cpuPtr);
         }
     }
 }
 
-bool OCLRT::HostPtrManager::releaseHostPtr(const void *ptr) {
-    std::lock_guard<std::mutex> lock(allocationsMutex);
+bool HostPtrManager::releaseHostPtr(const void *ptr) {
+    std::lock_guard<decltype(allocationsMutex)> lock(allocationsMutex);
     bool fragmentReadyToBeReleased = false;
 
     auto element = findElement(ptr);
@@ -193,8 +178,8 @@ bool OCLRT::HostPtrManager::releaseHostPtr(const void *ptr) {
     return fragmentReadyToBeReleased;
 }
 
-FragmentStorage *OCLRT::HostPtrManager::getFragment(const void *inputPtr) {
-    std::lock_guard<std::mutex> lock(allocationsMutex);
+FragmentStorage *HostPtrManager::getFragment(const void *inputPtr) {
+    std::lock_guard<decltype(allocationsMutex)> lock(allocationsMutex);
     auto element = findElement(inputPtr);
     if (element != partialAllocations.end()) {
         return &element->second;
@@ -203,8 +188,8 @@ FragmentStorage *OCLRT::HostPtrManager::getFragment(const void *inputPtr) {
 }
 
 //for given inputs see if any allocation overlaps
-FragmentStorage *OCLRT::HostPtrManager::getFragmentAndCheckForOverlaps(const void *inPtr, size_t size, OverlapStatus &overlappingStatus) {
-    std::lock_guard<std::mutex> lock(allocationsMutex);
+FragmentStorage *HostPtrManager::getFragmentAndCheckForOverlaps(const void *inPtr, size_t size, OverlapStatus &overlappingStatus) {
+    std::lock_guard<decltype(allocationsMutex)> lock(allocationsMutex);
     void *inputPtr = const_cast<void *>(inPtr);
     auto nextElement = partialAllocations.lower_bound(inputPtr);
     auto element = nextElement;
@@ -260,4 +245,58 @@ FragmentStorage *OCLRT::HostPtrManager::getFragmentAndCheckForOverlaps(const voi
         }
     }
     return nullptr;
+}
+
+OsHandleStorage HostPtrManager::prepareOsStorageForAllocation(MemoryManager &memoryManager, size_t size, const void *ptr) {
+    std::lock_guard<decltype(allocationsMutex)> lock(allocationsMutex);
+    auto requirements = HostPtrManager::getAllocationRequirements(ptr, size);
+
+    CheckedFragments checkedFragments;
+    UNRECOVERABLE_IF(checkAllocationsForOverlapping(memoryManager, &requirements, &checkedFragments) == RequirementsStatus::FATAL);
+
+    auto osStorage = populateAlreadyAllocatedFragments(requirements, &checkedFragments);
+    if (osStorage.fragmentCount > 0) {
+        if (memoryManager.populateOsHandles(osStorage) != MemoryManager::AllocationStatus::Success) {
+            memoryManager.cleanOsHandles(osStorage);
+            osStorage.fragmentCount = 0;
+        }
+    }
+    return osStorage;
+}
+
+RequirementsStatus HostPtrManager::checkAllocationsForOverlapping(MemoryManager &memoryManager, AllocationRequirements *requirements, CheckedFragments *checkedFragments) {
+    UNRECOVERABLE_IF(requirements == nullptr);
+    UNRECOVERABLE_IF(checkedFragments == nullptr);
+
+    RequirementsStatus status = RequirementsStatus::SUCCESS;
+    checkedFragments->count = 0;
+
+    for (unsigned int i = 0; i < maxFragmentsCount; i++) {
+        checkedFragments->status[i] = OverlapStatus::FRAGMENT_NOT_CHECKED;
+        checkedFragments->fragments[i] = nullptr;
+    }
+    for (unsigned int i = 0; i < requirements->requiredFragmentsCount; i++) {
+        checkedFragments->count++;
+        checkedFragments->fragments[i] = getFragmentAndCheckForOverlaps(requirements->AllocationFragments[i].allocationPtr, requirements->AllocationFragments[i].allocationSize, checkedFragments->status[i]);
+        if (checkedFragments->status[i] == OverlapStatus::FRAGMENT_OVERLAPING_AND_BIGGER_THEN_STORED_FRAGMENT) {
+            // clean temporary allocations
+            memoryManager.cleanTemporaryAllocationListOnAllEngines(false);
+
+            // check overlapping again
+            checkedFragments->fragments[i] = getFragmentAndCheckForOverlaps(requirements->AllocationFragments[i].allocationPtr, requirements->AllocationFragments[i].allocationSize, checkedFragments->status[i]);
+            if (checkedFragments->status[i] == OverlapStatus::FRAGMENT_OVERLAPING_AND_BIGGER_THEN_STORED_FRAGMENT) {
+
+                // Wait for completion
+                memoryManager.cleanTemporaryAllocationListOnAllEngines(true);
+
+                // check overlapping last time
+                checkedFragments->fragments[i] = getFragmentAndCheckForOverlaps(requirements->AllocationFragments[i].allocationPtr, requirements->AllocationFragments[i].allocationSize, checkedFragments->status[i]);
+                if (checkedFragments->status[i] == OverlapStatus::FRAGMENT_OVERLAPING_AND_BIGGER_THEN_STORED_FRAGMENT) {
+                    status = RequirementsStatus::FATAL;
+                    break;
+                }
+            }
+        }
+    }
+    return status;
 }

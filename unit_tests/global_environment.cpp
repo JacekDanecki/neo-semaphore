@@ -1,32 +1,18 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "global_environment.h"
+
 #include "runtime/helpers/hw_info.h"
 #include "runtime/os_interface/os_inc_base.h"
 
 TestEnvironment::TestEnvironment(void)
     : libraryFrontEnd(nullptr), libraryIGC(nullptr),
-      libraryOS(nullptr) {
+      libraryOS(nullptr), hwInfoDefaultDebugVars() {
     igcDebugVarStack.reserve(3);
     fclDebugVarStack.reserve(3);
 }
@@ -36,6 +22,9 @@ void TestEnvironment::SetUp() {
 
     fclPushDebugVars(fclDefaultDebugVars);
     igcPushDebugVars(igcDefaultDebugVars);
+    if (libraryOS == nullptr) {
+        libraryOS = setAdapterInfo(hwInfoDefaultDebugVars.pPlatform, hwInfoDefaultDebugVars.pSysInfo, hwInfoDefaultDebugVars.capabilityTable.gpuAddressSpace);
+    }
 }
 
 void TestEnvironment::TearDown() {
@@ -51,23 +40,23 @@ void TestEnvironment::TearDown() {
 void TestEnvironment::fclPushDebugVars(
     MockCompilerDebugVars &newDebugVars) {
     fclDebugVarStack.push_back(newDebugVars);
-    OCLRT::setFclDebugVars(newDebugVars);
+    NEO::setFclDebugVars(newDebugVars);
 }
 
 void TestEnvironment::fclPopDebugVars() {
     fclDebugVarStack.pop_back();
-    OCLRT::setFclDebugVars(fclDebugVarStack.back());
+    NEO::setFclDebugVars(fclDebugVarStack.back());
 }
 
 void TestEnvironment::igcPushDebugVars(
     MockCompilerDebugVars &newDebugVars) {
     igcDebugVarStack.push_back(newDebugVars);
-    OCLRT::setIgcDebugVars(newDebugVars);
+    NEO::setIgcDebugVars(newDebugVars);
 }
 
 void TestEnvironment::igcPopDebugVars() {
     igcDebugVarStack.pop_back();
-    OCLRT::setIgcDebugVars(igcDebugVarStack.back());
+    NEO::setIgcDebugVars(igcDebugVarStack.back());
 }
 
 void TestEnvironment::setDefaultDebugVars(
@@ -76,8 +65,7 @@ void TestEnvironment::setDefaultDebugVars(
     HardwareInfo &hwInfo) {
     fclDefaultDebugVars = fclDefaults;
     igcDefaultDebugVars = igcDefaults;
-
-    libraryOS = setAdapterInfo(hwInfo.pPlatform, hwInfo.pSysInfo);
+    hwInfoDefaultDebugVars = hwInfo;
 }
 
 void TestEnvironment::setMockFileNames(

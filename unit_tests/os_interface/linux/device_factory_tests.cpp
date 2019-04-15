@@ -1,26 +1,14 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/os_interface/linux/device_factory_tests.h"
+
+#include "runtime/os_interface/linux/os_interface.h"
+#include "runtime/os_interface/os_interface.h"
 
 TEST_F(DeviceFactoryLinuxTest, GetDevicesCheckEUCntSSCnt) {
     HardwareInfo *hwInfo = nullptr;
@@ -30,7 +18,7 @@ TEST_F(DeviceFactoryLinuxTest, GetDevicesCheckEUCntSSCnt) {
     pDrm->StoredEUVal = 11;
     pDrm->StoredSSVal = 8;
 
-    bool success = DeviceFactory::getDevices(&hwInfo, numDevices);
+    bool success = DeviceFactory::getDevices(&hwInfo, numDevices, executionEnvironment);
 
     EXPECT_TRUE(success);
     EXPECT_EQ((int)numDevices, 1);
@@ -52,7 +40,7 @@ TEST_F(DeviceFactoryLinuxTest, GetDevicesDrmCreateFailed) {
     size_t numDevices = 0;
 
     pushDrmMock(nullptr);
-    bool success = DeviceFactory::getDevices(&hwInfo, numDevices);
+    bool success = DeviceFactory::getDevices(&hwInfo, numDevices, executionEnvironment);
     EXPECT_FALSE(success);
 
     popDrmMock();
@@ -64,7 +52,7 @@ TEST_F(DeviceFactoryLinuxTest, GetDevicesDrmCreateFailedConfigureHwInfo) {
 
     pDrm->StoredRetValForDeviceID = -1;
 
-    bool success = DeviceFactory::getDevices(&hwInfo, numDevices);
+    bool success = DeviceFactory::getDevices(&hwInfo, numDevices, executionEnvironment);
     EXPECT_FALSE(success);
 
     pDrm->StoredRetValForDeviceID = 0;
@@ -83,10 +71,20 @@ TEST_F(DeviceFactoryLinuxTest, ReleaseDevices) {
     pDrm->StoredMinEUinPool = 9;
     pDrm->StoredRetVal = -1;
 
-    bool success = mockDeviceFactory.getDevices(&hwInfo, numDevices);
+    bool success = mockDeviceFactory.getDevices(&hwInfo, numDevices, executionEnvironment);
     EXPECT_TRUE(success);
 
     mockDeviceFactory.releaseDevices();
     EXPECT_TRUE(mockDeviceFactory.getNumDevices() == 0);
     EXPECT_TRUE(pDrm->getFileDescriptor() == -1);
+}
+
+TEST_F(DeviceFactoryLinuxTest, givenGetDeviceCallWhenItIsDoneThenOsInterfaceIsAllocatedAndItContainDrm) {
+    MockDeviceFactory mockDeviceFactory;
+    HardwareInfo *hwInfo = nullptr;
+    size_t numDevices = 0;
+    bool success = mockDeviceFactory.getDevices(&hwInfo, numDevices, executionEnvironment);
+    EXPECT_TRUE(success);
+    EXPECT_NE(nullptr, executionEnvironment.osInterface);
+    EXPECT_EQ(pDrm, executionEnvironment.osInterface->get()->getDrm());
 }

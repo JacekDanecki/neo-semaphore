@@ -1,37 +1,26 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/mem_obj/mem_obj_helper.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
+#include "test.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
 
 #include "gtest/gtest.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 TEST(MemoryManagerTest, givenSetUseSytemMemoryWhenGraphicsAllocationInDevicePoolIsAllocatedThenNullptrIsReturned) {
-    OsAgnosticMemoryManager memoryManager;
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    MockMemoryManager memoryManager(false, false, executionEnvironment);
     MemoryManager::AllocationStatus status = MemoryManager::AllocationStatus::Success;
     AllocationData allocData;
-    allocData.allFlags = 0;
     allocData.size = MemoryConstants::pageSize;
     allocData.flags.useSystemMemory = true;
     allocData.flags.allocateMemory = true;
@@ -42,12 +31,12 @@ TEST(MemoryManagerTest, givenSetUseSytemMemoryWhenGraphicsAllocationInDevicePool
 }
 
 TEST(MemoryManagerTest, givenAllowed32BitAndFroce32BitWhenGraphicsAllocationInDevicePoolIsAllocatedThenNullptrIsReturned) {
-    OsAgnosticMemoryManager memoryManager;
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    MockMemoryManager memoryManager(false, false, executionEnvironment);
     memoryManager.setForce32BitAllocations(true);
 
     MemoryManager::AllocationStatus status = MemoryManager::AllocationStatus::Success;
     AllocationData allocData;
-    allocData.allFlags = 0;
     allocData.size = MemoryConstants::pageSize;
     allocData.flags.allow32Bit = true;
     allocData.flags.allocateMemory = true;
@@ -55,4 +44,39 @@ TEST(MemoryManagerTest, givenAllowed32BitAndFroce32BitWhenGraphicsAllocationInDe
     auto allocation = memoryManager.allocateGraphicsMemoryInDevicePool(allocData, status);
     EXPECT_EQ(nullptr, allocation);
     EXPECT_EQ(MemoryManager::AllocationStatus::RetryInNonDevicePool, status);
+}
+
+TEST(AllocationFlagsTest, givenAllocateMemoryFlagWhenGetAllocationFlagsIsCalledThenAllocateFlagIsCorrectlySet) {
+    auto allocationProperties = MemObjHelper::getAllocationProperties({}, true, 0, GraphicsAllocation::AllocationType::BUFFER);
+    EXPECT_TRUE(allocationProperties.flags.allocateMemory);
+
+    allocationProperties = MemObjHelper::getAllocationProperties({}, false, 0, GraphicsAllocation::AllocationType::BUFFER);
+    EXPECT_FALSE(allocationProperties.flags.allocateMemory);
+}
+
+TEST(UncacheableFlagsTest, givenUncachedResourceFlagWhenGetAllocationFlagsIsCalledThenUncacheableFlagIsCorrectlySet) {
+    MemoryProperties memoryProperties;
+    memoryProperties.flags_intel = CL_MEM_LOCALLY_UNCACHED_RESOURCE;
+    auto allocationFlags = MemObjHelper::getAllocationProperties(memoryProperties, false, 0, GraphicsAllocation::AllocationType::BUFFER);
+    EXPECT_TRUE(allocationFlags.flags.uncacheable);
+
+    memoryProperties.flags_intel = 0;
+    allocationFlags = MemObjHelper::getAllocationProperties(memoryProperties, false, 0, GraphicsAllocation::AllocationType::BUFFER);
+    EXPECT_FALSE(allocationFlags.flags.uncacheable);
+}
+
+TEST(AllocationFlagsTest, givenReadOnlyResourceFlagWhenGetAllocationFlagsIsCalledThenFlushL3FlagsAreCorrectlySet) {
+    auto allocationFlags =
+        MemObjHelper::getAllocationProperties(CL_MEM_READ_ONLY, true, 0, GraphicsAllocation::AllocationType::BUFFER);
+    EXPECT_FALSE(allocationFlags.flags.flushL3RequiredForRead);
+    EXPECT_FALSE(allocationFlags.flags.flushL3RequiredForWrite);
+
+    allocationFlags = MemObjHelper::getAllocationProperties(0, true, 0, GraphicsAllocation::AllocationType::BUFFER);
+    EXPECT_TRUE(allocationFlags.flags.flushL3RequiredForRead);
+    EXPECT_TRUE(allocationFlags.flags.flushL3RequiredForWrite);
+}
+
+TEST(StorageInfoTest, whenStorageInfoIsCreatedWithDefaultConstructorThenReturnsOneHandle) {
+    StorageInfo storageInfo;
+    EXPECT_EQ(1u, storageInfo.getNumHandles());
 }

@@ -1,30 +1,16 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/compiler_interface/compiler_options.h"
 #include "runtime/command_queue/command_queue.h"
-#include "runtime/platform/platform.h"
+#include "runtime/compiler_interface/compiler_options.h"
+#include "runtime/os_interface/os_context.h"
 #include "runtime/program/program.h"
 #include "runtime/source_level_debugger/source_level_debugger.h"
+#include "test.h"
 #include "unit_tests/fixtures/enqueue_handler_fixture.h"
 #include "unit_tests/helpers/kernel_binary_helper.h"
 #include "unit_tests/helpers/kernel_filename_helper.h"
@@ -32,10 +18,10 @@
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/program/program_from_binary.h"
-#include "test.h"
+
 #include "gmock/gmock.h"
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace ::testing;
 
 typedef EnqueueHandlerTest EnqueueDebugKernelSimpleTest;
@@ -44,12 +30,12 @@ class EnqueueDebugKernelTest : public ProgramSimpleFixture,
                                public ::testing::Test {
   public:
     void SetUp() override {
-        constructPlatform();
         ProgramSimpleFixture::SetUp();
         device = pDevice;
         pDevice->executionEnvironment->sourceLevelDebugger.reset(new SourceLevelDebugger(nullptr));
 
         if (pDevice->getHardwareInfo().pPlatform->eRenderCoreFamily >= IGFX_GEN9_CORE) {
+            pDevice->getMutableDeviceInfo()->sourceLevelDebuggerActive = true;
             std::string filename;
             std::string kernelOption(CompilerOptions::debugKernelEnable);
             KernelFilenameHelper::getKernelFilenameFromInternalOption(kernelOption, filename);
@@ -92,7 +78,6 @@ class EnqueueDebugKernelTest : public ProgramSimpleFixture,
             debugKernel->release();
         }
         ProgramSimpleFixture::TearDown();
-        platformImpl.reset(nullptr);
     }
     cl_device_id device;
     Kernel *debugKernel = nullptr;
@@ -103,7 +88,7 @@ class EnqueueDebugKernelTest : public ProgramSimpleFixture,
 };
 
 HWTEST_F(EnqueueDebugKernelTest, givenDebugKernelWhenEnqueuedThenSSHAndBtiAreCorrectlySet) {
-    if (pDevice->getHardwareInfo().pPlatform->eRenderCoreFamily >= IGFX_GEN9_CORE) {
+    if (pDevice->isSourceLevelDebuggerActive()) {
         using BINDING_TABLE_STATE = typename FamilyType::BINDING_TABLE_STATE;
         using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
         std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(&context, pDevice, 0));
@@ -119,8 +104,9 @@ HWTEST_F(EnqueueDebugKernelTest, givenDebugKernelWhenEnqueuedThenSSHAndBtiAreCor
 
         auto debugSurfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(ssh.getCpuBase(), surfaceStateOffset));
 
-        auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
+        auto &commandStreamReceiver = mockCmdQ->getCommandStreamReceiver();
         auto debugSurface = commandStreamReceiver.getDebugSurfaceAllocation();
+        EXPECT_EQ(1u, debugSurface->getTaskCount(commandStreamReceiver.getOsContext().getContextId()));
 
         EXPECT_EQ(debugSurface->getGpuAddress(), debugSurfaceState->getSurfaceBaseAddress());
     }
@@ -138,7 +124,7 @@ class GMockCommandQueueHw : public CommandQueueHw<GfxFamily> {
 };
 
 HWTEST_F(EnqueueDebugKernelSimpleTest, givenKernelFromProgramWithDebugEnabledWhenEnqueuedThenDebugSurfaceIsSetup) {
-    MockProgram program;
+    MockProgram program(*pDevice->getExecutionEnvironment());
     program.enableKernelDebug();
     std::unique_ptr<MockDebugKernel> kernel(MockKernel::create<MockDebugKernel>(*pDevice, &program));
     std::unique_ptr<GMockCommandQueueHw<FamilyType>> mockCmdQ(new GMockCommandQueueHw<FamilyType>(context, pDevice, 0));
@@ -152,7 +138,7 @@ HWTEST_F(EnqueueDebugKernelSimpleTest, givenKernelFromProgramWithDebugEnabledWhe
 }
 
 HWTEST_F(EnqueueDebugKernelSimpleTest, givenKernelFromProgramWithoutDebugEnabledWhenEnqueuedThenDebugSurfaceIsNotSetup) {
-    MockProgram program;
+    MockProgram program(*pDevice->getExecutionEnvironment());
     std::unique_ptr<MockDebugKernel> kernel(MockKernel::create<MockDebugKernel>(*pDevice, &program));
     std::unique_ptr<NiceMock<GMockCommandQueueHw<FamilyType>>> mockCmdQ(new NiceMock<GMockCommandQueueHw<FamilyType>>(context, pDevice, nullptr));
 

@@ -1,40 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "CL/cl.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
+#include "test.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
+
+#include "CL/cl.h"
 #include "gtest/gtest.h"
-#include "test.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class KernelArgSvmFixture_ : public ContextFixture, public DeviceFixture {
 
@@ -51,7 +37,7 @@ class KernelArgSvmFixture_ : public ContextFixture, public DeviceFixture {
         ContextFixture::SetUp(1, &device);
 
         // define kernel info
-        pKernelInfo = KernelInfo::create();
+        pKernelInfo = std::make_unique<KernelInfo>();
 
         // setup kernel arg offsets
         KernelArgPatchInfo kernelArgPatchInfo;
@@ -68,7 +54,7 @@ class KernelArgSvmFixture_ : public ContextFixture, public DeviceFixture {
         pKernelInfo->kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset = 0x30;
         pKernelInfo->kernelArgInfo[0].kernelArgPatchInfoVector[0].size = (uint32_t)sizeof(void *);
 
-        pProgram = new MockProgram(pContext, false);
+        pProgram = new MockProgram(*pDevice->getExecutionEnvironment(), pContext, false);
 
         pKernel = new MockKernel(pProgram, *pKernelInfo, *pDevice);
         ASSERT_EQ(CL_SUCCESS, pKernel->initialize());
@@ -76,8 +62,8 @@ class KernelArgSvmFixture_ : public ContextFixture, public DeviceFixture {
     }
 
     void TearDown() override {
-        delete pKernelInfo;
         delete pKernel;
+
         delete pProgram;
         ContextFixture::TearDown();
         DeviceFixture::TearDown();
@@ -86,7 +72,7 @@ class KernelArgSvmFixture_ : public ContextFixture, public DeviceFixture {
     cl_int retVal = CL_SUCCESS;
     MockProgram *pProgram = nullptr;
     MockKernel *pKernel = nullptr;
-    KernelInfo *pKernelInfo = nullptr;
+    std::unique_ptr<KernelInfo> pKernelInfo;
     SKernelBinaryHeaderCommon kernelHeader;
     char pSshLocal[64];
     char pCrossThreadData[64];
@@ -97,7 +83,7 @@ typedef Test<KernelArgSvmFixture_> KernelArgSvmTest;
 TEST_F(KernelArgSvmTest, SetKernelArgValidSvmPtr) {
     char *svmPtr = new char[256];
 
-    auto retVal = pKernel->setArgSvm(0, 256, svmPtr);
+    auto retVal = pKernel->setArgSvm(0, 256, svmPtr, nullptr, 0u);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     auto pKernelArg = (void **)(pKernel->getCrossThreadData() +
@@ -113,7 +99,7 @@ TEST_F(KernelArgSvmTest, SetKernelArgValidSvmPtrStateless) {
     pKernelInfo->usesSsh = false;
     pKernelInfo->requiresSshForBuffers = false;
 
-    auto retVal = pKernel->setArgSvm(0, 256, svmPtr);
+    auto retVal = pKernel->setArgSvm(0, 256, svmPtr, nullptr, 0u);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     EXPECT_EQ(0u, pKernel->getSurfaceStateHeapSize());
@@ -127,7 +113,7 @@ HWTEST_F(KernelArgSvmTest, SetKernelArgValidSvmPtrStateful) {
     pKernelInfo->usesSsh = true;
     pKernelInfo->requiresSshForBuffers = true;
 
-    auto retVal = pKernel->setArgSvm(0, 256, svmPtr);
+    auto retVal = pKernel->setArgSvm(0, 256, svmPtr, nullptr, 0u);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     EXPECT_NE(0u, pKernel->getSurfaceStateHeapSize());
@@ -146,7 +132,7 @@ HWTEST_F(KernelArgSvmTest, SetKernelArgValidSvmPtrStateful) {
 TEST_F(KernelArgSvmTest, SetKernelArgValidSvmAlloc) {
     char *svmPtr = new char[256];
 
-    GraphicsAllocation svmAlloc(svmPtr, 256);
+    MockGraphicsAllocation svmAlloc(svmPtr, 256);
 
     auto retVal = pKernel->setArgSvmAlloc(0, svmPtr, &svmAlloc);
     EXPECT_EQ(CL_SUCCESS, retVal);
@@ -161,7 +147,7 @@ TEST_F(KernelArgSvmTest, SetKernelArgValidSvmAlloc) {
 TEST_F(KernelArgSvmTest, SetKernelArgValidSvmAllocStateless) {
     char *svmPtr = new char[256];
 
-    GraphicsAllocation svmAlloc(svmPtr, 256);
+    MockGraphicsAllocation svmAlloc(svmPtr, 256);
 
     pKernelInfo->usesSsh = false;
     pKernelInfo->requiresSshForBuffers = false;
@@ -177,7 +163,7 @@ TEST_F(KernelArgSvmTest, SetKernelArgValidSvmAllocStateless) {
 HWTEST_F(KernelArgSvmTest, SetKernelArgValidSvmAllocStateful) {
     char *svmPtr = new char[256];
 
-    GraphicsAllocation svmAlloc(svmPtr, 256);
+    MockGraphicsAllocation svmAlloc(svmPtr, 256);
 
     pKernelInfo->usesSsh = true;
     pKernelInfo->requiresSshForBuffers = true;
@@ -203,7 +189,7 @@ HWTEST_F(KernelArgSvmTest, givenOffsetedSvmPointerWhenSetArgSvmAllocIsCalledThen
 
     auto offsetedPtr = svmPtr.get() + 4;
 
-    GraphicsAllocation svmAlloc(svmPtr.get(), 256);
+    MockGraphicsAllocation svmAlloc(svmPtr.get(), 256);
     pKernelInfo->usesSsh = true;
     pKernelInfo->requiresSshForBuffers = true;
 
@@ -235,7 +221,7 @@ HWTEST_F(KernelArgSvmTest, PatchWithImplicitSurface) {
     pKernelInfo->requiresSshForBuffers = true;
     pKernelInfo->usesSsh = true;
     {
-        GraphicsAllocation svmAlloc(svmPtr.data(), svmPtr.size());
+        MockGraphicsAllocation svmAlloc(svmPtr.data(), svmPtr.size());
 
         SPatchAllocateStatelessGlobalMemorySurfaceWithInitialization patch;
         memset(&patch, 0, sizeof(patch));
@@ -285,7 +271,7 @@ TEST_F(KernelArgSvmTest, patchBufferOffset) {
         constexpr uint32_t initVal = 7U;
         constexpr uint32_t svmOffset = 13U;
 
-        GraphicsAllocation svmAlloc(svmPtr.data(), 256);
+        MockGraphicsAllocation svmAlloc(svmPtr.data(), 256);
         uint32_t *expectedPatchPtr = reinterpret_cast<uint32_t *>(pKernel->getCrossThreadData());
 
         KernelArgInfo kai;
@@ -332,7 +318,7 @@ class KernelArgSvmTestTyped : public KernelArgSvmTest {
 
 struct SetArgHandlerSetArgSvm {
     static void setArg(Kernel &kernel, uint32_t argNum, void *ptrToPatch, size_t allocSize, GraphicsAllocation &alloc) {
-        kernel.setArgSvm(argNum, allocSize, ptrToPatch, &alloc);
+        kernel.setArgSvm(argNum, allocSize, ptrToPatch, &alloc, 0u);
     }
 
     static constexpr bool supportsOffsets() {
@@ -386,7 +372,7 @@ HWTEST_TYPED_TEST(KernelArgSvmTestTyped, GivenBufferKernelArgWhenBufferOffsetIsN
     this->pKernelInfo->requiresSshForBuffers = true;
     this->pKernelInfo->usesSsh = true;
     {
-        GraphicsAllocation svmAlloc(svmPtr, svmSize);
+        MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
 
         constexpr size_t patchOffset = 16;
         void *ptrToPatch = svmPtr + patchOffset;
@@ -426,4 +412,127 @@ HWTEST_TYPED_TEST(KernelArgSvmTestTyped, GivenBufferKernelArgWhenBufferOffsetIsN
     }
 
     alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenWritableSvmAllocationWhenSettingAsArgThenDoNotExpectAllocationInCacheFlushVector) {
+    size_t svmSize = 4096;
+    void *svmPtr = alignedMalloc(svmSize, MemoryConstants::pageSize);
+    MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
+
+    svmAlloc.setMemObjectsAllocationWithWritableFlags(true);
+    svmAlloc.setFlushL3Required(false);
+
+    auto retVal = pKernel->setArgSvmAlloc(0, svmPtr, &svmAlloc);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pKernel->kernelArgRequiresCacheFlush[0]);
+
+    alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenCacheFlushSvmAllocationWhenSettingAsArgThenExpectAllocationInCacheFlushVector) {
+    size_t svmSize = 4096;
+    void *svmPtr = alignedMalloc(svmSize, MemoryConstants::pageSize);
+    MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
+
+    svmAlloc.setMemObjectsAllocationWithWritableFlags(false);
+    svmAlloc.setFlushL3Required(true);
+
+    auto retVal = pKernel->setArgSvmAlloc(0, svmPtr, &svmAlloc);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(&svmAlloc, pKernel->kernelArgRequiresCacheFlush[0]);
+
+    alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenNoCacheFlushSvmAllocationWhenSettingAsArgThenNotExpectAllocationInCacheFlushVector) {
+    size_t svmSize = 4096;
+    void *svmPtr = alignedMalloc(svmSize, MemoryConstants::pageSize);
+    MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
+
+    svmAlloc.setMemObjectsAllocationWithWritableFlags(false);
+    svmAlloc.setFlushL3Required(false);
+
+    auto retVal = pKernel->setArgSvmAlloc(0, svmPtr, &svmAlloc);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_EQ(nullptr, pKernel->kernelArgRequiresCacheFlush[0]);
+
+    alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenWritableSvmAllocationWhenSettingKernelExecInfoThenDoNotExpectSvmFlushFlagTrue) {
+    size_t svmSize = 4096;
+    void *svmPtr = alignedMalloc(svmSize, MemoryConstants::pageSize);
+    MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
+
+    svmAlloc.setMemObjectsAllocationWithWritableFlags(true);
+    svmAlloc.setFlushL3Required(false);
+
+    pKernel->setKernelExecInfo(&svmAlloc);
+    EXPECT_FALSE(pKernel->svmAllocationsRequireCacheFlush);
+
+    alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenCacheFlushSvmAllocationWhenSettingKernelExecInfoThenExpectSvmFlushFlagTrue) {
+    size_t svmSize = 4096;
+    void *svmPtr = alignedMalloc(svmSize, MemoryConstants::pageSize);
+    MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
+
+    svmAlloc.setMemObjectsAllocationWithWritableFlags(false);
+    svmAlloc.setFlushL3Required(true);
+
+    pKernel->setKernelExecInfo(&svmAlloc);
+    EXPECT_TRUE(pKernel->svmAllocationsRequireCacheFlush);
+
+    alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenNoCacheFlushReadOnlySvmAllocationWhenSettingKernelExecInfoThenExpectSvmFlushFlagFalse) {
+    size_t svmSize = 4096;
+    void *svmPtr = alignedMalloc(svmSize, MemoryConstants::pageSize);
+    MockGraphicsAllocation svmAlloc(svmPtr, svmSize);
+
+    svmAlloc.setMemObjectsAllocationWithWritableFlags(false);
+    svmAlloc.setFlushL3Required(false);
+
+    pKernel->setKernelExecInfo(&svmAlloc);
+    EXPECT_FALSE(pKernel->svmAllocationsRequireCacheFlush);
+
+    alignedFree(svmPtr);
+}
+
+TEST_F(KernelArgSvmTest, givenCpuAddressIsNullWhenGpuAddressIsValidThenExpectSvmArgUseGpuAddress) {
+    char svmPtr[256];
+
+    pKernelInfo->kernelArgInfo[0].offsetBufferOffset = 0u;
+
+    MockGraphicsAllocation svmAlloc(nullptr, reinterpret_cast<uint64_t>(svmPtr), 256);
+
+    auto retVal = pKernel->setArgSvmAlloc(0, svmPtr, &svmAlloc);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    auto pKernelArg = (void **)(pKernel->getCrossThreadData() +
+                                pKernelInfo->kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset);
+    EXPECT_EQ(svmPtr, *pKernelArg);
+}
+
+TEST_F(KernelArgSvmTest, givenCpuAddressIsNullWhenGpuAddressIsValidPatchBufferOffsetWithGpuAddress) {
+    std::vector<char> svmPtr;
+    svmPtr.resize(256);
+
+    pKernel->setCrossThreadData(nullptr, sizeof(uint32_t));
+
+    constexpr uint32_t initVal = 7U;
+
+    MockGraphicsAllocation svmAlloc(nullptr, reinterpret_cast<uint64_t>(svmPtr.data()), 256);
+    uint32_t *expectedPatchPtr = reinterpret_cast<uint32_t *>(pKernel->getCrossThreadData());
+
+    KernelArgInfo kai;
+    void *returnedPtr = nullptr;
+
+    kai.offsetBufferOffset = 0U;
+    *expectedPatchPtr = initVal;
+    returnedPtr = pKernel->patchBufferOffset(kai, svmPtr.data(), &svmAlloc);
+    EXPECT_EQ(svmPtr.data(), returnedPtr);
+    EXPECT_EQ(0U, *expectedPatchPtr);
 }

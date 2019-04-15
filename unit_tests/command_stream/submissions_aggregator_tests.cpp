@@ -1,35 +1,22 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
-#include "test.h"
 #include "runtime/command_stream/submissions_aggregator.h"
+#include "runtime/event/event.h"
 #include "runtime/helpers/flush_stamp.h"
-#include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/mocks/mock_device.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/mocks/mock_csr.h"
+#include "test.h"
 #include "unit_tests/mocks/mock_command_queue.h"
+#include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_device.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
+#include "unit_tests/mocks/mock_kernel.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct MockSubmissionAggregator : public SubmissionAggregator {
     CommandBufferList &peekCommandBuffersList() {
@@ -44,7 +31,9 @@ TEST(SubmissionsAggregator, givenDefaultSubmissionsAggregatorWhenItIsCreatedThen
 
 TEST(SubmissionsAggregator, givenCommandBufferWhenItIsPassedToSubmissionsAggregatorThenItIsRecorded) {
     MockSubmissionAggregator submissionsAggregator;
-    CommandBuffer *cmdBuffer = new CommandBuffer;
+
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
 
     submissionsAggregator.recordCommandBuffer(cmdBuffer);
     EXPECT_FALSE(submissionsAggregator.peekCommandBuffersList().peekIsEmpty());
@@ -56,15 +45,17 @@ TEST(SubmissionsAggregator, givenCommandBufferWhenItIsPassedToSubmissionsAggrega
 
 TEST(SubmissionsAggregator, givenTwoCommandBuffersWhenMergeResourcesIsCalledThenDuplicatesAreEliminated) {
     MockSubmissionAggregator submissionsAggregator;
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc2(nullptr, 2);
-    GraphicsAllocation alloc3(nullptr, 3);
-    GraphicsAllocation alloc4(nullptr, 4);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc6(nullptr, 6);
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
+
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc2(nullptr, 2);
+    MockGraphicsAllocation alloc3(nullptr, 3);
+    MockGraphicsAllocation alloc4(nullptr, 4);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc6(nullptr, 6);
 
     cmdBuffer->surfaces.push_back(&alloc1);
     cmdBuffer->surfaces.push_back(&alloc6);
@@ -81,13 +72,13 @@ TEST(SubmissionsAggregator, givenTwoCommandBuffersWhenMergeResourcesIsCalledThen
     size_t totalMemoryBudget = -1;
     ResourcePackage resourcePackage;
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     EXPECT_EQ(0u, totalUsedSize);
 
     submissionsAggregator.recordCommandBuffer(cmdBuffer);
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     EXPECT_EQ(15u, totalUsedSize);
     totalUsedSize = 0;
@@ -101,7 +92,7 @@ TEST(SubmissionsAggregator, givenTwoCommandBuffersWhenMergeResourcesIsCalledThen
     EXPECT_EQ(5u, cmdBuffer->surfaces.size());
     EXPECT_EQ(4u, cmdBuffer2->surfaces.size());
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     //command buffer 2 is aggregated to command buffer 1
     auto primaryBatchInstepctionId = submissionsAggregator.peekCommandBuffersList().peekHead()->inspectionId;
@@ -113,17 +104,19 @@ TEST(SubmissionsAggregator, givenTwoCommandBuffersWhenMergeResourcesIsCalledThen
 
 TEST(SubmissionsAggregator, givenSubmissionAggregatorWhenThreeCommandBuffersAreSubmittedThenTheyAreAggregated) {
     MockSubmissionAggregator submissionsAggregator;
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
-    CommandBuffer *cmdBuffer3 = new CommandBuffer;
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc2(nullptr, 2);
-    GraphicsAllocation alloc3(nullptr, 3);
-    GraphicsAllocation alloc4(nullptr, 4);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc6(nullptr, 6);
-    GraphicsAllocation alloc7(nullptr, 7);
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer3 = new CommandBuffer(*device);
+
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc2(nullptr, 2);
+    MockGraphicsAllocation alloc3(nullptr, 3);
+    MockGraphicsAllocation alloc4(nullptr, 4);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc6(nullptr, 6);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     cmdBuffer->surfaces.push_back(&alloc5);
     cmdBuffer->surfaces.push_back(&alloc6);
@@ -160,7 +153,7 @@ TEST(SubmissionsAggregator, givenSubmissionAggregatorWhenThreeCommandBuffersAreS
     EXPECT_EQ(4u, cmdBuffer2->surfaces.size());
     EXPECT_EQ(2u, cmdBuffer3->surfaces.size());
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     //command buffer 3 and 2 is aggregated to command buffer 1
     auto primaryBatchInstepctionId = submissionsAggregator.peekCommandBuffersList().peekHead()->inspectionId;
@@ -175,17 +168,19 @@ TEST(SubmissionsAggregator, givenSubmissionAggregatorWhenThreeCommandBuffersAreS
 
 TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenTheyAreAggreagateWithCertainMemoryLimitThenOnlyThatFitAreAggregated) {
     MockSubmissionAggregator submissionsAggregator;
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
-    CommandBuffer *cmdBuffer3 = new CommandBuffer;
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc2(nullptr, 2);
-    GraphicsAllocation alloc3(nullptr, 3);
-    GraphicsAllocation alloc4(nullptr, 4);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc6(nullptr, 6);
-    GraphicsAllocation alloc7(nullptr, 7);
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer3 = new CommandBuffer(*device);
+
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc2(nullptr, 2);
+    MockGraphicsAllocation alloc3(nullptr, 3);
+    MockGraphicsAllocation alloc4(nullptr, 4);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc6(nullptr, 6);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     //14 bytes consumed
     cmdBuffer->surfaces.push_back(&alloc5);
@@ -212,7 +207,7 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenTheyAreAggreagateWith
     submissionsAggregator.recordCommandBuffer(cmdBuffer2);
     submissionsAggregator.recordCommandBuffer(cmdBuffer3);
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     //command buffer 2 is aggregated to command buffer 1, comand buffer 3 becomes command buffer 2
     EXPECT_EQ(submissionsAggregator.peekCommandBuffersList().peekHead(), cmdBuffer);
@@ -229,17 +224,19 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenTheyAreAggreagateWith
 
 TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenAggregateIsCalledMultipleTimesThenFurtherInspectionAreHandledCorrectly) {
     MockSubmissionAggregator submissionsAggregator;
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
-    CommandBuffer *cmdBuffer3 = new CommandBuffer;
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc2(nullptr, 2);
-    GraphicsAllocation alloc3(nullptr, 3);
-    GraphicsAllocation alloc4(nullptr, 4);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc6(nullptr, 6);
-    GraphicsAllocation alloc7(nullptr, 7);
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer3 = new CommandBuffer(*device);
+
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc2(nullptr, 2);
+    MockGraphicsAllocation alloc3(nullptr, 3);
+    MockGraphicsAllocation alloc4(nullptr, 4);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc6(nullptr, 6);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     //14 bytes consumed
     cmdBuffer->surfaces.push_back(&alloc5);
@@ -266,7 +263,7 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenAggregateIsCalledMult
     submissionsAggregator.recordCommandBuffer(cmdBuffer2);
     submissionsAggregator.recordCommandBuffer(cmdBuffer3);
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     //command buffers not aggregated due to too low limit
     EXPECT_EQ(submissionsAggregator.peekCommandBuffersList().peekHead(), cmdBuffer);
@@ -278,7 +275,7 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenAggregateIsCalledMult
     resourcePackage.clear();
     totalUsedSize = 0;
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
     //all cmd buffers are merged to 1
     EXPECT_EQ(cmdBuffer3->inspectionId, cmdBuffer2->inspectionId);
     EXPECT_EQ(cmdBuffer->inspectionId, cmdBuffer2->inspectionId);
@@ -292,13 +289,14 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWhenAggregateIsCalledMult
 TEST(SubmissionsAggregator, givenMultipleCommandBuffersWithDifferentGraphicsAllocationsWhenAggregateIsCalledThenResourcePackContainSecondBatchBuffer) {
     MockSubmissionAggregator submissionsAggregator;
 
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc2(nullptr, 2);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc7(nullptr, 7);
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc2(nullptr, 2);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     //5 bytes consumed
     cmdBuffer->surfaces.push_back(&alloc5);
@@ -315,7 +313,7 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWithDifferentGraphicsAllo
     submissionsAggregator.recordCommandBuffer(cmdBuffer);
     submissionsAggregator.recordCommandBuffer(cmdBuffer2);
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     EXPECT_EQ(4u, resourcePackage.size());
     EXPECT_EQ(15u, totalUsedSize);
@@ -324,13 +322,14 @@ TEST(SubmissionsAggregator, givenMultipleCommandBuffersWithDifferentGraphicsAllo
 TEST(SubmissionsAggregator, givenTwoCommandBufferWhereSecondContainsFirstOnResourceListWhenItIsAggregatedThenResourcePackDoesntContainPrimaryBatch) {
     MockSubmissionAggregator submissionsAggregator;
 
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
 
-    GraphicsAllocation cmdBufferAllocation1(nullptr, 1);
-    GraphicsAllocation cmdBufferAllocation2(nullptr, 2);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc7(nullptr, 7);
+    MockGraphicsAllocation cmdBufferAllocation1(nullptr, 1);
+    MockGraphicsAllocation cmdBufferAllocation2(nullptr, 2);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     cmdBuffer->batchBuffer.commandBufferAllocation = &cmdBufferAllocation1;
     cmdBuffer2->batchBuffer.commandBufferAllocation = &cmdBufferAllocation2;
@@ -348,7 +347,7 @@ TEST(SubmissionsAggregator, givenTwoCommandBufferWhereSecondContainsFirstOnResou
     submissionsAggregator.recordCommandBuffer(cmdBuffer);
     submissionsAggregator.recordCommandBuffer(cmdBuffer2);
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     //resource pack shuold have 3 surfaces
     EXPECT_EQ(3u, resourcePackage.size());
@@ -358,12 +357,13 @@ TEST(SubmissionsAggregator, givenTwoCommandBufferWhereSecondContainsFirstOnResou
 TEST(SubmissionsAggregator, givenTwoCommandBufferWhereSecondContainsTheFirstCommandBufferGraphicsAllocaitonWhenItIsAggregatedThenResourcePackDoesntContainPrimaryBatch) {
     MockSubmissionAggregator submissionsAggregator;
 
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
 
-    GraphicsAllocation cmdBufferAllocation1(nullptr, 1);
-    GraphicsAllocation alloc5(nullptr, 5);
-    GraphicsAllocation alloc7(nullptr, 7);
+    MockGraphicsAllocation cmdBufferAllocation1(nullptr, 1);
+    MockGraphicsAllocation alloc5(nullptr, 5);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     cmdBuffer->batchBuffer.commandBufferAllocation = &cmdBufferAllocation1;
     cmdBuffer2->batchBuffer.commandBufferAllocation = &cmdBufferAllocation1;
@@ -379,7 +379,7 @@ TEST(SubmissionsAggregator, givenTwoCommandBufferWhereSecondContainsTheFirstComm
     submissionsAggregator.recordCommandBuffer(cmdBuffer);
     submissionsAggregator.recordCommandBuffer(cmdBuffer2);
 
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
 
     //resource pack shuold have 3 surfaces
     EXPECT_EQ(2u, resourcePackage.size());
@@ -389,11 +389,12 @@ TEST(SubmissionsAggregator, givenTwoCommandBufferWhereSecondContainsTheFirstComm
 TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentCoherencySettingWhenAggregateIsCalledThenTheyAreNotAgggregated) {
     MockSubmissionAggregator submissionsAggregator;
 
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc7(nullptr, 7);
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     cmdBuffer->batchBuffer.requiresCoherency = true;
     cmdBuffer2->batchBuffer.requiresCoherency = false;
@@ -407,7 +408,7 @@ TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentCoherencySettin
     ResourcePackage resourcePackage;
     size_t totalUsedSize = 0;
     size_t totalMemoryBudget = 200;
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
     EXPECT_EQ(1u, totalUsedSize);
     EXPECT_EQ(1u, resourcePackage.size());
     EXPECT_NE(cmdBuffer->inspectionId, cmdBuffer2->inspectionId);
@@ -417,11 +418,12 @@ TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentCoherencySettin
 TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentThrottleSettingWhenAggregateIsCalledThenTheyAreNotAgggregated) {
     MockSubmissionAggregator submissionsAggregator;
 
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc7(nullptr, 7);
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     cmdBuffer->batchBuffer.throttle = QueueThrottle::LOW;
     cmdBuffer2->batchBuffer.throttle = QueueThrottle::MEDIUM;
@@ -435,7 +437,7 @@ TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentThrottleSetting
     ResourcePackage resourcePackage;
     size_t totalUsedSize = 0;
     size_t totalMemoryBudget = 200;
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
     EXPECT_EQ(1u, totalUsedSize);
     EXPECT_EQ(1u, resourcePackage.size());
     EXPECT_NE(cmdBuffer->inspectionId, cmdBuffer2->inspectionId);
@@ -445,11 +447,12 @@ TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentThrottleSetting
 TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentPrioritySettingWhenAggregateIsCalledThenTheyAreNotAgggregated) {
     MockSubmissionAggregator submissionsAggregator;
 
-    CommandBuffer *cmdBuffer = new CommandBuffer;
-    CommandBuffer *cmdBuffer2 = new CommandBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer2 = new CommandBuffer(*device);
 
-    GraphicsAllocation alloc1(nullptr, 1);
-    GraphicsAllocation alloc7(nullptr, 7);
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc7(nullptr, 7);
 
     cmdBuffer->batchBuffer.low_priority = true;
     cmdBuffer2->batchBuffer.low_priority = false;
@@ -463,7 +466,7 @@ TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentPrioritySetting
     ResourcePackage resourcePackage;
     size_t totalUsedSize = 0;
     size_t totalMemoryBudget = 200;
-    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 0u);
     EXPECT_EQ(1u, totalUsedSize);
     EXPECT_EQ(1u, resourcePackage.size());
     EXPECT_NE(cmdBuffer->inspectionId, cmdBuffer2->inspectionId);
@@ -471,8 +474,73 @@ TEST(SubmissionsAggregator, givenCommandBuffersRequiringDifferentPrioritySetting
 }
 
 TEST(SubmissionsAggregator, dontAllocateFlushStamp) {
-    CommandBuffer cmdBuffer;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer cmdBuffer(*device);
     EXPECT_EQ(nullptr, cmdBuffer.flushStamp->getStampReference());
+}
+
+TEST(SubmissionsAggregator, givenMultipleOsContextsWhenAggregatingGraphicsAllocationsThenUseInspectionIdCorrespondingWithOsContextId) {
+    SubmissionAggregator submissionsAggregator;
+    ResourcePackage resourcePackage;
+    const auto totalMemoryBudget = 3u;
+    size_t totalUsedSize = 0;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer0 = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer1 = new CommandBuffer(*device);
+
+    MockGraphicsAllocation alloc0(nullptr, 1);
+    MockGraphicsAllocation alloc1(nullptr, 1);
+    MockGraphicsAllocation alloc2(nullptr, 1);
+    MockGraphicsAllocation alloc3(nullptr, 1);
+
+    cmdBuffer0->surfaces.push_back(&alloc0);
+    cmdBuffer0->surfaces.push_back(&alloc1);
+    cmdBuffer1->surfaces.push_back(&alloc2);
+    cmdBuffer1->surfaces.push_back(&alloc3);
+
+    submissionsAggregator.recordCommandBuffer(cmdBuffer0);
+    submissionsAggregator.recordCommandBuffer(cmdBuffer1);
+
+    EXPECT_EQ(0u, alloc0.getInspectionId(1u));
+    EXPECT_EQ(0u, alloc1.getInspectionId(1u));
+    EXPECT_EQ(0u, alloc2.getInspectionId(1u));
+    EXPECT_EQ(0u, alloc3.getInspectionId(1u));
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 1u);
+    EXPECT_EQ(1u, alloc0.getInspectionId(1u));
+    EXPECT_EQ(1u, alloc1.getInspectionId(1u));
+    EXPECT_EQ(1u, alloc2.getInspectionId(1u));
+    EXPECT_EQ(1u, alloc3.getInspectionId(1u));
+}
+
+TEST(SubmissionsAggregator, givenMultipleOsContextsWhenAggregatingGraphicsAllocationsThenDoNotUpdateInspectionIdsOfOtherContexts) {
+    SubmissionAggregator submissionsAggregator;
+    ResourcePackage resourcePackage;
+    const auto totalMemoryBudget = 2u;
+    size_t totalUsedSize = 0;
+    std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    CommandBuffer *cmdBuffer0 = new CommandBuffer(*device);
+    CommandBuffer *cmdBuffer1 = new CommandBuffer(*device);
+
+    MockGraphicsAllocation alloc0(nullptr, 1);
+    MockGraphicsAllocation alloc1(nullptr, 1);
+
+    cmdBuffer0->surfaces.push_back(&alloc0);
+    cmdBuffer0->surfaces.push_back(&alloc1);
+
+    submissionsAggregator.recordCommandBuffer(cmdBuffer0);
+    submissionsAggregator.recordCommandBuffer(cmdBuffer1);
+    submissionsAggregator.aggregateCommandBuffers(resourcePackage, totalUsedSize, totalMemoryBudget, 1u);
+
+    for (auto osContextId = 0u; osContextId < alloc1.usageInfos.size(); osContextId++) {
+        if (osContextId != 1u) {
+            EXPECT_EQ(0u, alloc0.getInspectionId(osContextId));
+        }
+    }
+    for (auto osContextId = 0u; osContextId < alloc0.usageInfos.size(); osContextId++) {
+        if (osContextId != 1u) {
+            EXPECT_EQ(0u, alloc0.getInspectionId(osContextId));
+        }
+    }
 }
 
 struct SubmissionsAggregatorTests : public ::testing::Test {
@@ -481,8 +549,7 @@ struct SubmissionsAggregatorTests : public ::testing::Test {
         context.reset(new MockContext(device.get()));
     }
 
-    template <typename T>
-    void overrideCsr(T *newCsr) {
+    void overrideCsr(CommandStreamReceiver *newCsr) {
         device->resetCommandStreamReceiver(newCsr);
         newCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
     }
@@ -495,7 +562,7 @@ HWTEST_F(SubmissionsAggregatorTests, givenMultipleQueuesWhenCmdBuffersAreRecorde
     MockKernelWithInternals kernel(*device.get());
     CommandQueueHw<FamilyType> cmdQ1(context.get(), device.get(), 0);
     CommandQueueHw<FamilyType> cmdQ2(context.get(), device.get(), 0);
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*device->executionEnvironment);
     size_t GWS = 1;
 
     overrideCsr(mockCsr);
@@ -527,7 +594,7 @@ HWTEST_F(SubmissionsAggregatorTests, givenMultipleQueuesWhenCmdBuffersAreRecorde
 HWTEST_F(SubmissionsAggregatorTests, givenCmdQueueWhenCmdBufferWithEventIsRecordedThenAssignFlushStampObjForEveryone) {
     MockKernelWithInternals kernel(*device.get());
     CommandQueueHw<FamilyType> cmdQ1(context.get(), device.get(), 0);
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*device->executionEnvironment);
     size_t GWS = 1;
 
     overrideCsr(mockCsr);
@@ -553,7 +620,7 @@ HWTEST_F(SubmissionsAggregatorTests, givenMultipleCmdBuffersWhenFlushThenUpdateA
     MockKernelWithInternals kernel(*device.get());
     CommandQueueHw<FamilyType> cmdQ1(context.get(), device.get(), 0);
     CommandQueueHw<FamilyType> cmdQ2(context.get(), device.get(), 0);
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*device->executionEnvironment);
     size_t GWS = 1;
 
     overrideCsr(mockCsr);
@@ -580,7 +647,7 @@ HWTEST_F(SubmissionsAggregatorTests, givenMultipleCmdBuffersWhenNotAggregatedDur
     MockKernelWithInternals kernel(*device.get());
     CommandQueueHw<FamilyType> cmdQ1(context.get(), device.get(), 0);
     CommandQueueHw<FamilyType> cmdQ2(context.get(), device.get(), 0);
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*device->executionEnvironment);
     size_t GWS = 1;
 
     overrideCsr(mockCsr);

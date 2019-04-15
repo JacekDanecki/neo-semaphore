@@ -1,33 +1,19 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/sharings/d3d/d3d_sharing.h"
+
 #include "gmock/gmock.h"
 using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::SetArgPointee;
 
-namespace OCLRT {
+namespace NEO {
 template <typename D3D>
 class MockD3DSharingFunctions : public D3DSharingFunctions<D3D> {
     typedef typename D3D::D3DDevice D3DDevice;
@@ -70,6 +56,8 @@ class MockD3DSharingFunctions : public D3DSharingFunctions<D3D> {
     MOCK_METHOD2_T(getRenderTargetData, void(D3DTexture2d *renderTarget, D3DTexture2d *dstSurface));
     MOCK_METHOD2_T(updateSurface, void(D3DTexture2d *src, D3DTexture2d *dst));
     MOCK_METHOD1_T(updateDevice, void(D3DResource *resource));
+    MOCK_METHOD2_T(checkFormatSupport, void(DXGI_FORMAT format, UINT *pFormat));
+    MOCK_METHOD2_T(memObjectFormatSupport, bool(cl_mem_object_type object, UINT format));
 
     std::vector<std::pair<D3DResource *, cl_uint>> *getTrackedResourcesVector() { return &this->trackedResources; }
 
@@ -87,4 +75,4 @@ class MockD3DSharingFunctions : public D3DSharingFunctions<D3D> {
         *dxgiDesc = mockDxgiDesc;
     }
 };
-} // namespace OCLRT
+} // namespace NEO

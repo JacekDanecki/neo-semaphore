@@ -1,29 +1,13 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/device/device.h"
-#include "hw_cmds.h"
+
 #include "runtime/built_ins/built_ins.h"
-#include "runtime/built_ins/sip.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/device_command_stream.h"
 #include "runtime/command_stream/experimental_command_buffer.h"
@@ -32,17 +16,21 @@
 #include "runtime/device/device_vector.h"
 #include "runtime/device/driver_info.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/built_ins_helper.h"
 #include "runtime/helpers/debug_helpers.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "runtime/os_interface/os_context.h"
 #include "runtime/os_interface/os_interface.h"
 #include "runtime/os_interface/os_time.h"
 #include "runtime/source_level_debugger/source_level_debugger.h"
+
+#include "hw_cmds.h"
+
 #include <cstring>
 #include <map>
 
-namespace OCLRT {
+namespace NEO {
 
 decltype(&PerformanceCounters::create) Device::createPerformanceCountersFunc = PerformanceCounters::create;
 
@@ -63,7 +51,7 @@ void DeviceVector::toDeviceIDs(std::vector<cl_device_id> &devIDs) {
     }
 }
 
-CommandStreamReceiver *createCommandStream(const HardwareInfo *pHwInfo);
+CommandStreamReceiver *createCommandStream(ExecutionEnvironment &executionEnvironment);
 
 // Global table of hardware prefixes
 const char *hardwarePrefix[IGFX_MAX_PRODUCT] = {
@@ -78,115 +66,130 @@ bool familyEnabled[IGFX_MAX_CORE] = {
     false,
 };
 
-Device::Device(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment)
-    : enabledClVersion(false), hwInfo(hwInfo), tagAddress(nullptr), preemptionAllocation(nullptr),
-      osTime(nullptr), slmWindowStartAddress(nullptr), executionEnvironment(executionEnvironment) {
+Device::Device(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex)
+    : hwInfo(hwInfo), executionEnvironment(executionEnvironment), deviceIndex(deviceIndex) {
     memset(&deviceInfo, 0, sizeof(deviceInfo));
     deviceExtensions.reserve(1000);
     name.reserve(100);
     preemptionMode = PreemptionHelper::getDefaultPreemptionMode(hwInfo);
-    engineType = DebugManager.flags.NodeOrdinal.get() == -1
-                     ? hwInfo.capabilityTable.defaultEngineType
-                     : static_cast<EngineType>(DebugManager.flags.NodeOrdinal.get());
+
     if (!getSourceLevelDebugger()) {
-        this->executionEnvironment->initSourceLevelDebugger(hwInfo);
+        this->executionEnvironment->initSourceLevelDebugger();
     }
     this->executionEnvironment->incRefInternal();
+    auto &hwHelper = HwHelper::get(hwInfo.pPlatform->eRenderCoreFamily);
+    hwHelper.setupHardwareCapabilities(&this->hardwareCapabilities, hwInfo);
 }
 
 Device::~Device() {
-    BuiltIns::shutDown();
-    CompilerInterface::shutdown();
     DEBUG_BREAK_IF(nullptr == executionEnvironment->memoryManager.get());
     if (performanceCounters) {
         performanceCounters->shutdown();
     }
 
-    if (executionEnvironment->commandStreamReceiver) {
-        executionEnvironment->commandStreamReceiver->flushBatchedSubmissions();
+    for (auto &engine : engines) {
+        engine.commandStreamReceiver->flushBatchedSubmissions();
     }
 
     if (deviceInfo.sourceLevelDebuggerActive && executionEnvironment->sourceLevelDebugger) {
         executionEnvironment->sourceLevelDebugger->notifyDeviceDestruction();
     }
 
-    if (executionEnvironment->memoryManager) {
-        if (preemptionAllocation) {
-            executionEnvironment->memoryManager->freeGraphicsMemory(preemptionAllocation);
-            preemptionAllocation = nullptr;
-        }
-        executionEnvironment->memoryManager->waitForDeletions();
-
-        alignedFree(this->slmWindowStartAddress);
+    if (preemptionAllocation) {
+        executionEnvironment->memoryManager->freeGraphicsMemory(preemptionAllocation);
+        preemptionAllocation = nullptr;
     }
+    executionEnvironment->memoryManager->waitForDeletions();
+
+    alignedFree(this->slmWindowStartAddress);
     executionEnvironment->decRefInternal();
 }
 
-bool Device::createDeviceImpl(const HardwareInfo *pHwInfo, Device &outDevice) {
-    auto executionEnvironment = outDevice.executionEnvironment;
-    executionEnvironment->initGmm(pHwInfo);
-    if (!executionEnvironment->initializeCommandStreamReceiver(pHwInfo)) {
+bool Device::createDeviceImpl(const HardwareInfo *pHwInfo) {
+    executionEnvironment->initGmm();
+
+    if (!createEngines(pHwInfo)) {
         return false;
     }
 
-    executionEnvironment->initializeMemoryManager(outDevice.getEnabled64kbPages());
+    executionEnvironment->memoryManager->setDefaultEngineIndex(defaultEngineIndex);
 
-    CommandStreamReceiver *commandStreamReceiver = executionEnvironment->commandStreamReceiver.get();
-    if (!commandStreamReceiver->initializeTagAllocation()) {
-        return false;
+    auto osInterface = executionEnvironment->osInterface.get();
+
+    if (!osTime) {
+        osTime = OSTime::create(osInterface);
     }
+    driverInfo.reset(DriverInfo::create(osInterface));
 
-    executionEnvironment->memoryManager->csr = commandStreamReceiver;
+    initializeCaps();
 
-    auto pDevice = &outDevice;
-    if (!pDevice->osTime) {
-        pDevice->osTime = OSTime::create(commandStreamReceiver->getOSInterface());
-    }
-    pDevice->driverInfo.reset(DriverInfo::create(commandStreamReceiver->getOSInterface()));
-    pDevice->tagAddress = reinterpret_cast<uint32_t *>(commandStreamReceiver->getTagAllocation()->getUnderlyingBuffer());
-
-    // Initialize HW tag to a known value
-    *pDevice->tagAddress = DebugManager.flags.EnableNullHardware.get() ? -1 : initialHardwareTag;
-
-    pDevice->initializeCaps();
-
-    if (pDevice->osTime->getOSInterface()) {
+    if (osTime->getOSInterface()) {
         if (pHwInfo->capabilityTable.instrumentationEnabled) {
-            pDevice->performanceCounters = createPerformanceCountersFunc(pDevice->osTime.get());
-            pDevice->performanceCounters->initialize(pHwInfo);
+            performanceCounters = createPerformanceCountersFunc(osTime.get());
+            performanceCounters->initialize(pHwInfo);
         }
     }
 
     uint32_t deviceHandle = 0;
-    if (commandStreamReceiver->getOSInterface()) {
-        deviceHandle = commandStreamReceiver->getOSInterface()->getDeviceHandle();
+    if (osInterface) {
+        deviceHandle = osInterface->getDeviceHandle();
     }
 
-    if (pDevice->deviceInfo.sourceLevelDebuggerActive) {
-        pDevice->executionEnvironment->sourceLevelDebugger->notifyNewDevice(deviceHandle);
+    if (deviceInfo.sourceLevelDebuggerActive) {
+        executionEnvironment->sourceLevelDebugger->notifyNewDevice(deviceHandle);
     }
 
-    outDevice.executionEnvironment->memoryManager->setForce32BitAllocations(pDevice->getDeviceInfo().force32BitAddressess);
-    outDevice.executionEnvironment->memoryManager->device = pDevice;
+    executionEnvironment->memoryManager->setForce32BitAllocations(getDeviceInfo().force32BitAddressess);
 
-    if (pDevice->preemptionMode == PreemptionMode::MidThread || pDevice->isSourceLevelDebuggerActive()) {
-        size_t requiredSize = pHwInfo->capabilityTable.requiredPreemptionSurfaceSize;
-        size_t alignment = 256 * MemoryConstants::kiloByte;
-        bool uncacheable = pDevice->getWaTable()->waCSRUncachable;
-        pDevice->preemptionAllocation = outDevice.executionEnvironment->memoryManager->allocateGraphicsMemory(requiredSize, alignment, false, uncacheable);
-        if (!pDevice->preemptionAllocation) {
+    if (preemptionMode == PreemptionMode::MidThread || isSourceLevelDebuggerActive()) {
+        AllocationProperties properties(true, pHwInfo->capabilityTable.requiredPreemptionSurfaceSize, GraphicsAllocation::AllocationType::UNDECIDED);
+        properties.flags.uncacheable = getWaTable()->waCSRUncachable;
+        properties.alignment = 256 * MemoryConstants::kiloByte;
+        preemptionAllocation = executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(properties);
+        if (!preemptionAllocation) {
             return false;
         }
-        commandStreamReceiver->setPreemptionCsrAllocation(pDevice->preemptionAllocation);
-        auto sipType = SipKernel::getSipKernelType(pHwInfo->pPlatform->eRenderCoreFamily, pDevice->isSourceLevelDebuggerActive());
-        initSipKernel(sipType, *pDevice);
     }
 
-    if (DebugManager.flags.EnableExperimentalCommandBuffer.get() > 0) {
-        commandStreamReceiver->setExperimentalCmdBuffer(
-            std::unique_ptr<ExperimentalCommandBuffer>(new ExperimentalCommandBuffer(commandStreamReceiver, pDevice->getDeviceInfo().profilingTimerResolution)));
+    for (auto &engine : engines) {
+        auto csr = engine.commandStreamReceiver;
+        csr->setPreemptionCsrAllocation(preemptionAllocation);
+        if (DebugManager.flags.EnableExperimentalCommandBuffer.get() > 0) {
+            csr->setExperimentalCmdBuffer(std::make_unique<ExperimentalCommandBuffer>(csr, getDeviceInfo().profilingTimerResolution));
+        }
     }
 
+    return true;
+}
+
+bool Device::createEngines(const HardwareInfo *pHwInfo) {
+    auto defaultEngineType = getChosenEngineType(*pHwInfo);
+    auto &gpgpuEngines = HwHelper::get(pHwInfo->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances();
+
+    for (uint32_t deviceCsrIndex = 0; deviceCsrIndex < gpgpuEngines.size(); deviceCsrIndex++) {
+        if (!executionEnvironment->initializeCommandStreamReceiver(getDeviceIndex(), deviceCsrIndex)) {
+            return false;
+        }
+
+        auto commandStreamReceiver = executionEnvironment->commandStreamReceivers[getDeviceIndex()][deviceCsrIndex].get();
+
+        DeviceBitfield deviceBitfield;
+        deviceBitfield.set(getDeviceIndex());
+        bool lowPriority = deviceCsrIndex == HwHelper::lowPriorityGpgpuEngineIndex;
+        auto osContext = executionEnvironment->memoryManager->createAndRegisterOsContext(commandStreamReceiver, gpgpuEngines[deviceCsrIndex],
+                                                                                         deviceBitfield, preemptionMode, lowPriority);
+        commandStreamReceiver->setupContext(*osContext);
+
+        if (!commandStreamReceiver->initializeTagAllocation()) {
+            return false;
+        }
+
+        if (gpgpuEngines[deviceCsrIndex] == defaultEngineType && !lowPriority) {
+            defaultEngineIndex = deviceCsrIndex;
+        }
+
+        engines.push_back({commandStreamReceiver, osContext});
+    }
     return true;
 }
 
@@ -247,7 +250,7 @@ unique_ptr_if_unused<Device> Device::release() {
 
 bool Device::isSimulation() const {
     bool simulation = hwInfo.capabilityTable.isSimulation(hwInfo.pPlatform->usDeviceID);
-    if (executionEnvironment->commandStreamReceiver->getType() != CommandStreamReceiverType::CSR_HW) {
+    if (engines[0].commandStreamReceiver->getType() != CommandStreamReceiverType::CSR_HW) {
         simulation = true;
     }
     if (hwInfo.pSkuTable->ftrSimulationMode) {
@@ -268,4 +271,23 @@ GFXCORE_FAMILY Device::getRenderCoreFamily() const {
 bool Device::isSourceLevelDebuggerActive() const {
     return deviceInfo.sourceLevelDebuggerActive;
 }
-} // namespace OCLRT
+
+void Device::initMaxPowerSavingMode() {
+    for (auto &engine : engines) {
+        engine.commandStreamReceiver->peekKmdNotifyHelper()->initMaxPowerSavingMode();
+    }
+}
+
+EngineControl &Device::getEngine(aub_stream::EngineType engineType, bool lowPriority) {
+    for (auto &engine : engines) {
+        if (engine.osContext->getEngineType() == engineType &&
+            engine.osContext->isLowPriority() == lowPriority) {
+            return engine;
+        }
+    }
+    if (DebugManager.flags.OverrideInvalidEngineWithDefault.get()) {
+        return engines[0];
+    }
+    UNRECOVERABLE_IF(true);
+}
+} // namespace NEO

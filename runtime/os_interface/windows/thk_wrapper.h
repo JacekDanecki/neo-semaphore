@@ -1,29 +1,16 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/utilities/api_intercept.h"
 
-namespace OCLRT {
+#include <d3dkmthk.h>
+
+namespace NEO {
 // IDs for easy system times identification
 enum SystemCallsIds {
     SYSTIMER_ID_OPENADAPTERFROMHDC = 1,
@@ -95,8 +82,7 @@ class ThkWrapper {
             SYSTEM_ENTER()
             NTSTATUS Status;
             Status = mFunc(param);
-            unsigned int ID = getId<Param>();
-            SYSTEM_LEAVE(ID);
+            SYSTEM_LEAVE(getId<Param>());
             return Status;
         } else {
             return mFunc(param);
@@ -148,7 +134,7 @@ class ThkWrapper {
     GET_ID(D3DKMT_CREATESYNCHRONIZATIONOBJECT *, SYSTIMER_ID_CREATESYNCHRONIZATIONOBJECT)
     GET_ID(CONST D3DKMT_DESTROYSYNCHRONIZATIONOBJECT *, SYSTIMER_ID_DESTROYSYNCHRONIZATIONOBJECT)
     GET_ID(CONST D3DKMT_SIGNALSYNCHRONIZATIONOBJECT *, SYSTIMER_ID_SIGNALSYNCHRONIZATIONOBJECT)
-    GET_ID(D3DKMT_WAITFORSYNCHRONIZATIONOBJECT *, SYSTIMER_ID_WAITFORSYNCHRONIZATIONOBJECT)
+    GET_ID(CONST_FROM_WDK_10_0_18328_0 D3DKMT_WAITFORSYNCHRONIZATIONOBJECT *, SYSTIMER_ID_WAITFORSYNCHRONIZATIONOBJECT)
     GET_ID(D3DKMT_CREATESYNCHRONIZATIONOBJECT2 *, SYSTIMER_ID_CREATESYNCHRONIZATIONOBJECT2)
     GET_ID(D3DKMT_GETDEVICESTATE *, SYSTIMER_ID_GETDEVICESTATE)
     GET_ID(D3DDDI_MAKERESIDENT *, SYSTIMER_ID_MAKERESIDENT)
@@ -179,4 +165,4 @@ class ThkWrapper {
     GET_ID(CONST D3DKMT_DESTROYHWQUEUE *, SYSTIMER_ID_DESTROYHWQUEUE)
     GET_ID(CONST D3DKMT_SUBMITCOMMANDTOHWQUEUE *, SYSTIMER_ID_SUBMITCOMMANDTOHWQUEUE)
 };
-} // namespace OCLRT
+} // namespace NEO

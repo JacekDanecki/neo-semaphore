@@ -1,47 +1,36 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "igfxfmid.h"
+#include "runtime/os_interface/linux/memory_info.h"
 #include "runtime/utilities/api_intercept.h"
 
-#include <sys/ioctl.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include "igfxfmid.h"
+
 #include <cerrno>
+#include <fcntl.h>
+#include <memory>
 #include <string>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 struct GT_SYSTEM_INFO;
 
-namespace OCLRT {
+namespace NEO {
 #define I915_CONTEXT_PRIVATE_PARAM_BOOST 0x80000000
 
 class DeviceFactory;
 struct HardwareInfo;
+struct FeatureTable;
 
 struct DeviceDescriptor {
     unsigned short deviceId;
     const HardwareInfo *pHwInfo;
-    void (*setupGtSystemInfo)(GT_SYSTEM_INFO *);
+    void (*setupHardwareInfo)(GT_SYSTEM_INFO *, FeatureTable *, bool);
     GTTYPE eGtType;
 };
 
@@ -51,8 +40,9 @@ class Drm {
     friend DeviceFactory;
 
   public:
-    uint32_t lowPriorityContextId;
     static Drm *get(int32_t deviceOrdinal);
+
+    virtual ~Drm();
 
     virtual int ioctl(unsigned long request, void *arg);
 
@@ -68,23 +58,33 @@ class Drm {
     int getMinEuInPool(int &minEUinPool);
 
     bool is48BitAddressRangeSupported();
-    MOCKABLE_VIRTUAL bool hasPreemption();
-    bool setLowPriority();
+    bool isPreemptionSupported() const { return preemptionSupported; }
+    MOCKABLE_VIRTUAL void checkPreemptionSupport();
     int getFileDescriptor() const { return fd; }
-    bool contextCreate();
-    void contextDestroy();
+    uint32_t createDrmContext();
+    void destroyDrmContext(uint32_t drmContextId);
+    void setLowPriorityContextParam(uint32_t drmContextId);
 
     void setGtType(GTTYPE eGtType) { this->eGtType = eGtType; }
     GTTYPE getGtType() const { return this->eGtType; }
     MOCKABLE_VIRTUAL int getErrno();
+    void setSimplifiedMocsTableUsage(bool value);
+    bool getSimplifiedMocsTableUsage() const;
+    void queryMemoryInfo();
+
+    MemoryInfo *getMemoryInfo() {
+        return memoryInfo.get();
+    }
 
   protected:
+    bool useSimplifiedMocsTable = false;
+    bool preemptionSupported = false;
     int fd;
     int deviceId;
     int revisionId;
     GTTYPE eGtType;
-    Drm(int fd) : lowPriorityContextId(0), fd(fd), deviceId(0), revisionId(0), eGtType(GTTYPE_UNDEFINED) {}
-    virtual ~Drm();
+    Drm(int fd) : fd(fd), deviceId(0), revisionId(0), eGtType(GTTYPE_UNDEFINED) {}
+    std::unique_ptr<MemoryInfo> memoryInfo;
 
     static bool isi915Version(int fd);
     static int getDeviceFd(const int devType);
@@ -128,4 +128,4 @@ class Drm {
   private:
     int getParamIoctl(int param, int *dstValue);
 };
-} // namespace OCLRT
+} // namespace NEO

@@ -1,57 +1,47 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/command_stream/command_stream_receiver_with_aub_dump.h"
+#include "runtime/aub/aub_center.h"
 #include "runtime/command_stream/aub_command_stream_receiver.h"
+#include "runtime/command_stream/command_stream_receiver_with_aub_dump.h"
+#include "runtime/execution_environment/execution_environment.h"
 
-namespace OCLRT {
+namespace NEO {
 
 extern CommandStreamReceiverCreateFunc commandStreamReceiverFactory[2 * IGFX_MAX_CORE];
 
 template <typename BaseCSR>
-CommandStreamReceiverWithAUBDump<BaseCSR>::CommandStreamReceiverWithAUBDump(const HardwareInfo &hwInfoIn)
-    : BaseCSR(hwInfoIn, nullptr) {
-    aubCSR = AUBCommandStreamReceiver::create(hwInfoIn, "aubfile", false);
-}
-
-template <typename BaseCSR>
-CommandStreamReceiverWithAUBDump<BaseCSR>::~CommandStreamReceiverWithAUBDump() {
-    delete aubCSR;
-}
-
-template <typename BaseCSR>
-FlushStamp CommandStreamReceiverWithAUBDump<BaseCSR>::flush(BatchBuffer &batchBuffer, EngineType engineOrdinal, ResidencyContainer *allocationsForResidency) {
-    FlushStamp flushStamp = BaseCSR::flush(batchBuffer, engineOrdinal, allocationsForResidency);
-    if (aubCSR) {
-        aubCSR->flush(batchBuffer, engineOrdinal, allocationsForResidency);
+CommandStreamReceiverWithAUBDump<BaseCSR>::CommandStreamReceiverWithAUBDump(const std::string &baseName, ExecutionEnvironment &executionEnvironment)
+    : BaseCSR(executionEnvironment) {
+    bool isAubManager = executionEnvironment.aubCenter && executionEnvironment.aubCenter->getAubManager();
+    bool isTbxMode = CommandStreamReceiverType::CSR_TBX == BaseCSR::getType();
+    bool createAubCsr = (isAubManager && isTbxMode) ? false : true;
+    if (createAubCsr) {
+        aubCSR.reset(AUBCommandStreamReceiver::create(baseName, false, executionEnvironment));
     }
+}
+
+template <typename BaseCSR>
+FlushStamp CommandStreamReceiverWithAUBDump<BaseCSR>::flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) {
+    if (aubCSR) {
+        aubCSR->flush(batchBuffer, allocationsForResidency);
+        aubCSR->setLatestSentTaskCount(BaseCSR::peekLatestSentTaskCount());
+    }
+    FlushStamp flushStamp = BaseCSR::flush(batchBuffer, allocationsForResidency);
     return flushStamp;
 }
 
 template <typename BaseCSR>
-void CommandStreamReceiverWithAUBDump<BaseCSR>::processResidency(ResidencyContainer *allocationsForResidency) {
-    BaseCSR::processResidency(allocationsForResidency);
+void CommandStreamReceiverWithAUBDump<BaseCSR>::makeNonResident(GraphicsAllocation &gfxAllocation) {
+    auto residencyTaskCount = gfxAllocation.getResidencyTaskCount(this->osContext->getContextId());
+    BaseCSR::makeNonResident(gfxAllocation);
     if (aubCSR) {
-        aubCSR->processResidency(allocationsForResidency);
+        gfxAllocation.updateResidencyTaskCount(residencyTaskCount, this->osContext->getContextId());
+        aubCSR->makeNonResident(gfxAllocation);
     }
 }
 
@@ -64,12 +54,10 @@ void CommandStreamReceiverWithAUBDump<BaseCSR>::activateAubSubCapture(const Mult
 }
 
 template <typename BaseCSR>
-MemoryManager *CommandStreamReceiverWithAUBDump<BaseCSR>::createMemoryManager(bool enable64kbPages) {
-    auto memoryManager = BaseCSR::createMemoryManager(enable64kbPages);
+void CommandStreamReceiverWithAUBDump<BaseCSR>::setupContext(OsContext &osContext) {
+    BaseCSR::setupContext(osContext);
     if (aubCSR) {
-        aubCSR->setMemoryManager(memoryManager);
+        aubCSR->setupContext(osContext);
     }
-    return memoryManager;
 }
-
-} // namespace OCLRT
+} // namespace NEO

@@ -1,33 +1,20 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
 #include "submissions_aggregator.h"
+
 #include "runtime/helpers/flush_stamp.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 
-void OCLRT::SubmissionAggregator::recordCommandBuffer(CommandBuffer *commandBuffer) {
+void NEO::SubmissionAggregator::recordCommandBuffer(CommandBuffer *commandBuffer) {
     this->cmdBuffers.pushTailOne(*commandBuffer);
 }
 
-void OCLRT::SubmissionAggregator::aggregateCommandBuffers(ResourcePackage &resourcePackage, size_t &totalUsedSize, size_t totalMemoryBudget) {
+void NEO::SubmissionAggregator::aggregateCommandBuffers(ResourcePackage &resourcePackage, size_t &totalUsedSize, size_t totalMemoryBudget, uint32_t osContextId) {
     auto primaryCommandBuffer = this->cmdBuffers.peekHead();
     auto currentInspection = this->inspectionId;
 
@@ -41,8 +28,8 @@ void OCLRT::SubmissionAggregator::aggregateCommandBuffers(ResourcePackage &resou
 
     //primary command buffers must fix to budget
     for (auto &graphicsAllocation : primaryCommandBuffer->surfaces) {
-        if (graphicsAllocation->inspectionId < currentInspection) {
-            graphicsAllocation->inspectionId = currentInspection;
+        if (graphicsAllocation->getInspectionId(osContextId) < currentInspection) {
+            graphicsAllocation->setInspectionId(currentInspection, osContextId);
             resourcePackage.push_back(graphicsAllocation);
             totalUsedSize += graphicsAllocation->getUnderlyingBufferSize();
         }
@@ -76,16 +63,16 @@ void OCLRT::SubmissionAggregator::aggregateCommandBuffers(ResourcePackage &resou
             if (graphicsAllocation == primaryBatchGraphicsAllocation) {
                 continue;
             }
-            if (graphicsAllocation->inspectionId < currentInspection) {
-                graphicsAllocation->inspectionId = currentInspection;
+            if (graphicsAllocation->getInspectionId(osContextId) < currentInspection) {
+                graphicsAllocation->setInspectionId(currentInspection, osContextId);
                 newResources.push_back(graphicsAllocation);
                 nextCommandBufferNewResourcesSize += graphicsAllocation->getUnderlyingBufferSize();
             }
         }
 
         if (nextCommandBuffer->batchBuffer.commandBufferAllocation && (nextCommandBuffer->batchBuffer.commandBufferAllocation != primaryBatchGraphicsAllocation)) {
-            if (nextCommandBuffer->batchBuffer.commandBufferAllocation->inspectionId < currentInspection) {
-                nextCommandBuffer->batchBuffer.commandBufferAllocation->inspectionId = currentInspection;
+            if (nextCommandBuffer->batchBuffer.commandBufferAllocation->getInspectionId(osContextId) < currentInspection) {
+                nextCommandBuffer->batchBuffer.commandBufferAllocation->setInspectionId(currentInspection, osContextId);
                 newResources.push_back(nextCommandBuffer->batchBuffer.commandBufferAllocation);
                 nextCommandBufferNewResourcesSize += nextCommandBuffer->batchBuffer.commandBufferAllocation->getUnderlyingBufferSize();
             }
@@ -107,9 +94,9 @@ void OCLRT::SubmissionAggregator::aggregateCommandBuffers(ResourcePackage &resou
     }
 }
 
-OCLRT::BatchBuffer::BatchBuffer(GraphicsAllocation *commandBufferAllocation, size_t startOffset, size_t chainedBatchBufferStartOffset, GraphicsAllocation *chainedBatchBuffer, bool requiresCoherency, bool lowPriority, QueueThrottle throttle, size_t usedSize, LinearStream *stream) : commandBufferAllocation(commandBufferAllocation), startOffset(startOffset), chainedBatchBufferStartOffset(chainedBatchBufferStartOffset), chainedBatchBuffer(chainedBatchBuffer), requiresCoherency(requiresCoherency), low_priority(lowPriority), throttle(throttle), usedSize(usedSize), stream(stream) {
+NEO::BatchBuffer::BatchBuffer(GraphicsAllocation *commandBufferAllocation, size_t startOffset, size_t chainedBatchBufferStartOffset, GraphicsAllocation *chainedBatchBuffer, bool requiresCoherency, bool lowPriority, QueueThrottle throttle, size_t usedSize, LinearStream *stream) : commandBufferAllocation(commandBufferAllocation), startOffset(startOffset), chainedBatchBufferStartOffset(chainedBatchBufferStartOffset), chainedBatchBuffer(chainedBatchBuffer), requiresCoherency(requiresCoherency), low_priority(lowPriority), throttle(throttle), usedSize(usedSize), stream(stream) {
 }
 
-OCLRT::CommandBuffer::CommandBuffer() {
+NEO::CommandBuffer::CommandBuffer(Device &device) : device(device) {
     flushStamp.reset(new FlushStampTracker(false));
 }

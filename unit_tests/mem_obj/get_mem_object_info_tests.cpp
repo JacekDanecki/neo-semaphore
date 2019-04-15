@@ -1,36 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/aligned_memory.h"
-#include "unit_tests/fixtures/buffer_fixture.h"
-#include "unit_tests/fixtures/platform_fixture.h"
-#include "unit_tests/fixtures/device_fixture.h"
 #include "runtime/helpers/options.h"
+#include "runtime/helpers/ptr_math.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+#include "unit_tests/fixtures/buffer_fixture.h"
+#include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/fixtures/platform_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_context.h"
+
 #include "gtest/gtest.h"
+
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class GetMemObjectInfo : public ::testing::Test, public PlatformFixture, public DeviceFixture {
     using DeviceFixture::SetUp;
@@ -45,8 +34,8 @@ class GetMemObjectInfo : public ::testing::Test, public PlatformFixture, public 
 
     void TearDown() override {
         delete BufferDefaults::context;
-        PlatformFixture::TearDown();
         DeviceFixture::TearDown();
+        PlatformFixture::TearDown();
     }
 };
 
@@ -320,4 +309,62 @@ TEST_F(GetMemObjectInfo, MEM_REFERENCE_COUNT) {
         &sizeReturned);
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(sizeof(refCount), sizeReturned);
+}
+
+class GetMemObjectInfoLocalMemory : public GetMemObjectInfo {
+    using GetMemObjectInfo::SetUp;
+
+  public:
+    void SetUp() override {
+        dbgRestore = std::make_unique<DebugManagerStateRestore>();
+        DebugManager.flags.EnableLocalMemory.set(1);
+        GetMemObjectInfo::SetUp();
+
+        delete BufferDefaults::context;
+        BufferDefaults::context = new MockContext(pDevice, true);
+    }
+
+    std::unique_ptr<DebugManagerStateRestore> dbgRestore;
+};
+
+TEST_F(GetMemObjectInfoLocalMemory, givenLocalMemoryEnabledWhenNoZeroCopySvmAllocationUsedThenBufferAllocationInheritsZeroCopyFlag) {
+    const DeviceInfo &devInfo = pDevice->getDeviceInfo();
+    if (devInfo.svmCapabilities != 0) {
+        auto hostPtr = clSVMAlloc(BufferDefaults::context, CL_MEM_READ_WRITE, BufferUseHostPtr<>::sizeInBytes, 64);
+        ASSERT_NE(nullptr, hostPtr);
+        cl_int retVal;
+
+        auto buffer = Buffer::create(
+            BufferDefaults::context,
+            CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR,
+            BufferUseHostPtr<>::sizeInBytes,
+            hostPtr,
+            retVal);
+
+        size_t sizeReturned = 0;
+        cl_bool usesSVMPointer = false;
+
+        retVal = buffer->getMemObjectInfo(
+            CL_MEM_USES_SVM_POINTER,
+            0,
+            nullptr,
+            &sizeReturned);
+        EXPECT_EQ(CL_SUCCESS, retVal);
+        EXPECT_EQ(sizeof(usesSVMPointer), sizeReturned);
+
+        retVal = buffer->getMemObjectInfo(
+            CL_MEM_USES_SVM_POINTER,
+            sizeof(usesSVMPointer),
+            &usesSVMPointer,
+            nullptr);
+
+        EXPECT_EQ(CL_SUCCESS, retVal);
+        EXPECT_EQ(static_cast<cl_bool>(CL_TRUE), usesSVMPointer);
+
+        EXPECT_TRUE(buffer->isMemObjWithHostPtrSVM());
+        EXPECT_FALSE(buffer->isMemObjZeroCopy());
+
+        delete buffer;
+        clSVMFree(BufferDefaults::context, hostPtr);
+    }
 }

@@ -1,39 +1,27 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/api/cl_types.h"
 #include "runtime/command_stream/thread_arbitration_policy.h"
 #include "runtime/device_queue/device_queue.h"
+#include "runtime/helpers/address_patch.h"
 #include "runtime/helpers/base_object.h"
 #include "runtime/helpers/preamble.h"
-#include "runtime/helpers/address_patch.h"
-#include "runtime/program/program.h"
-#include "runtime/program/kernel_info.h"
+#include "runtime/helpers/properties_helper.h"
 #include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/program/kernel_info.h"
+#include "runtime/program/program.h"
+
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 struct CompletionStamp;
+class Buffer;
 class GraphicsAllocation;
 class ImageTransformer;
 class Surface;
@@ -64,12 +52,13 @@ class Kernel : public BaseObject<_cl_kernel> {
 
     struct SimpleKernelArgInfo {
         kernelArgType type;
-        const void *object;
+        void *object;
         const void *value;
         size_t size;
         GraphicsAllocation *pSvmAlloc;
         cl_mem_flags svmFlags;
         bool isPatched = false;
+        bool isUncacheable = false;
     };
 
     typedef int32_t (Kernel::*KernelArgHandler)(uint32_t argIndex,
@@ -115,6 +104,8 @@ class Kernel : public BaseObject<_cl_kernel> {
         return kernelArg == BUFFER_OBJ || kernelArg == IMAGE_OBJ || kernelArg == PIPE_OBJ;
     }
 
+    bool isAuxTranslationRequired() const { return auxTranslationRequired; }
+
     char *getCrossThreadData() const {
         return crossThreadData;
     }
@@ -125,14 +116,14 @@ class Kernel : public BaseObject<_cl_kernel> {
 
     cl_int initialize();
 
-    cl_int cloneKernel(Kernel *pSourceKernel);
+    MOCKABLE_VIRTUAL cl_int cloneKernel(Kernel *pSourceKernel);
 
     MOCKABLE_VIRTUAL bool canTransformImages() const;
     MOCKABLE_VIRTUAL bool isPatched() const;
 
     // API entry points
     cl_int setArg(uint32_t argIndex, size_t argSize, const void *argVal);
-    cl_int setArgSvm(uint32_t argIndex, size_t svmAllocSize, void *svmPtr, GraphicsAllocation *svmAlloc = nullptr, cl_mem_flags svmFlags = 0);
+    cl_int setArgSvm(uint32_t argIndex, size_t svmAllocSize, void *svmPtr, GraphicsAllocation *svmAlloc, cl_mem_flags svmFlags);
     cl_int setArgSvmAlloc(uint32_t argIndex, void *svmPtr, GraphicsAllocation *svmAlloc);
 
     void setKernelExecInfo(GraphicsAllocation *argValue);
@@ -140,6 +131,7 @@ class Kernel : public BaseObject<_cl_kernel> {
 
     cl_int getInfo(cl_kernel_info paramName, size_t paramValueSize,
                    void *paramValue, size_t *paramValueSizeRet) const;
+    void getAdditionalInfo(cl_kernel_info paramName, const void *&paramValue, size_t &paramValueSizeRet) const;
 
     cl_int getArgInfo(cl_uint argIndx, cl_kernel_arg_info paramName,
                       size_t paramValueSize, void *paramValue, size_t *paramValueSizeRet) const;
@@ -198,7 +190,7 @@ class Kernel : public BaseObject<_cl_kernel> {
         return kernelInfo;
     }
 
-    const Device &getDevice() {
+    const Device &getDevice() const {
         return device;
     }
 
@@ -279,7 +271,7 @@ class Kernel : public BaseObject<_cl_kernel> {
 
     void storeKernelArg(uint32_t argIndex,
                         kernelArgType argType,
-                        const void *argObject,
+                        void *argObject,
                         const void *argValue,
                         size_t argSize,
                         GraphicsAllocation *argSvmAlloc = nullptr,
@@ -287,16 +279,17 @@ class Kernel : public BaseObject<_cl_kernel> {
     const void *getKernelArg(uint32_t argIndex) const;
     const SimpleKernelArgInfo &getKernelArgInfo(uint32_t argIndex) const;
 
-    bool getAllowNonUniform() { return program->getAllowNonUniform(); }
-    bool isVmeKernel() { return kernelInfo.isVmeWorkload; };
+    bool getAllowNonUniform() const { return program->getAllowNonUniform(); }
+    bool isVmeKernel() const { return kernelInfo.isVmeWorkload; }
+    bool requiresSpecialPipelineSelectMode() const { return specialPipelineSelectMode; }
 
     //residency for kernel surfaces
     MOCKABLE_VIRTUAL void makeResident(CommandStreamReceiver &commandStreamReceiver);
-    void updateWithCompletionStamp(CommandStreamReceiver &commandStreamReceiver, CompletionStamp *completionStamp);
     MOCKABLE_VIRTUAL void getResidency(std::vector<Surface *> &dst);
     bool requiresCoherency();
     void resetSharedObjectsPatchAddresses();
-    bool isUsingSharedObjArgs() { return usingSharedObjArgs; }
+    bool isUsingSharedObjArgs() const { return usingSharedObjArgs; }
+    bool hasUncacheableArgs() const { return uncacheableArgsCount > 0; }
 
     bool hasPrintfOutput() const;
 
@@ -343,6 +336,8 @@ class Kernel : public BaseObject<_cl_kernel> {
 
     std::vector<size_t> slmSizes;
 
+    uint32_t allBufferArgsStateful = CL_TRUE;
+
     uint32_t slmTotalSize;
     bool isBuiltIn;
     const bool isParentKernel;
@@ -379,6 +374,20 @@ class Kernel : public BaseObject<_cl_kernel> {
     }
 
     std::vector<PatchInfoData> &getPatchInfoDataList() { return patchInfoDataList; };
+    bool usesOnlyImages() const {
+        return usingImagesOnly;
+    }
+
+    void fillWithBuffersForAuxTranslation(MemObjsForAuxTranslation &memObjsForAuxTranslation);
+
+    MOCKABLE_VIRTUAL bool requiresCacheFlushCommand(const CommandQueue &commandQueue) const;
+
+    using CacheFlushAllocationsVec = StackVec<GraphicsAllocation *, 32>;
+    void getAllocationsForCacheFlush(CacheFlushAllocationsVec &out) const;
+
+    void setDisableL3forStatefulBuffers(bool disableL3forStatefulBuffers) {
+        this->disableL3forStatefulBuffers = disableL3forStatefulBuffers;
+    }
 
   protected:
     struct ObjectCounts {
@@ -465,6 +474,10 @@ class Kernel : public BaseObject<_cl_kernel> {
 
     void resolveArgs();
 
+    void reconfigureKernel();
+
+    void addAllocationToCacheFlushVector(uint32_t argIndex, GraphicsAllocation *argAllocation);
+    bool allocationForCacheFlush(GraphicsAllocation *argAllocation) const;
     Program *program;
     Context *context;
     const Device &device;
@@ -474,9 +487,11 @@ class Kernel : public BaseObject<_cl_kernel> {
     std::vector<KernelArgHandler> kernelArgHandlers;
     std::vector<GraphicsAllocation *> kernelSvmGfxAllocations;
 
+    bool disableL3forStatefulBuffers = false;
+
     size_t numberOfBindingTableStates;
     size_t localBindingTableOffset;
-    char *pSshLocal;
+    std::unique_ptr<char[]> pSshLocal;
     uint32_t sshLocalSize;
 
     char *crossThreadData;
@@ -488,10 +503,17 @@ class Kernel : public BaseObject<_cl_kernel> {
     GraphicsAllocation *kernelReflectionSurface;
 
     bool usingSharedObjArgs;
+    bool usingImagesOnly = false;
+    bool auxTranslationRequired = false;
     uint32_t patchedArgumentsNum = 0;
     uint32_t startOffset = 0;
+    uint32_t uncacheableArgsCount = 0;
 
     std::vector<PatchInfoData> patchInfoDataList;
     std::unique_ptr<ImageTransformer> imageTransformer;
+
+    bool specialPipelineSelectMode = false;
+    bool svmAllocationsRequireCacheFlush = false;
+    std::vector<GraphicsAllocation *> kernelArgRequiresCacheFlush;
 };
-} // namespace OCLRT
+} // namespace NEO

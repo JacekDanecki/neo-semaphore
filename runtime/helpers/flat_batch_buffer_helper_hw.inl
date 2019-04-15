@@ -1,39 +1,26 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/flat_batch_buffer_helper_hw.h"
 #include "runtime/helpers/string.h"
+#include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/memory_manager.h"
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
-void *FlatBatchBufferHelperHw<GfxFamily>::flattenBatchBuffer(BatchBuffer &batchBuffer, size_t &sizeBatchBuffer, DispatchMode dispatchMode) {
+GraphicsAllocation *FlatBatchBufferHelperHw<GfxFamily>::flattenBatchBuffer(BatchBuffer &batchBuffer, size_t &sizeBatchBuffer,
+                                                                           DispatchMode dispatchMode) {
     typedef typename GfxFamily::MI_BATCH_BUFFER_START MI_BATCH_BUFFER_START;
     typedef typename GfxFamily::MI_BATCH_BUFFER_END MI_BATCH_BUFFER_END;
     typedef typename GfxFamily::MI_USER_INTERRUPT MI_USER_INTERRUPT;
 
-    void *flatBatchBuffer = nullptr;
+    GraphicsAllocation *flatBatchBuffer = nullptr;
 
     size_t indirectPatchCommandsSize = 0u;
     std::vector<PatchInfoData> indirectPatchInfo;
@@ -43,17 +30,24 @@ void *FlatBatchBufferHelperHw<GfxFamily>::flattenBatchBuffer(BatchBuffer &batchB
         if (batchBuffer.chainedBatchBuffer) {
             batchBuffer.chainedBatchBuffer->setAubWritable(false);
             auto sizeMainBatchBuffer = batchBuffer.chainedBatchBufferStartOffset - batchBuffer.startOffset;
-
-            auto flatBatchBufferSize = alignUp(sizeMainBatchBuffer + indirectPatchCommandsSize + batchBuffer.chainedBatchBuffer->getUnderlyingBufferSize(), MemoryConstants::pageSize);
-            flatBatchBuffer = this->memoryManager->alignedMallocWrapper(flatBatchBufferSize, MemoryConstants::pageSize);
+            auto alignedMainBatchBufferSize = alignUp(sizeMainBatchBuffer + indirectPatchCommandsSize + batchBuffer.chainedBatchBuffer->getUnderlyingBufferSize(), MemoryConstants::pageSize);
+            AllocationProperties flatBatchBufferProperties(alignedMainBatchBufferSize, GraphicsAllocation::AllocationType::UNDECIDED);
+            flatBatchBufferProperties.alignment = MemoryConstants::pageSize;
+            flatBatchBuffer =
+                getMemoryManager()->allocateGraphicsMemoryWithProperties(flatBatchBufferProperties);
             UNRECOVERABLE_IF(flatBatchBuffer == nullptr);
             // Copy main batchbuffer
-            memcpy_s(flatBatchBuffer, sizeMainBatchBuffer, ptrOffset(batchBuffer.commandBufferAllocation->getUnderlyingBuffer(), batchBuffer.startOffset), sizeMainBatchBuffer);
+            memcpy_s(flatBatchBuffer->getUnderlyingBuffer(), sizeMainBatchBuffer,
+                     ptrOffset(batchBuffer.commandBufferAllocation->getUnderlyingBuffer(), batchBuffer.startOffset),
+                     sizeMainBatchBuffer);
             // Copy indirect patch commands
-            memcpy_s(ptrOffset(flatBatchBuffer, sizeMainBatchBuffer), indirectPatchCommandsSize, indirectPatchCommands.get(), indirectPatchCommandsSize);
+            memcpy_s(ptrOffset(flatBatchBuffer->getUnderlyingBuffer(), sizeMainBatchBuffer), indirectPatchCommandsSize,
+                     indirectPatchCommands.get(), indirectPatchCommandsSize);
             // Copy chained batchbuffer
-            memcpy_s(ptrOffset(flatBatchBuffer, sizeMainBatchBuffer + indirectPatchCommandsSize), batchBuffer.chainedBatchBuffer->getUnderlyingBufferSize(), batchBuffer.chainedBatchBuffer->getUnderlyingBuffer(), batchBuffer.chainedBatchBuffer->getUnderlyingBufferSize());
-            sizeBatchBuffer = flatBatchBufferSize;
+            memcpy_s(ptrOffset(flatBatchBuffer->getUnderlyingBuffer(), sizeMainBatchBuffer + indirectPatchCommandsSize),
+                     batchBuffer.chainedBatchBuffer->getUnderlyingBufferSize(), batchBuffer.chainedBatchBuffer->getUnderlyingBuffer(),
+                     batchBuffer.chainedBatchBuffer->getUnderlyingBufferSize());
+            sizeBatchBuffer = flatBatchBufferProperties.size;
             patchInfoCollection.insert(std::end(patchInfoCollection), std::begin(indirectPatchInfo), std::end(indirectPatchInfo));
         }
     } else if (dispatchMode == DispatchMode::BatchedDispatch) {
@@ -115,9 +109,12 @@ void *FlatBatchBufferHelperHw<GfxFamily>::flattenBatchBuffer(BatchBuffer &batchB
 
         flatBatchBufferSize = alignUp(flatBatchBufferSize, MemoryConstants::pageSize);
         flatBatchBufferSize += CSRequirements::csOverfetchSize;
-        flatBatchBuffer = this->memoryManager->alignedMallocWrapper(static_cast<size_t>(flatBatchBufferSize), MemoryConstants::pageSize);
+        AllocationProperties flatBatchBufferProperties(static_cast<size_t>(flatBatchBufferSize), GraphicsAllocation::AllocationType::UNDECIDED);
+        flatBatchBufferProperties.alignment = MemoryConstants::pageSize;
+        flatBatchBuffer = getMemoryManager()->allocateGraphicsMemoryWithProperties(flatBatchBufferProperties);
+        UNRECOVERABLE_IF(flatBatchBuffer == nullptr);
 
-        char *ptr = reinterpret_cast<char *>(flatBatchBuffer);
+        char *ptr = reinterpret_cast<char *>(flatBatchBuffer->getUnderlyingBuffer());
         memcpy_s(ptr, indirectPatchCommandsSize, indirectPatchCommands.get(), indirectPatchCommandsSize);
         ptr += indirectPatchCommandsSize;
         for (auto &chunk : orderedChunks) {
@@ -130,7 +127,7 @@ void *FlatBatchBufferHelperHw<GfxFamily>::flattenBatchBuffer(BatchBuffer &batchB
         }
 
         auto pCmdMui = reinterpret_cast<MI_USER_INTERRUPT *>(ptr);
-        pCmdMui->init();
+        *pCmdMui = GfxFamily::cmdInitUserInterrupt;
         ptr += sizeof(MI_USER_INTERRUPT);
 
         auto pCmdBBend = reinterpret_cast<MI_BATCH_BUFFER_END *>(ptr);
@@ -165,9 +162,9 @@ char *FlatBatchBufferHelperHw<GfxFamily>::getIndirectPatchCommands(size_t &indir
     for (auto &patchInfoData : patchInfoCopy) {
         if (patchInfoData.requiresIndirectPatching()) {
             auto storeDataImmediate = indirectPatchCommandStream.getSpaceForCmd<MI_STORE_DATA_IMM>();
-            storeDataImmediate->init();
-            sdiSetAddress(storeDataImmediate, patchInfoData.targetAllocation + patchInfoData.targetAllocationOffset);
-            sdiSetStoreQword(storeDataImmediate, patchInfoData.patchAddressSize != sizeof(uint32_t));
+            *storeDataImmediate = GfxFamily::cmdInitStoreDataImm;
+            storeDataImmediate->setAddress(patchInfoData.targetAllocation + patchInfoData.targetAllocationOffset);
+            storeDataImmediate->setStoreQword(patchInfoData.patchAddressSize != sizeof(uint32_t));
             storeDataImmediate->setDataDword0(static_cast<uint32_t>((patchInfoData.sourceAllocation + patchInfoData.sourceAllocationOffset) & 0x0000FFFFFFFFULL));
             storeDataImmediate->setDataDword1(static_cast<uint32_t>((patchInfoData.sourceAllocation + patchInfoData.sourceAllocationOffset) >> 32));
 
@@ -193,4 +190,4 @@ void FlatBatchBufferHelperHw<GfxFamily>::removePipeControlData(size_t pipeContro
     }
 }
 
-}; // namespace OCLRT
+}; // namespace NEO

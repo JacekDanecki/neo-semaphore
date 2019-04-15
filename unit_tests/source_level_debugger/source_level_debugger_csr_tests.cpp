@@ -1,44 +1,54 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/source_level_debugger/source_level_debugger.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/helpers/execution_environment_helper.h"
+#include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/mocks/mock_builtins.h"
 #include "unit_tests/mocks/mock_csr.h"
 #include "unit_tests/mocks/mock_device.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
 
-#include "test.h"
 #include <memory>
 
-typedef ::testing::Test CommandStreamReceiverWithActiveDebuggerTest;
+class CommandStreamReceiverWithActiveDebuggerTest : public ::testing::Test {
+  protected:
+    template <typename FamilyType>
+    auto createCSR() {
+        hwInfo = nullptr;
+        executionEnvironment = getExecutionEnvironmentImpl(hwInfo);
+        hwInfo->capabilityTable = platformDevices[0]->capabilityTable;
+        hwInfo->capabilityTable.sourceLevelDebuggerSupported = true;
+
+        auto mockCsr = new MockCsrHw2<FamilyType>(*executionEnvironment);
+
+        executionEnvironment->commandStreamReceivers.resize(1);
+        executionEnvironment->commandStreamReceivers[0].push_back(std::unique_ptr<CommandStreamReceiver>(mockCsr));
+        auto mockMemoryManager = new MockMemoryManager(*executionEnvironment);
+        executionEnvironment->memoryManager.reset(mockMemoryManager);
+
+        device.reset(Device::create<MockDevice>(&hwInfo[0], executionEnvironment, 0));
+        device->setSourceLevelDebuggerActive(true);
+
+        return mockCsr;
+    }
+
+    std::unique_ptr<MockDevice> device;
+    ExecutionEnvironment *executionEnvironment = nullptr;
+    HardwareInfo *hwInfo = nullptr;
+};
 
 HWTEST_F(CommandStreamReceiverWithActiveDebuggerTest, givenCsrWithActiveDebuggerAndDisabledPreemptionWhenFlushTaskIsCalledThenSipKernelIsMadeResident) {
-    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
-    device->setSourceLevelDebuggerActive(true);
-    device->allocatePreemptionAllocationIfNotPresent();
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
 
-    device->resetCommandStreamReceiver(mockCsr);
+    auto mockCsr = createCSR<FamilyType>();
 
     CommandQueueHw<FamilyType> commandQueue(nullptr, device.get(), 0);
     auto &commandStream = commandQueue.getCS(4096u);
@@ -48,7 +58,7 @@ HWTEST_F(CommandStreamReceiverWithActiveDebuggerTest, givenCsrWithActiveDebugger
 
     void *buffer = alignedMalloc(MemoryConstants::pageSize, MemoryConstants::pageSize64k);
 
-    std::unique_ptr<GraphicsAllocation> allocation(new GraphicsAllocation(buffer, MemoryConstants::pageSize));
+    std::unique_ptr<MockGraphicsAllocation> allocation(new MockGraphicsAllocation(buffer, MemoryConstants::pageSize));
     std::unique_ptr<IndirectHeap> heap(new IndirectHeap(allocation.get()));
 
     mockCsr->flushTask(commandStream,
@@ -57,10 +67,11 @@ HWTEST_F(CommandStreamReceiverWithActiveDebuggerTest, givenCsrWithActiveDebugger
                        *heap.get(),
                        *heap.get(),
                        0,
-                       dispatchFlags);
+                       dispatchFlags,
+                       *device);
 
     auto sipType = SipKernel::getSipKernelType(device->getHardwareInfo().pPlatform->eRenderCoreFamily, true);
-    auto sipAllocation = BuiltIns::getInstance().getSipKernel(sipType, *device.get()).getSipAllocation();
+    auto sipAllocation = device->getExecutionEnvironment()->getBuiltIns()->getSipKernel(sipType, *device).getSipAllocation();
     bool found = false;
     for (auto allocation : mockCsr->copyOfAllocations) {
         if (allocation == sipAllocation) {
@@ -70,4 +81,123 @@ HWTEST_F(CommandStreamReceiverWithActiveDebuggerTest, givenCsrWithActiveDebugger
     }
     EXPECT_TRUE(found);
     alignedFree(buffer);
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverWithActiveDebuggerTest, givenCsrWithActiveDebuggerAndDisabledPreemptionWhenFlushTaskIsCalledThenStateSipCmdIsProgrammed) {
+    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
+    using STATE_SIP = typename FamilyType::STATE_SIP;
+
+    auto mockCsr = createCSR<FamilyType>();
+
+    if (device->getHardwareInfo().capabilityTable.defaultPreemptionMode == PreemptionMode::MidThread) {
+        CommandQueueHw<FamilyType> commandQueue(nullptr, device.get(), 0);
+        auto &commandStream = commandQueue.getCS(4096u);
+        auto &preambleStream = mockCsr->getCS(0);
+
+        DispatchFlags dispatchFlags;
+        dispatchFlags.preemptionMode = PreemptionMode::Disabled;
+
+        void *buffer = alignedMalloc(MemoryConstants::pageSize, MemoryConstants::pageSize64k);
+
+        std::unique_ptr<MockGraphicsAllocation> allocation(new MockGraphicsAllocation(buffer, MemoryConstants::pageSize));
+        std::unique_ptr<IndirectHeap> heap(new IndirectHeap(allocation.get()));
+
+        mockCsr->flushTask(commandStream,
+                           0,
+                           *heap.get(),
+                           *heap.get(),
+                           *heap.get(),
+                           0,
+                           dispatchFlags,
+                           *device);
+
+        auto sipType = SipKernel::getSipKernelType(device->getHardwareInfo().pPlatform->eRenderCoreFamily, true);
+        auto sipAllocation = device->getExecutionEnvironment()->getBuiltIns()->getSipKernel(sipType, *device).getSipAllocation();
+
+        HardwareParse hwParser;
+        hwParser.parseCommands<FamilyType>(preambleStream);
+        auto itorStateBaseAddr = find<STATE_BASE_ADDRESS *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
+        auto itorStateSip = find<STATE_SIP *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
+
+        ASSERT_NE(hwParser.cmdList.end(), itorStateBaseAddr);
+        ASSERT_NE(hwParser.cmdList.end(), itorStateSip);
+
+        STATE_BASE_ADDRESS *sba = (STATE_BASE_ADDRESS *)*itorStateBaseAddr;
+        STATE_SIP *stateSipCmd = (STATE_SIP *)*itorStateSip;
+        EXPECT_LT(reinterpret_cast<void *>(sba), reinterpret_cast<void *>(stateSipCmd));
+
+        auto sipAddress = stateSipCmd->getSystemInstructionPointer();
+
+        EXPECT_EQ(sipAllocation->getGpuAddressToPatch(), sipAddress);
+        alignedFree(buffer);
+    }
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverWithActiveDebuggerTest, givenCsrWithActiveDebuggerAndWhenFlushTaskIsCalledThenAlwaysProgramStateBaseAddressAndSip) {
+    using STATE_BASE_ADDRESS = typename FamilyType::STATE_BASE_ADDRESS;
+    using STATE_SIP = typename FamilyType::STATE_SIP;
+
+    auto mockCsr = createCSR<FamilyType>();
+
+    if (device->getHardwareInfo().capabilityTable.defaultPreemptionMode == PreemptionMode::MidThread) {
+        mockCsr->overrideDispatchPolicy(DispatchMode::ImmediateDispatch);
+
+        CommandQueueHw<FamilyType> commandQueue(nullptr, device.get(), 0);
+        auto &commandStream = commandQueue.getCS(4096u);
+        auto &preambleStream = mockCsr->getCS(0);
+
+        DispatchFlags dispatchFlags;
+        dispatchFlags.preemptionMode = PreemptionMode::Disabled;
+
+        void *buffer = alignedMalloc(MemoryConstants::pageSize, MemoryConstants::pageSize64k);
+
+        std::unique_ptr<MockGraphicsAllocation> allocation(new MockGraphicsAllocation(buffer, MemoryConstants::pageSize));
+        std::unique_ptr<IndirectHeap> heap(new IndirectHeap(allocation.get()));
+
+        mockCsr->flushTask(commandStream,
+                           0,
+                           *heap.get(),
+                           *heap.get(),
+                           *heap.get(),
+                           0,
+                           dispatchFlags,
+                           *device);
+
+        mockCsr->flushBatchedSubmissions();
+
+        mockCsr->flushTask(commandStream,
+                           0,
+                           *heap.get(),
+                           *heap.get(),
+                           *heap.get(),
+                           0,
+                           dispatchFlags,
+                           *device);
+
+        auto sipType = SipKernel::getSipKernelType(device->getHardwareInfo().pPlatform->eRenderCoreFamily, true);
+        auto sipAllocation = device->getExecutionEnvironment()->getBuiltIns()->getSipKernel(sipType, *device).getSipAllocation();
+
+        HardwareParse hwParser;
+        hwParser.parseCommands<FamilyType>(preambleStream);
+        auto itorStateBaseAddr = find<STATE_BASE_ADDRESS *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
+        auto itorStateSip = find<STATE_SIP *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
+
+        ASSERT_NE(hwParser.cmdList.end(), itorStateBaseAddr);
+        ASSERT_NE(hwParser.cmdList.end(), itorStateSip);
+
+        auto itorStateBaseAddr2 = find<STATE_BASE_ADDRESS *>(std::next(itorStateBaseAddr), hwParser.cmdList.end());
+        auto itorStateSip2 = find<STATE_SIP *>(std::next(itorStateSip), hwParser.cmdList.end());
+
+        ASSERT_NE(hwParser.cmdList.end(), itorStateBaseAddr2);
+        ASSERT_NE(hwParser.cmdList.end(), itorStateSip2);
+
+        STATE_BASE_ADDRESS *sba = (STATE_BASE_ADDRESS *)*itorStateBaseAddr2;
+        STATE_SIP *stateSipCmd = (STATE_SIP *)*itorStateSip2;
+        EXPECT_LT(reinterpret_cast<void *>(sba), reinterpret_cast<void *>(stateSipCmd));
+
+        auto sipAddress = stateSipCmd->getSystemInstructionPointer();
+
+        EXPECT_EQ(sipAllocation->getGpuAddressToPatch(), sipAddress);
+        alignedFree(buffer);
+    }
 }

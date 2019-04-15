@@ -1,30 +1,17 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/memory_manager/internal_allocation_storage.h"
+#include "runtime/os_interface/os_context.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_kernel.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef Test<DeviceFixture> KernelSubstituteTest;
 
@@ -123,6 +110,7 @@ TEST_F(KernelSubstituteTest, givenKernelWithUsedKernelAllocationWhenSubstituteKe
     MockKernelWithInternals kernel(*pDevice);
     auto pHeader = const_cast<SKernelBinaryHeaderCommon *>(kernel.kernelInfo.heapInfo.pKernelHeader);
     auto memoryManager = pDevice->getMemoryManager();
+    auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
 
     const size_t initialHeapSize = 0x40;
     pHeader->KernelHeapSize = initialHeapSize;
@@ -130,18 +118,20 @@ TEST_F(KernelSubstituteTest, givenKernelWithUsedKernelAllocationWhenSubstituteKe
     kernel.kernelInfo.createKernelAllocation(memoryManager);
     auto firstAllocation = kernel.kernelInfo.kernelAllocation;
 
-    firstAllocation->taskCount = ObjectNotUsed - 1;
+    uint32_t notReadyTaskCount = *commandStreamReceiver.getTagAddress() + 1u;
+
+    firstAllocation->updateTaskCount(notReadyTaskCount, commandStreamReceiver.getOsContext().getContextId());
 
     const size_t newHeapSize = initialHeapSize + 1;
     char newHeap[newHeapSize];
 
-    EXPECT_TRUE(memoryManager->graphicsAllocations.peekIsEmpty());
+    EXPECT_TRUE(commandStreamReceiver.getTemporaryAllocations().peekIsEmpty());
 
     kernel.mockKernel->substituteKernelHeap(newHeap, newHeapSize);
     auto secondAllocation = kernel.kernelInfo.kernelAllocation;
 
-    EXPECT_FALSE(memoryManager->graphicsAllocations.peekIsEmpty());
-    EXPECT_EQ(memoryManager->graphicsAllocations.peekHead(), firstAllocation);
+    EXPECT_FALSE(commandStreamReceiver.getTemporaryAllocations().peekIsEmpty());
+    EXPECT_EQ(commandStreamReceiver.getTemporaryAllocations().peekHead(), firstAllocation);
     memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(secondAllocation);
-    memoryManager->cleanAllocationList(firstAllocation->taskCount, TEMPORARY_ALLOCATION);
+    commandStreamReceiver.getInternalAllocationStorage()->cleanAllocationList(notReadyTaskCount, TEMPORARY_ALLOCATION);
 }

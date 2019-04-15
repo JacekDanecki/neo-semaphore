@@ -1,32 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/event/event.h"
+#include "test.h"
 #include "unit_tests/fixtures/hello_world_fixture.h"
 #include "unit_tests/helpers/hw_parse.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct OOQFixtureFactory : public HelloWorldFixtureFactory {
     typedef OOQueueFixture CommandQueueFixture;
@@ -103,7 +88,7 @@ struct TwoOOQsTwoDependentWalkers : public HelloWorldTest<OOQFixtureFactory>,
         delete E1;
         delete E2;
 
-        typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
+        typedef typename FamilyType::WALKER_TYPE GPGPU_WALKER;
         itorWalker1 = find<GPGPU_WALKER *>(cmdList.begin(), cmdList.end());
         ASSERT_NE(cmdList.end(), itorWalker1);
 
@@ -118,12 +103,12 @@ struct TwoOOQsTwoDependentWalkers : public HelloWorldTest<OOQFixtureFactory>,
     CommandQueue *pCmdQ2 = nullptr;
 };
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TwoOOQsTwoDependentWalkers, shouldHaveTwoWalkers) {
+HWTEST_F(TwoOOQsTwoDependentWalkers, shouldHaveTwoWalkers) {
     parseWalkers<FamilyType>();
     EXPECT_NE(itorWalker1, itorWalker2);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TwoOOQsTwoDependentWalkers, shouldHaveOnePS) {
+HWTEST_F(TwoOOQsTwoDependentWalkers, shouldHaveOnePS) {
     parseWalkers<FamilyType>();
     int numCommands = getNumberOfPipelineSelectsThatEnablePipelineSelect<FamilyType>();
     EXPECT_EQ(1, numCommands);
@@ -136,8 +121,10 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TwoOOQsTwoDependentWalkers, shouldHaveOneVFEState) {
     EXPECT_EQ(1u, numCommands);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, TwoOOQsTwoDependentWalkers, shouldHaveAPipecontrolBetweenWalkers) {
+HWTEST_F(TwoOOQsTwoDependentWalkers, DISABLED_shouldHaveAPipecontrolBetweenWalkers) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
+
+    pDevice->getUltCommandStreamReceiver<FamilyType>().timestampPacketWriteEnabled = false;
 
     parseWalkers<FamilyType>();
     auto itorCmd = find<PIPE_CONTROL *>(itorWalker1, itorWalker2);

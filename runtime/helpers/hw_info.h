@@ -1,44 +1,23 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
+#include "runtime/command_stream/preemption_mode.h"
+#include "runtime/helpers/kmd_notify_properties.h"
+
+#include "engine_node.h"
 #include "gtsysinfo.h"
 #include "igfxfmid.h"
 #include "sku_info.h"
 
-#include "runtime/helpers/engine_node.h"
-#include "runtime/helpers/kmd_notify_properties.h"
 #include <cstddef>
+#include <string>
 
-namespace OCLRT {
-
-enum class PreemptionMode : uint32_t {
-    // Keep in sync with ForcePreemptionMode debug variable
-    Initial = 0,
-    Disabled = 1,
-    MidBatch,
-    ThreadGroup,
-    MidThread,
-};
+namespace NEO {
 
 struct WhitelistedRegisters {
     bool csChicken1_0x2580;
@@ -46,10 +25,19 @@ struct WhitelistedRegisters {
 };
 
 struct RuntimeCapabilityTable {
-    uint32_t maxRenderFrequency;
+    KmdNotifyProperties kmdNotifyProperties;
+    WhitelistedRegisters whitelistedRegisters;
+    uint64_t gpuAddressSpace;
     double defaultProfilingTimerResolution;
-
+    size_t requiredPreemptionSurfaceSize;
+    bool (*isSimulation)(unsigned short);
+    PreemptionMode defaultPreemptionMode;
+    aub_stream::EngineType defaultEngineType;
+    uint32_t maxRenderFrequency;
     unsigned int clVersionSupport;
+    uint32_t aubDeviceId;
+    uint32_t extraQuantityThreadsPerEU;
+    uint32_t slmSize;
     bool ftrSupportsFP64;
     bool ftrSupports64BitMath;
     bool ftrSvm;
@@ -58,26 +46,13 @@ struct RuntimeCapabilityTable {
     bool ftrSupportsVmeAvcPreemption;
     bool ftrRenderCompressedBuffers;
     bool ftrRenderCompressedImages;
-    PreemptionMode defaultPreemptionMode;
-    WhitelistedRegisters whitelistedRegisters;
-
-    bool (*isSimulation)(unsigned short);
-    bool instrumentationEnabled;
-
-    bool forceStatelessCompilationFor32Bit;
-
-    KmdNotifyProperties kmdNotifyProperties;
-
     bool ftr64KBpages;
-
-    EngineType defaultEngineType;
-
-    size_t requiredPreemptionSurfaceSize;
+    bool instrumentationEnabled;
+    bool forceStatelessCompilationFor32Bit;
     bool isCore;
     bool sourceLevelDebuggerSupported;
-    uint32_t aubDeviceId;
-
-    uint32_t extraQuantityThreadsPerEU;
+    bool supportsVme;
+    bool supportCacheFlushAfterWalker;
 };
 
 struct HardwareCapabilities {
@@ -114,7 +89,7 @@ extern bool familyEnabled[IGFX_MAX_CORE];
 extern const char *familyName[IGFX_MAX_CORE];
 extern const char *hardwarePrefix[];
 extern const HardwareInfo *hardwareInfoTable[IGFX_MAX_PRODUCT];
-extern void (*hardwareInfoSetupGt[IGFX_MAX_PRODUCT])(GT_SYSTEM_INFO *);
+extern void (*hardwareInfoSetup[IGFX_MAX_PRODUCT])(GT_SYSTEM_INFO *gtSystemInfo, FeatureTable *featureTable, bool setupFeatureTable, const std::string &hwInfoConfig);
 
 template <GFXCORE_FAMILY gfxFamily>
 struct EnableGfxFamilyHw {
@@ -126,4 +101,5 @@ struct EnableGfxFamilyHw {
 
 const char *getPlatformType(const HardwareInfo &hwInfo);
 bool getHwInfoForPlatformString(const char *str, const HardwareInfo *&hwInfoIn);
-} // namespace OCLRT
+aub_stream::EngineType getChosenEngineType(const HardwareInfo &hwInfo);
+} // namespace NEO

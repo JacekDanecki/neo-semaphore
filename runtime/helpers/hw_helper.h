@@ -1,34 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "runtime/gen_common/hw_cmds.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "runtime/built_ins/sip.h"
+#include "runtime/command_stream/linear_stream.h"
+#include "runtime/gen_common/aub_mapper.h"
+#include "runtime/gen_common/hw_cmds.h"
+#include "runtime/mem_obj/buffer.h"
+
+#include "CL/cl.h"
 
 #include <cstdint>
+#include <string>
 #include <type_traits>
 
-namespace OCLRT {
+namespace NEO {
+class ExecutionEnvironment;
+class GraphicsAllocation;
 struct HardwareCapabilities;
 
 class HwHelper {
@@ -43,11 +35,39 @@ class HwHelper {
     virtual void setCapabilityCoherencyFlag(const HardwareInfo *pHwInfo, bool &coherencyFlag) = 0;
     virtual bool setupPreemptionRegisters(HardwareInfo *pHwInfo, bool enable) = 0;
     virtual void adjustDefaultEngineType(HardwareInfo *pHwInfo) = 0;
-    virtual void setupHardwareCapabilities(HardwareCapabilities *caps) = 0;
+    virtual void setupHardwareCapabilities(HardwareCapabilities *caps, const HardwareInfo &hwInfo) = 0;
     virtual SipKernelType getSipKernelType(bool debuggingActive) = 0;
+    virtual uint32_t getConfigureAddressSpaceMode() = 0;
+    virtual bool isLocalMemoryEnabled(const HardwareInfo &hwInfo) const = 0;
+    virtual bool isPageTableManagerSupported(const HardwareInfo &hwInfo) const = 0;
+    virtual const AubMemDump::LrcaHelper &getCsTraits(aub_stream::EngineType engineType) const = 0;
+    virtual bool supportsYTiling() const = 0;
+    virtual bool obtainRenderBufferCompressionPreference(const HardwareInfo &hwInfo) const = 0;
+    virtual void checkResourceCompatibility(Buffer *buffer, cl_int &errorCode) = 0;
+    static bool renderCompressedBuffersSupported(const HardwareInfo &hwInfo);
+    static bool renderCompressedImagesSupported(const HardwareInfo &hwInfo);
+    static bool cacheFlushAfterWalkerSupported(const HardwareInfo &hwInfo);
+    virtual bool timestampPacketWriteSupported() const = 0;
+    virtual size_t getRenderSurfaceStateSize() const = 0;
+    virtual void setRenderSurfaceStateForBuffer(ExecutionEnvironment &executionEnvironment,
+                                                void *surfaceStateBuffer,
+                                                size_t bufferSize,
+                                                uint64_t gpuVa,
+                                                size_t offset,
+                                                uint32_t pitch,
+                                                GraphicsAllocation *gfxAlloc,
+                                                cl_mem_flags flags,
+                                                uint32_t surfaceType,
+                                                bool forceNonAuxMode) = 0;
+    virtual size_t getScratchSpaceOffsetFor64bit() = 0;
+    virtual const std::vector<aub_stream::EngineType> getGpgpuEngineInstances() const = 0;
+    virtual bool getEnableLocalMemory(const HardwareInfo &hwInfo) const = 0;
+    virtual std::string getExtensions() const = 0;
+
+    static constexpr uint32_t lowPriorityGpgpuEngineIndex = 1;
 
   protected:
-    HwHelper(){};
+    HwHelper() = default;
 };
 
 template <typename GfxFamily>
@@ -80,6 +100,13 @@ class HwHelperHw : public HwHelper {
         return sizeof(INTERFACE_DESCRIPTOR_DATA);
     }
 
+    size_t getRenderSurfaceStateSize() const override {
+        using RENDER_SURFACE_STATE = typename GfxFamily::RENDER_SURFACE_STATE;
+        return sizeof(RENDER_SURFACE_STATE);
+    }
+
+    const AubMemDump::LrcaHelper &getCsTraits(aub_stream::EngineType engineType) const override;
+
     size_t getMaxBarrierRegisterPerSlice() const override;
 
     uint32_t getComputeUnitsUsedForScratch(const HardwareInfo *pHwInfo) const override;
@@ -90,12 +117,45 @@ class HwHelperHw : public HwHelper {
 
     void adjustDefaultEngineType(HardwareInfo *pHwInfo) override;
 
-    void setupHardwareCapabilities(HardwareCapabilities *caps) override;
+    void setupHardwareCapabilities(HardwareCapabilities *caps, const HardwareInfo &hwInfo) override;
 
     SipKernelType getSipKernelType(bool debuggingActive) override;
 
-  private:
-    HwHelperHw(){};
+    uint32_t getConfigureAddressSpaceMode() override;
+
+    bool isLocalMemoryEnabled(const HardwareInfo &hwInfo) const override;
+
+    bool supportsYTiling() const override;
+
+    bool obtainRenderBufferCompressionPreference(const HardwareInfo &hwInfo) const override;
+
+    void checkResourceCompatibility(Buffer *buffer, cl_int &errorCode) override;
+
+    bool timestampPacketWriteSupported() const override;
+
+    bool isPageTableManagerSupported(const HardwareInfo &hwInfo) const override;
+
+    void setRenderSurfaceStateForBuffer(ExecutionEnvironment &executionEnvironment,
+                                        void *surfaceStateBuffer,
+                                        size_t bufferSize,
+                                        uint64_t gpuVa,
+                                        size_t offset,
+                                        uint32_t pitch,
+                                        GraphicsAllocation *gfxAlloc,
+                                        cl_mem_flags flags,
+                                        uint32_t surfaceType,
+                                        bool forceNonAuxMode) override;
+
+    size_t getScratchSpaceOffsetFor64bit() override;
+
+    const std::vector<aub_stream::EngineType> getGpgpuEngineInstances() const override;
+
+    bool getEnableLocalMemory(const HardwareInfo &hwInfo) const override;
+
+    std::string getExtensions() const override;
+
+  protected:
+    HwHelperHw() = default;
 };
 
 struct DwordBuilder {
@@ -117,10 +177,35 @@ struct LriHelper {
 
     static MI_LOAD_REGISTER_IMM *program(LinearStream *cmdStream, uint32_t address, uint32_t value) {
         auto lri = (MI_LOAD_REGISTER_IMM *)cmdStream->getSpace(sizeof(MI_LOAD_REGISTER_IMM));
-        *lri = MI_LOAD_REGISTER_IMM::sInit();
+        *lri = GfxFamily::cmdInitLoadRegisterImm;
         lri->setRegisterOffset(address);
         lri->setDataDword(value);
         return lri;
     }
 };
-} // namespace OCLRT
+
+template <typename GfxFamily>
+struct PipeControlHelper {
+    using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
+    using POST_SYNC_OPERATION = typename GfxFamily::PIPE_CONTROL::POST_SYNC_OPERATION;
+    static PIPE_CONTROL *obtainPipeControlAndProgramPostSyncOperation(LinearStream *commandStream,
+                                                                      POST_SYNC_OPERATION operation,
+                                                                      uint64_t gpuAddress,
+                                                                      uint64_t immediateData,
+                                                                      bool dcFlush);
+    static void addPipeControlWA(LinearStream &commandStream);
+    static PIPE_CONTROL *addPipeControlBase(LinearStream &commandStream, bool dcFlush);
+    static void addPipeControl(LinearStream &commandStream, bool dcFlush);
+    static int getRequiredPipeControlSize();
+};
+
+union SURFACE_STATE_BUFFER_LENGTH {
+    uint32_t Length;
+    struct SurfaceState {
+        uint32_t Width : BITFIELD_RANGE(0, 6);
+        uint32_t Height : BITFIELD_RANGE(7, 20);
+        uint32_t Depth : BITFIELD_RANGE(21, 31);
+    } SurfaceState;
+};
+
+} // namespace NEO

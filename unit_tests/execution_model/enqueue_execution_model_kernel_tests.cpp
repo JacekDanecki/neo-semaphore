@@ -1,31 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/built_ins/builtins_dispatch_builder.h"
+#include "runtime/builtin_kernels_simulation/scheduler_simulation.h"
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/command_queue/local_id_gen.h"
 #include "runtime/device_queue/device_queue_hw.h"
+#include "runtime/event/user_event.h"
 #include "runtime/helpers/per_thread_data.h"
 #include "runtime/kernel/kernel.h"
-#include "runtime/builtin_kernels_simulation/scheduler_simulation.h"
 #include "unit_tests/fixtures/device_host_queue_fixture.h"
 #include "unit_tests/fixtures/execution_model_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
@@ -36,8 +23,9 @@
 #include "unit_tests/mocks/mock_event.h"
 #include "unit_tests/mocks/mock_mdi.h"
 #include "unit_tests/mocks/mock_submissions_aggregator.h"
+#include "unit_tests/utilities/base_object_utils.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 static const char *binaryFile = "simple_block_kernel";
 static const char *KernelNames[] = {"kernel_reflection", "simple_block_kernel"};
@@ -117,19 +105,23 @@ HWCMDTEST_P(IGFX_GEN8_CORE, ParentKernelEnqueueTest, givenParentKernelWhenEnqueu
     }
 }
 
-HWTEST_P(ParentKernelEnqueueTest, GivenParentKernelWithPrivateSurfaceWhenEnqueueKernelCalledThenResidencyCountIncreased) {
+HWTEST_P(ParentKernelEnqueueTest, GivenBlockKernelWithPrivateSurfaceWhenParentKernelIsEnqueuedThenPrivateSurfaceIsMadeResident) {
     if (pDevice->getSupportedClVersion() >= 20) {
         size_t offset[3] = {0, 0, 0};
         size_t gws[3] = {1, 1, 1};
         int32_t executionStamp = 0;
-        auto mockCSR = new MockCsr<FamilyType>(executionStamp);
+        auto mockCSR = new MockCsr<FamilyType>(executionStamp, *pDevice->executionEnvironment);
         pDevice->resetCommandStreamReceiver(mockCSR);
-        GraphicsAllocation *privateSurface = mockCSR->getMemoryManager()->allocateGraphicsMemory(10);
+        GraphicsAllocation *privateSurface = pKernel->getProgram()->getBlockKernelManager()->getPrivateSurface(0);
 
-        pKernel->getProgram()->getBlockKernelManager()->pushPrivateSurface(privateSurface, 0);
+        if (privateSurface == nullptr) {
+            privateSurface = mockCSR->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+            pKernel->getProgram()->getBlockKernelManager()->pushPrivateSurface(privateSurface, 0);
+        }
+
         pCmdQ->enqueueKernel(pKernel, 1, offset, gws, gws, 0, nullptr, nullptr);
 
-        EXPECT_NE(ObjectNotResident, privateSurface->residencyTaskCount);
+        EXPECT_TRUE(privateSurface->isResident(mockCSR->getOsContext().getContextId()));
     }
 }
 
@@ -142,16 +134,20 @@ HWTEST_P(ParentKernelEnqueueTest, GivenBlocksWithPrivateMemoryWhenEnqueueKernelT
         auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
         csr.storeMakeResidentAllocations = true;
 
-        auto privateAllocation = csr.getMemoryManager()->allocateGraphicsMemory(10);
-        blockKernelManager->pushPrivateSurface(privateAllocation, 0);
+        auto privateAllocation = pKernel->getProgram()->getBlockKernelManager()->getPrivateSurface(0);
 
-        UserEvent uEvent(pContext);
-        auto clEvent = static_cast<cl_event>(&uEvent);
+        if (privateAllocation == nullptr) {
+            privateAllocation = csr.getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+            blockKernelManager->pushPrivateSurface(privateAllocation, 0);
+        }
+
+        auto uEvent = make_releaseable<UserEvent>(pContext);
+        auto clEvent = static_cast<cl_event>(uEvent.get());
 
         pCmdQ->enqueueKernel(pKernel, 1, offset, gws, gws, 1, &clEvent, nullptr);
 
         EXPECT_FALSE(csr.isMadeResident(privateAllocation));
-        uEvent.setStatus(CL_COMPLETE);
+        uEvent->setStatus(CL_COMPLETE);
         EXPECT_TRUE(csr.isMadeResident(privateAllocation));
     }
 }
@@ -198,8 +194,8 @@ HWTEST_P(ParentKernelEnqueueTest, GivenParentKernelWithBlocksWhenEnqueueKernelTh
         auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
         csr.storeMakeResidentAllocations = true;
 
-        UserEvent uEvent(pContext);
-        auto clEvent = static_cast<cl_event>(&uEvent);
+        auto uEvent = make_releaseable<UserEvent>(pContext);
+        auto clEvent = static_cast<cl_event>(uEvent.get());
 
         pCmdQ->enqueueKernel(pKernel, 1, offset, gws, gws, 1, &clEvent, nullptr);
 
@@ -208,7 +204,7 @@ HWTEST_P(ParentKernelEnqueueTest, GivenParentKernelWithBlocksWhenEnqueueKernelTh
             EXPECT_FALSE(csr.isMadeResident(blockKernelManager->getBlockKernelInfo(blockId)->getGraphicsAllocation()));
         }
 
-        uEvent.setStatus(CL_COMPLETE);
+        uEvent->setStatus(CL_COMPLETE);
 
         for (auto blockId = 0u; blockId < blockCount; blockId++) {
             EXPECT_TRUE(csr.isMadeResident(blockKernelManager->getBlockKernelInfo(blockId)->getGraphicsAllocation()));
@@ -344,9 +340,9 @@ HWCMDTEST_P(IGFX_GEN8_CORE, ParentKernelEnqueueTest, givenBlockedQueueWhenParent
         // Acquire CS to check if reset queue was called
         mockDevQueue.acquireEMCriticalSection();
 
-        MockEvent<UserEvent> mockEvent(context);
+        auto mockEvent = make_releaseable<UserEvent>(context);
 
-        cl_event eventBlocking = &mockEvent;
+        cl_event eventBlocking = mockEvent.get();
 
         pCmdQ->enqueueKernel(pKernel, 1, globalOffsets, workItems, workItems, 1, &eventBlocking, nullptr);
 
@@ -367,7 +363,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, ParentKernelEnqueueTest, givenNonBlockedQueueWhenPar
         MockMultiDispatchInfo multiDispatchInfo(pKernel);
 
         int32_t executionStamp = 0;
-        auto mockCSR = new MockCsrBase<FamilyType>(executionStamp);
+        auto mockCSR = new MockCsrBase<FamilyType>(executionStamp, *pDevice->executionEnvironment);
         pDevice->resetCommandStreamReceiver(mockCSR);
 
         pCmdQ->enqueueKernel(pKernel, 1, globalOffsets, workItems, workItems, 0, nullptr, nullptr);
@@ -408,6 +404,7 @@ INSTANTIATE_TEST_CASE_P(ParentKernelEnqueueTest,
 
 class ParentKernelEnqueueFixture : public ExecutionModelSchedulerTest,
                                    public testing::Test {
+  public:
     void SetUp() override {
         ExecutionModelSchedulerTest::SetUp();
     }
@@ -505,14 +502,15 @@ HWTEST_F(ParentKernelEnqueueFixture, GivenParentKernelWhenEnqueuedToBlockedQueue
         size_t gws[3] = {1, 1, 1};
         DeviceQueueHw<FamilyType> *pDevQueueHw = castToObject<DeviceQueueHw<FamilyType>>(pDevQueue);
 
-        MockEvent<UserEvent> mockEvent(context);
-        cl_event eventBlocking = &mockEvent;
+        auto mockEvent = make_releaseable<MockEvent<UserEvent>>(context);
+        cl_event eventBlocking = mockEvent.get();
 
         EXPECT_TRUE(pDevQueueHw->isEMCriticalSectionFree());
 
         pCmdQ->enqueueKernel(parentKernel, 1, offset, gws, gws, 1, &eventBlocking, nullptr);
 
         EXPECT_TRUE(pDevQueueHw->isEMCriticalSectionFree());
+        mockEvent->setStatus(-1);
     }
 }
 
@@ -522,7 +520,7 @@ HWTEST_F(ParentKernelEnqueueFixture, ParentKernelEnqueuedToNonBlockedQueueFlushe
         size_t offset[3] = {0, 0, 0};
         size_t gws[3] = {1, 1, 1};
         int32_t execStamp;
-        auto mockCsr = new MockCsr<FamilyType>(execStamp);
+        auto mockCsr = new MockCsr<FamilyType>(execStamp, *pDevice->executionEnvironment);
         pDevice->resetCommandStreamReceiver(mockCsr);
 
         pCmdQ->enqueueKernel(parentKernel, 1, offset, gws, gws, 0, nullptr, nullptr);
@@ -546,7 +544,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelEnqueueFixture, ParentKernelEnqueuedWith
         size_t offset[3] = {0, 0, 0};
         size_t gws[3] = {1, 1, 1};
         int32_t execStamp;
-        auto mockCsr = new MockCsr<FamilyType>(execStamp);
+        auto mockCsr = new MockCsr<FamilyType>(execStamp, *pDevice->executionEnvironment);
 
         BuiltinKernelsSimulation::SchedulerSimulation<FamilyType>::enabled = false;
 
@@ -563,7 +561,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelEnqueueFixture, ParentKernelEnqueuedWith
 
 HWTEST_F(ParentKernelEnqueueFixture, givenCsrInBatchingModeWhenExecutionModelKernelIsSubmittedThenItIsFlushed) {
     if (pDevice->getSupportedClVersion() >= 20) {
-        auto mockCsr = new MockCsrHw2<FamilyType>(pDevice->getHardwareInfo());
+        auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
         mockCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
         pDevice->resetCommandStreamReceiver(mockCsr);
 
@@ -573,7 +571,8 @@ HWTEST_F(ParentKernelEnqueueFixture, givenCsrInBatchingModeWhenExecutionModelKer
         size_t offset[3] = {0, 0, 0};
         size_t gws[3] = {1, 1, 1};
 
-        std::unique_ptr<MockParentKernel> kernelToRun(MockParentKernel::create(*pDevice, false, false, false, false, false));
+        MockContext context(pDevice);
+        std::unique_ptr<MockParentKernel> kernelToRun(MockParentKernel::create(context, false, false, false, false, false));
 
         pCmdQ->enqueueKernel(kernelToRun.get(), 1, offset, gws, gws, 0, nullptr, nullptr);
 
@@ -588,10 +587,10 @@ HWTEST_F(ParentKernelEnqueueFixture, ParentKernelEnqueueMarksCSRMediaVFEStateDir
         size_t offset[3] = {0, 0, 0};
         size_t gws[3] = {1, 1, 1};
         int32_t execStamp;
-        auto mockCsr = new MockCsr<FamilyType>(execStamp);
+        auto mockCsr = new MockCsr<FamilyType>(execStamp, *pDevice->executionEnvironment);
         pDevice->resetCommandStreamReceiver(mockCsr);
 
-        mockCsr->overrideMediaVFEStateDirty(false);
+        mockCsr->setMediaVFEStateDirty(false);
         pCmdQ->enqueueKernel(parentKernel, 1, offset, gws, gws, 0, nullptr, nullptr);
 
         EXPECT_TRUE(mockCsr->peekMediaVfeStateDirty());

@@ -1,50 +1,46 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/command_stream/command_stream_receiver_hw.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "unit_tests/mocks/mock_experimental_command_buffer.h"
-#include <map>
 
-namespace OCLRT {
+#include <map>
+#include <memory>
+
+namespace NEO {
+
+class GmmPageTableMngr;
 
 template <typename GfxFamily>
-class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily> {
+class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, public NonCopyableOrMovableClass {
     using BaseClass = CommandStreamReceiverHw<GfxFamily>;
 
   public:
+    using BaseClass::deviceIndex;
     using BaseClass::dshState;
-    using BaseClass::hwInfo;
+    using BaseClass::getScratchPatchAddress;
     using BaseClass::indirectHeap;
     using BaseClass::iohState;
     using BaseClass::programPreamble;
+    using BaseClass::programStateSip;
     using BaseClass::sshState;
+    using BaseClass::CommandStreamReceiver::cleanupResources;
     using BaseClass::CommandStreamReceiver::commandStream;
     using BaseClass::CommandStreamReceiver::disableL3Cache;
     using BaseClass::CommandStreamReceiver::dispatchMode;
+    using BaseClass::CommandStreamReceiver::executionEnvironment;
     using BaseClass::CommandStreamReceiver::experimentalCmdBuffer;
     using BaseClass::CommandStreamReceiver::flushStamp;
+    using BaseClass::CommandStreamReceiver::GSBAFor32BitProgrammed;
     using BaseClass::CommandStreamReceiver::isPreambleSent;
+    using BaseClass::CommandStreamReceiver::isStateSipSent;
     using BaseClass::CommandStreamReceiver::lastMediaSamplerConfig;
     using BaseClass::CommandStreamReceiver::lastPreemptionMode;
     using BaseClass::CommandStreamReceiver::lastSentCoherencyRequest;
@@ -53,48 +49,54 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily> {
     using BaseClass::CommandStreamReceiver::lastVmeSubslicesConfig;
     using BaseClass::CommandStreamReceiver::latestFlushedTaskCount;
     using BaseClass::CommandStreamReceiver::latestSentStatelessMocsConfig;
+    using BaseClass::CommandStreamReceiver::mediaVfeStateDirty;
+    using BaseClass::CommandStreamReceiver::requiredScratchSize;
     using BaseClass::CommandStreamReceiver::requiredThreadArbitrationPolicy;
+    using BaseClass::CommandStreamReceiver::samplerCacheFlushRequired;
+    using BaseClass::CommandStreamReceiver::scratchSpaceController;
+    using BaseClass::CommandStreamReceiver::stallingPipeControlOnNextFlushRequired;
+    using BaseClass::CommandStreamReceiver::submissionAggregator;
     using BaseClass::CommandStreamReceiver::taskCount;
     using BaseClass::CommandStreamReceiver::taskLevel;
+    using BaseClass::CommandStreamReceiver::timestampPacketAllocator;
+    using BaseClass::CommandStreamReceiver::timestampPacketWriteEnabled;
+    using BaseClass::CommandStreamReceiver::waitForTaskCountAndCleanAllocationList;
 
-    UltCommandStreamReceiver(const UltCommandStreamReceiver &) = delete;
-    UltCommandStreamReceiver &operator=(const UltCommandStreamReceiver &) = delete;
-
-    static CommandStreamReceiver *create(const HardwareInfo &hwInfoIn, bool withAubDump) {
-        return new UltCommandStreamReceiver<GfxFamily>(hwInfoIn);
-    }
-
-    UltCommandStreamReceiver(const HardwareInfo &hwInfoIn) : BaseClass(hwInfoIn) {
-        this->storeMakeResidentAllocations = false;
-        if (hwInfoIn.capabilityTable.defaultPreemptionMode == PreemptionMode::MidThread) {
-            tempPreemptionLocation = new GraphicsAllocation(nullptr, 0);
-            this->preemptionCsrAllocation = tempPreemptionLocation;
+    virtual ~UltCommandStreamReceiver() override {
+        if (tempPreemptionLocation) {
+            this->setPreemptionCsrAllocation(nullptr);
         }
     }
 
-    virtual MemoryManager *createMemoryManager(bool enable64kbPages) override {
-        memoryManager = new OsAgnosticMemoryManager(enable64kbPages);
-        return memoryManager;
+    UltCommandStreamReceiver(ExecutionEnvironment &executionEnvironment) : BaseClass(executionEnvironment), recursiveLockCounter(0) {
+        if (executionEnvironment.getHardwareInfo()->capabilityTable.defaultPreemptionMode == PreemptionMode::MidThread) {
+            tempPreemptionLocation = std::make_unique<GraphicsAllocation>(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, 0, 0, 0, MemoryPool::MemoryNull, false);
+            this->preemptionCsrAllocation = tempPreemptionLocation.get();
+        }
+    }
+
+    static CommandStreamReceiver *create(bool withAubDump, ExecutionEnvironment &executionEnvironment) {
+        return new UltCommandStreamReceiver<GfxFamily>(executionEnvironment);
+    }
+
+    virtual GmmPageTableMngr *createPageTableManager() override {
+        createPageTableManagerCalled = true;
+        return nullptr;
+    }
+
+    CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
+                              const IndirectHeap &dsh, const IndirectHeap &ioh, const IndirectHeap &ssh,
+                              uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) override {
+        this->lastFlushedCommandStream = &commandStream;
+        return BaseClass::flushTask(commandStream, commandStreamStart, dsh, ioh, ssh, taskLevel, dispatchFlags, device);
+    }
+
+    size_t getPreferredTagPoolSize() const override {
+        return BaseClass::getPreferredTagPoolSize() + 1;
     }
 
     void overrideCsrSizeReqFlags(CsrSizeRequestFlags &flags) { this->csrSizeRequestFlags = flags; }
-    bool isPreambleProgrammed() const { return this->isPreambleSent; }
-    bool isGSBAFor32BitProgrammed() const { return this->GSBAFor32BitProgrammed; }
-    bool isMediaVfeStateDirty() const { return this->mediaVfeStateDirty; }
-    bool isLastVmeSubslicesConfig() const { return this->lastVmeSubslicesConfig; }
-    uint32_t getLastSentL3Config() const { return this->lastSentL3Config; }
-    int8_t getLastSentCoherencyRequest() const { return this->lastSentCoherencyRequest; }
-    int8_t getLastMediaSamplerConfig() const { return this->lastMediaSamplerConfig; }
-    PreemptionMode getLastPreemptionMode() const { return this->lastPreemptionMode; }
-    uint32_t getLatestSentStatelessMocsConfig() const { return this->latestSentStatelessMocsConfig; }
-
-    virtual ~UltCommandStreamReceiver() override;
-    GraphicsAllocation *getTagAllocation() { return tagAllocation; }
-    GraphicsAllocation *getPreemptionCsrAllocation() {
-        return this->preemptionCsrAllocation;
-    }
-    using SamplerCacheFlushState = CommandStreamReceiver::SamplerCacheFlushState;
-    SamplerCacheFlushState peekSamplerCacheFlushRequired() const { return this->samplerCacheFlushRequired; }
+    GraphicsAllocation *getPreemptionCsrAllocation() const { return this->preemptionCsrAllocation; }
 
     void makeResident(GraphicsAllocation &gfxAllocation) override {
         if (storeMakeResidentAllocations) {
@@ -110,16 +112,20 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily> {
         BaseClass::makeResident(gfxAllocation);
     }
 
-    bool isMadeResident(GraphicsAllocation *graphicsAllocation) {
+    bool isMadeResident(GraphicsAllocation *graphicsAllocation) const {
         return makeResidentAllocations.find(graphicsAllocation) != makeResidentAllocations.end();
     }
 
     std::map<GraphicsAllocation *, uint32_t> makeResidentAllocations;
-    bool storeMakeResidentAllocations;
+    bool storeMakeResidentAllocations = false;
 
     void activateAubSubCapture(const MultiDispatchInfo &dispatchInfo) override {
         CommandStreamReceiverHw<GfxFamily>::activateAubSubCapture(dispatchInfo);
         activateAubSubCaptureCalled = true;
+    }
+    void addAubComment(const char *message) override {
+        CommandStreamReceiverHw<GfxFamily>::addAubComment(message);
+        addAubCommentCalled = true;
     }
     void flushBatchedSubmissions() override {
         CommandStreamReceiverHw<GfxFamily>::flushBatchedSubmissions();
@@ -130,25 +136,21 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily> {
         initProgrammingFlagsCalled = true;
     }
 
+    std::unique_lock<CommandStreamReceiver::MutexType> obtainUniqueOwnership() override {
+        recursiveLockCounter++;
+        return CommandStreamReceiverHw<GfxFamily>::obtainUniqueOwnership();
+    }
+
+    std::atomic<uint32_t> recursiveLockCounter;
+    bool createPageTableManagerCalled = false;
     bool activateAubSubCaptureCalled = false;
+    bool addAubCommentCalled = false;
     bool flushBatchedSubmissionsCalled = false;
     bool initProgrammingFlagsCalled = false;
+    LinearStream *lastFlushedCommandStream = nullptr;
 
   protected:
-    using BaseClass::CommandStreamReceiver::memoryManager;
-    using BaseClass::CommandStreamReceiver::tagAddress;
-    using BaseClass::CommandStreamReceiver::tagAllocation;
-    using BaseClass::CommandStreamReceiver::waitForTaskCountAndCleanAllocationList;
-
-    GraphicsAllocation *tempPreemptionLocation = nullptr;
+    std::unique_ptr<GraphicsAllocation> tempPreemptionLocation;
 };
 
-template <typename GfxFamily>
-UltCommandStreamReceiver<GfxFamily>::~UltCommandStreamReceiver() {
-    if (tempPreemptionLocation) {
-        this->setPreemptionCsrAllocation(nullptr);
-        delete tempPreemptionLocation;
-    }
-}
-
-} // namespace OCLRT
+} // namespace NEO

@@ -1,31 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/sharings/d3d/d3d_sharing.h"
-#include "runtime/context/context.h"
-#include "runtime/mem_obj/image.h"
-#include "runtime/gmm_helper/gmm.h"
 
-using namespace OCLRT;
+#include "runtime/context/context.h"
+#include "runtime/gmm_helper/gmm.h"
+#include "runtime/mem_obj/image.h"
+
+using namespace NEO;
 
 template class D3DSharing<D3DTypesHelper::D3D9>;
 template class D3DSharing<D3DTypesHelper::D3D10>;
@@ -55,9 +41,7 @@ D3DSharing<D3D>::~D3DSharing() {
 };
 
 template <typename D3D>
-void D3DSharing<D3D>::synchronizeObject(UpdateData *updateData) {
-    void *sharedHandle = nullptr;
-
+void D3DSharing<D3D>::synchronizeObject(UpdateData &updateData) {
     sharingFunctions->getDeviceContext(d3dQuery);
     if (!sharedResource) {
         sharingFunctions->copySubresourceRegion(resourceStaging, 0, resource, subresource);
@@ -67,7 +51,7 @@ void D3DSharing<D3D>::synchronizeObject(UpdateData *updateData) {
     }
     sharingFunctions->releaseDeviceContext(d3dQuery);
 
-    updateData->synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
+    updateData.synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
 }
 
 template <typename D3D>
@@ -98,26 +82,11 @@ void D3DSharing<D3D>::updateImgInfo(Gmm *gmm, ImageInfo &imgInfo, cl_image_desc 
 
 template <typename D3D>
 const SurfaceFormatInfo *D3DSharing<D3D>::findSurfaceFormatInfo(GMM_RESOURCE_FORMAT_ENUM gmmFormat, cl_mem_flags flags) {
-    const SurfaceFormatInfo *surfaceFormatTable = nullptr;
-    const SurfaceFormatInfo *surfaceFormatInfo = nullptr;
-    size_t numSurfaceFormats = 0;
-
-    if ((flags & CL_MEM_READ_ONLY) == CL_MEM_READ_ONLY) {
-        surfaceFormatTable = readOnlySurfaceFormats;
-        numSurfaceFormats = numReadOnlySurfaceFormats;
-    } else if ((flags & CL_MEM_WRITE_ONLY) == CL_MEM_WRITE_ONLY) {
-        surfaceFormatTable = writeOnlySurfaceFormats;
-        numSurfaceFormats = numWriteOnlySurfaceFormats;
-    } else {
-        surfaceFormatTable = readWriteSurfaceFormats;
-        numSurfaceFormats = numReadWriteSurfaceFormats;
-    }
-
-    for (size_t i = 0; i < numSurfaceFormats; i++) {
-        if (gmmFormat == surfaceFormatTable[i].GMMSurfaceFormat) {
-            surfaceFormatInfo = &surfaceFormatTable[i];
-            break;
+    ArrayRef<const SurfaceFormatInfo> formats = SurfaceFormats::surfaceFormats(flags);
+    for (auto &format : formats) {
+        if (gmmFormat == format.GMMSurfaceFormat) {
+            return &format;
         }
     }
-    return surfaceFormatInfo;
+    return nullptr;
 }

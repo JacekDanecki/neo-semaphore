@@ -1,37 +1,24 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "hw_cmds.h"
+#include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/string.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/built_ins/built_ins.h"
+
+#include "hw_cmds.h"
+
 #include <new>
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
 cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
@@ -40,17 +27,19 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
     size_t offset,
     size_t size,
     const void *ptr,
+    GraphicsAllocation *mapAllocation,
     cl_uint numEventsInWaitList,
     const cl_event *eventWaitList,
     cl_event *event) {
 
     cl_int retVal = CL_SUCCESS;
     auto isMemTransferNeeded = buffer->isMemObjZeroCopy() ? buffer->checkIfMemoryTransferIsRequired(offset, 0, ptr, CL_COMMAND_READ_BUFFER) : true;
-    if ((DebugManager.flags.DoCpuCopyOnWriteBuffer.get() ||
+    if (((DebugManager.flags.DoCpuCopyOnWriteBuffer.get() && !Event::checkUserEventDependencies(numEventsInWaitList, eventWaitList) &&
+          buffer->getGraphicsAllocation()->getAllocationType() != GraphicsAllocation::AllocationType::BUFFER_COMPRESSED) ||
          buffer->isReadWriteOnCpuAllowed(blockingWrite, numEventsInWaitList, const_cast<void *>(ptr), size)) &&
         context->getDevice(0)->getDeviceInfo().cpuCopyAllowed) {
         if (!isMemTransferNeeded) {
-            TransferProperties transferProperties(buffer, CL_COMMAND_MARKER, 0, true, &offset, &size, const_cast<void *>(ptr));
+            TransferProperties transferProperties(buffer, CL_COMMAND_MARKER, 0, true, &offset, &size, const_cast<void *>(ptr), false);
             EventsRequest eventsRequest(numEventsInWaitList, eventWaitList, event);
             cpuDataTransferHandler(transferProperties, eventsRequest, retVal);
 
@@ -64,12 +53,12 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
             }
             return retVal;
         }
-        TransferProperties transferProperties(buffer, CL_COMMAND_WRITE_BUFFER, 0, true, &offset, &size, const_cast<void *>(ptr));
+        TransferProperties transferProperties(buffer, CL_COMMAND_WRITE_BUFFER, 0, true, &offset, &size, const_cast<void *>(ptr), true);
         EventsRequest eventsRequest(numEventsInWaitList, eventWaitList, event);
         cpuDataTransferHandler(transferProperties, eventsRequest, retVal);
-
         return retVal;
     }
+
     MultiDispatchInfo dispatchInfo;
     if (!isMemTransferNeeded) {
         NullSurface s;
@@ -92,28 +81,40 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
 
         return CL_SUCCESS;
     }
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBuffer,
-                                                                          this->getContext(), this->getDevice());
+    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBuffer,
+                                                                                                        this->getContext(), this->getDevice());
 
-    builder.takeOwnership(this->context);
+    BuiltInOwnershipWrapper builtInLock(builder, this->context);
 
     void *srcPtr = const_cast<void *>(ptr);
 
     HostPtrSurface hostPtrSurf(srcPtr, size, true);
     MemObjSurface bufferSurf(buffer);
-    Surface *surfaces[] = {&bufferSurf, &hostPtrSurf};
+    GeneralSurface mapSurface;
+    Surface *surfaces[] = {&bufferSurf, nullptr};
 
-    if (size != 0) {
-        bool status = createAllocationForHostSurface(hostPtrSurf);
-        if (!status) {
-            builder.releaseOwnership();
-            return CL_OUT_OF_RESOURCES;
+    if (mapAllocation) {
+        surfaces[1] = &mapSurface;
+        mapSurface.setGraphicsAllocation(mapAllocation);
+        //get offset between base cpu ptr of map allocation and dst ptr
+        size_t srcOffset = ptrDiff(srcPtr, mapAllocation->getUnderlyingBuffer());
+        srcPtr = reinterpret_cast<void *>(mapAllocation->getGpuAddress() + srcOffset);
+    } else {
+        surfaces[1] = &hostPtrSurf;
+        if (size != 0) {
+            bool status = getCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, false);
+            if (!status) {
+                return CL_OUT_OF_RESOURCES;
+            }
+            srcPtr = reinterpret_cast<void *>(hostPtrSurf.getAllocation()->getGpuAddress());
         }
-        srcPtr = reinterpret_cast<void *>(hostPtrSurf.getAllocation()->getGpuAddressToPatch());
     }
+    void *alignedSrcPtr = alignDown(srcPtr, 4);
+    size_t srcPtrOffset = ptrDiff(srcPtr, alignedSrcPtr);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
-    dc.srcPtr = srcPtr;
+    dc.srcPtr = alignedSrcPtr;
+    dc.srcOffset = {srcPtrOffset, 0, 0};
     dc.dstMemObj = buffer;
     dc.dstOffset = {offset, 0, 0};
     dc.size = {size, 0, 0};
@@ -131,8 +132,6 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
         context->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, CL_ENQUEUE_WRITE_BUFFER_REQUIRES_COPY_DATA, static_cast<cl_mem>(buffer));
     }
 
-    builder.releaseOwnership();
-
     return CL_SUCCESS;
 }
-} // namespace OCLRT
+} // namespace NEO

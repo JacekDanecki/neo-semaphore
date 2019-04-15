@@ -1,30 +1,19 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2018 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 set(IGDRCL_SRCS_tests_utilities
+  ${CMAKE_CURRENT_SOURCE_DIR}/base_object_utils.h
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
   ${CMAKE_CURRENT_SOURCE_DIR}/containers_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/containers_tests_helpers
   ${CMAKE_CURRENT_SOURCE_DIR}/cpuinfo_tests.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/debug_file_reader_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/debug_file_reader_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/debug_file_reader_tests.inl
   ${CMAKE_CURRENT_SOURCE_DIR}/debug_settings_reader_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/destructor_counted.h
   ${CMAKE_CURRENT_SOURCE_DIR}/directory_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/heap_allocator_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/numeric_tests.cpp

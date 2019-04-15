@@ -1,25 +1,7 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * File Name: scheduler.cl
+ * SPDX-License-Identifier: MIT
  *
  */
 
@@ -173,18 +155,18 @@ __global IGIL_KernelData* IGIL_GetKernelData( __global IGIL_KernelDataHeader* pK
 }
 
 
-inline __global IGIL_CommandHeader* TEMP_IGIL_GetCommandHeader( queue_t q, uint offset )
+inline __global IGIL_CommandHeader* TEMP_IGIL_GetCommandHeader( __global IGIL_CommandQueue* q, uint offset )
 {
-    __global uchar *pQueueRaw = __builtin_astype( q, __global uchar* );
+    __global uchar *pQueueRaw = (__global uchar *) q;
 
     __global IGIL_CommandHeader* pCommand = ( __global IGIL_CommandHeader* )( pQueueRaw + offset );
 
     return pCommand;
 }
 //Make sure enough command packets are in command queue before calling this function.
-__global IGIL_CommandHeader* TEMP_IGIL_GetNthCommandHeader( queue_t q, uint initialOffset, uint number )
+__global IGIL_CommandHeader* TEMP_IGIL_GetNthCommandHeader( __global IGIL_CommandQueue* q, uint initialOffset, uint number )
 {
-    __global uchar *pQueueRaw = __builtin_astype( q, __global uchar* );
+    __global uchar *pQueueRaw = (__global uchar *) q;
 
     __global IGIL_CommandHeader* pCommand = ( __global IGIL_CommandHeader* )( pQueueRaw + initialOffset );
     uint Offset = initialOffset;
@@ -200,9 +182,9 @@ __global IGIL_CommandHeader* TEMP_IGIL_GetNthCommandHeader( queue_t q, uint init
 }
 
 //Make sure enough command packets are in command queue before calling this function.
-uint TEMP_IGIL_GetNthCommandHeaderOffset( queue_t q, uint initialOffset, uint number )
+uint TEMP_IGIL_GetNthCommandHeaderOffset( __global IGIL_CommandQueue* q, uint initialOffset, uint number )
 {
-    __global uchar *pQueueRaw = __builtin_astype( q, __global uchar* );
+    __global uchar *pQueueRaw = (__global uchar *) q;
 
     __global IGIL_CommandHeader* pCommand = ( __global IGIL_CommandHeader* )( pQueueRaw + initialOffset );
     uint Offset = initialOffset;
@@ -2896,13 +2878,13 @@ void SchedulerParallel20(
         {
             if( CurrentPacket == GroupID )
             {
-                offset                  = TEMP_IGIL_GetNthCommandHeaderOffset( __builtin_astype( pQueue, queue_t ), InitialOffset, CurrentPacket );
+                offset                  = TEMP_IGIL_GetNthCommandHeaderOffset( pQueue, InitialOffset, CurrentPacket );
             }
             else
             {
-                offset                  = TEMP_IGIL_GetNthCommandHeaderOffset( __builtin_astype( pQueue, queue_t ), offset, get_num_groups( 0 ) );
+                offset                  = TEMP_IGIL_GetNthCommandHeaderOffset( pQueue, offset, get_num_groups( 0 ) );
             }
-            pCommand                    = TEMP_IGIL_GetCommandHeader( __builtin_astype( pQueue, queue_t ), offset );
+            pCommand                    = TEMP_IGIL_GetCommandHeader( pQueue, offset );
 
             //Initialize command packet with proper lws
             if( get_local_id( 0 ) == 0 )

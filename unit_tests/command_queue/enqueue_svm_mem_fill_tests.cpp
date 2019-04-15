@@ -1,33 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/memory_manager/svm_memory_manager.h"
-#include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/command_queue/command_queue_fixture.h"
-#include "unit_tests/mocks/mock_builtin_dispatch_info_builder.h"
 #include "test.h"
+#include "unit_tests/command_queue/command_queue_fixture.h"
+#include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/mocks/mock_builtin_dispatch_info_builder.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct EnqueueSvmMemFillTest : public DeviceFixture,
                                public CommandQueueHwFixture,
@@ -42,9 +27,11 @@ struct EnqueueSvmMemFillTest : public DeviceFixture,
         CommandQueueFixture::SetUp(pDevice, 0);
         patternSize = (size_t)GetParam();
         ASSERT_TRUE((0 < patternSize) && (patternSize <= 128));
-        svmPtr = context->getSVMAllocsManager()->createSVMAlloc(256, true);
+        svmPtr = context->getSVMAllocsManager()->createSVMAlloc(256, CL_MEM_SVM_FINE_GRAIN_BUFFER);
         ASSERT_NE(nullptr, svmPtr);
-        svmAlloc = context->getSVMAllocsManager()->getSVMAlloc(svmPtr);
+        auto svmData = context->getSVMAllocsManager()->getSVMAlloc(svmPtr);
+        ASSERT_NE(nullptr, svmData);
+        svmAlloc = svmData->gpuAllocation;
         ASSERT_NE(nullptr, svmAlloc);
     }
 
@@ -76,19 +63,21 @@ HWTEST_P(EnqueueSvmMemFillTest, givenEnqueueSVMMemFillWhenUsingFillBufferBuilder
         size_t patternSize;
     };
 
+    auto &builtIns = *pCmdQ->getDevice().getExecutionEnvironment()->getBuiltIns();
+
     // retrieve original builder
-    auto &origBuilder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(
+    auto &origBuilder = builtIns.getBuiltinDispatchInfoBuilder(
         EBuiltInOps::FillBuffer,
         pCmdQ->getContext(),
         pCmdQ->getDevice());
     ASSERT_NE(nullptr, &origBuilder);
 
     // substitute original builder with mock builder
-    auto oldBuilder = BuiltIns::getInstance().setBuiltinDispatchInfoBuilder(
+    auto oldBuilder = builtIns.setBuiltinDispatchInfoBuilder(
         EBuiltInOps::FillBuffer,
         pCmdQ->getContext(),
         pCmdQ->getDevice(),
-        std::unique_ptr<OCLRT::BuiltinDispatchInfoBuilder>(new MockFillBufferBuilder(BuiltIns::getInstance(), &origBuilder, pattern, patternSize)));
+        std::unique_ptr<NEO::BuiltinDispatchInfoBuilder>(new MockFillBufferBuilder(builtIns, &origBuilder, pattern, patternSize)));
     EXPECT_EQ(&origBuilder, oldBuilder.get());
 
     // call enqueue on mock builder
@@ -104,7 +93,7 @@ HWTEST_P(EnqueueSvmMemFillTest, givenEnqueueSVMMemFillWhenUsingFillBufferBuilder
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     // restore original builder and retrieve mock builder
-    auto newBuilder = BuiltIns::getInstance().setBuiltinDispatchInfoBuilder(
+    auto newBuilder = builtIns.setBuiltinDispatchInfoBuilder(
         EBuiltInOps::FillBuffer,
         pCmdQ->getContext(),
         pCmdQ->getDevice(),
@@ -112,7 +101,7 @@ HWTEST_P(EnqueueSvmMemFillTest, givenEnqueueSVMMemFillWhenUsingFillBufferBuilder
     EXPECT_NE(nullptr, newBuilder);
 
     // check if original builder is restored correctly
-    auto &restoredBuilder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(
+    auto &restoredBuilder = builtIns.getBuiltinDispatchInfoBuilder(
         EBuiltInOps::FillBuffer,
         pCmdQ->getContext(),
         pCmdQ->getDevice());

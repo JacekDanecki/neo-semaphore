@@ -1,35 +1,19 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
 #include "runtime/kernel/kernel.h"
-#include "unit_tests/fixtures/platform_fixture.h"
-#include "unit_tests/program/program_from_binary.h"
-#include "unit_tests/mocks/mock_kernel.h"
-
 #include "test.h"
+#include "unit_tests/fixtures/platform_fixture.h"
+#include "unit_tests/mocks/mock_kernel.h"
+#include "unit_tests/program/program_from_binary.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 class ExecutionModelKernelFixture : public ProgramFromBinaryTest,
                                     public PlatformFixture {
@@ -48,7 +32,7 @@ class ExecutionModelKernelFixture : public ProgramFromBinaryTest,
         temp.assign(pPlatform->getDevice(0)->getDeviceInfo().clVersion);
 
         if (temp.find("OpenCL 1.2") != std::string::npos) {
-            pDevice = DeviceHelper<>::create();
+            pDevice = MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr);
             return;
         }
 
@@ -80,17 +64,22 @@ class ExecutionModelKernelFixture : public ProgramFromBinaryTest,
     }
 
     void TearDown() override {
-        delete pKernel;
+        if (pKernel != nullptr) {
+            pKernel->release();
+        }
 
         std::string temp;
         temp.assign(pPlatform->getDevice(0)->getDeviceInfo().clVersion);
 
-        if (temp.find("OpenCL 1.2") != std::string::npos) {
-            delete pDevice;
-            pDevice = nullptr;
-        }
         ProgramFromBinaryTest::TearDown();
         PlatformFixture::TearDown();
+
+        if (temp.find("OpenCL 1.2") != std::string::npos) {
+            if (pDevice != nullptr) {
+                delete pDevice;
+                pDevice = nullptr;
+            }
+        }
     }
 
     Kernel *pKernel;

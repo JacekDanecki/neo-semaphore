@@ -1,37 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "../mocks/mock_program.h"
-#include "../mocks/mock_csr.h"
 #include "runtime/helpers/string.h"
+#include "runtime/memory_manager/allocations_list.h"
 #include "runtime/memory_manager/graphics_allocation.h"
+#include "runtime/os_interface/32bit_memory.h"
 #include "runtime/platform/platform.h"
 #include "runtime/program/program.h"
-#include "runtime/os_interface/32bit_memory.h"
-#include "unit_tests/gen_common/test.h"
-#include "unit_tests/program/program_with_source.h"
+#include "test.h"
 #include "unit_tests/mocks/mock_buffer.h"
+#include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_program.h"
+#include "unit_tests/program/program_with_source.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 using namespace iOpenCL;
 static const char constValue[] = "11223344";
@@ -74,7 +60,6 @@ class ProgramDataTest : public testing::Test,
         ProgramFixture::TearDown();
         ContextFixture::TearDown();
         PlatformFixture::TearDown();
-        CompilerInterface::shutdown();
     }
 
     size_t setupConstantAllocation() {
@@ -190,16 +175,16 @@ TEST_F(ProgramDataTest, givenConstantAllocationThatIsInUseByGpuWhenProgramIsBein
 
     buildAndDecodeProgramPatchList();
 
-    auto tagAddress = pProgram->getDevice(0).getTagAddress();
+    auto &csr = *pPlatform->getDevice(0)->getDefaultEngine().commandStreamReceiver;
+    auto tagAddress = csr.getTagAddress();
     auto constantSurface = pProgram->getConstantSurface();
-    constantSurface->taskCount = *tagAddress + 1;
+    constantSurface->updateTaskCount(*tagAddress + 1, csr.getOsContext().getContextId());
 
-    auto memoryManager = pProgram->getDevice(0).getMemoryManager();
-    EXPECT_TRUE(memoryManager->graphicsAllocations.peekIsEmpty());
+    EXPECT_TRUE(csr.getTemporaryAllocations().peekIsEmpty());
     delete pProgram;
     pProgram = nullptr;
-    EXPECT_FALSE(memoryManager->graphicsAllocations.peekIsEmpty());
-    EXPECT_EQ(constantSurface, memoryManager->graphicsAllocations.peekHead());
+    EXPECT_FALSE(csr.getTemporaryAllocations().peekIsEmpty());
+    EXPECT_EQ(constantSurface, csr.getTemporaryAllocations().peekHead());
 }
 
 TEST_F(ProgramDataTest, givenGlobalAllocationThatIsInUseByGpuWhenProgramIsBeingDestroyedThenItIsAddedToTemporaryAllocationList) {
@@ -207,16 +192,16 @@ TEST_F(ProgramDataTest, givenGlobalAllocationThatIsInUseByGpuWhenProgramIsBeingD
 
     buildAndDecodeProgramPatchList();
 
-    auto tagAddress = pProgram->getDevice(0).getTagAddress();
+    auto &csr = *pPlatform->getDevice(0)->getDefaultEngine().commandStreamReceiver;
+    auto tagAddress = csr.getTagAddress();
     auto globalSurface = pProgram->getGlobalSurface();
-    globalSurface->taskCount = *tagAddress + 1;
+    globalSurface->updateTaskCount(*tagAddress + 1, csr.getOsContext().getContextId());
 
-    auto memoryManager = pProgram->getDevice(0).getMemoryManager();
-    EXPECT_TRUE(memoryManager->graphicsAllocations.peekIsEmpty());
+    EXPECT_TRUE(csr.getTemporaryAllocations().peekIsEmpty());
     delete pProgram;
     pProgram = nullptr;
-    EXPECT_FALSE(memoryManager->graphicsAllocations.peekIsEmpty());
-    EXPECT_EQ(globalSurface, memoryManager->graphicsAllocations.peekHead());
+    EXPECT_FALSE(csr.getTemporaryAllocations().peekIsEmpty());
+    EXPECT_EQ(globalSurface, csr.getTemporaryAllocations().peekHead());
 }
 
 TEST_F(ProgramDataTest, GivenDeviceForcing32BitMessagesWhenConstAllocationIsPresentInProgramBinariesThen32BitStorageIsAllocated) {
@@ -229,7 +214,7 @@ TEST_F(ProgramDataTest, GivenDeviceForcing32BitMessagesWhenConstAllocationIsPres
     EXPECT_EQ(0, memcmp(constValue, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constSize));
 
     if (is64bit) {
-        EXPECT_TRUE(pProgram->getConstantSurface()->is32BitAllocation);
+        EXPECT_TRUE(pProgram->getConstantSurface()->is32BitAllocation());
     }
 }
 
@@ -385,7 +370,7 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
 
     auto globalSurface = pProgram->getGlobalSurface();
 
-    if (!globalSurface->is32BitAllocation) {
+    if (!globalSurface->is32BitAllocation()) {
         EXPECT_NE(0, memcmp(&pGlobalPointerValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
         ptr = pGlobalPointerValue + reinterpret_cast<uintptr_t>(pProgram->getGlobalSurface()->getUnderlyingBuffer());
         EXPECT_EQ(0, memcmp(&ptr, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
@@ -423,7 +408,7 @@ TEST_F(ProgramDataTest, Given32BitDeviceWhenGlobalMemorySurfaceIsPresentThenItHa
     EXPECT_NE(nullptr, pProgram->getGlobalSurface());
     EXPECT_EQ(0, memcmp(globalValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalSize));
     if (is64bit) {
-        EXPECT_TRUE(pProgram->getGlobalSurface()->is32BitAllocation);
+        EXPECT_TRUE(pProgram->getGlobalSurface()->is32BitAllocation());
     }
 
     delete[] pAllocateGlobalMemorySurface;
@@ -493,7 +478,7 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     // once finally constant buffer offset gets patched - the patch value depends on the bitness of the compute kernel
     auto patchOffsetValueStorage = std::unique_ptr<uint64_t>(new uint64_t); // 4bytes for 32-bit compute kernel, full 8byte for 64-bit compute kernel
     uint64_t *patchOffsetValue = patchOffsetValueStorage.get();
-    if (pProgram->getConstantSurface()->is32BitAllocation || (sizeof(void *) == 4)) {
+    if (pProgram->getConstantSurface()->is32BitAllocation() || (sizeof(void *) == 4)) {
         reinterpret_cast<uint32_t *>(patchOffsetValue)[0] = static_cast<uint32_t>(pProgram->getConstantSurface()->getGpuAddressToPatch());
         reinterpret_cast<uint32_t *>(patchOffsetValue)[1] = 0; // just pad with 0
     } else {
@@ -630,7 +615,7 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeConstantB
     MockBuffer constantSurface;
     ASSERT_LT(8U, constantSurface.getSize());
     prog->setConstantSurface(&constantSurface.mockGfxAllocation);
-    constantSurface.mockGfxAllocation.is32BitAllocation = true;
+    constantSurface.mockGfxAllocation.set32BitAllocation(true);
     uint32_t *constantSurfaceStorage = reinterpret_cast<uint32_t *>(constantSurface.getCpuAddress());
     uint32_t sentinel = 0x17192329U;
     constantSurfaceStorage[0] = 0U;
@@ -639,7 +624,7 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeConstantB
     uint32_t expectedAddr = static_cast<uint32_t>(constantSurface.getGraphicsAllocation()->getGpuAddressToPatch());
     EXPECT_EQ(expectedAddr, constantSurfaceStorage[0]);
     EXPECT_EQ(sentinel, constantSurfaceStorage[1]);
-    constantSurface.mockGfxAllocation.is32BitAllocation = false;
+    constantSurface.mockGfxAllocation.set32BitAllocation(false);
     prog->setConstantSurface(nullptr);
 }
 
@@ -672,7 +657,7 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeGlobalPoi
     MockBuffer globalSurface;
     ASSERT_LT(8U, globalSurface.getSize());
     prog->setGlobalSurface(&globalSurface.mockGfxAllocation);
-    globalSurface.mockGfxAllocation.is32BitAllocation = true;
+    globalSurface.mockGfxAllocation.set32BitAllocation(true);
     uint32_t *globalSurfaceStorage = reinterpret_cast<uint32_t *>(globalSurface.getCpuAddress());
     uint32_t sentinel = 0x17192329U;
     globalSurfaceStorage[0] = 0U;
@@ -681,6 +666,6 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeGlobalPoi
     uint32_t expectedAddr = static_cast<uint32_t>(globalSurface.getGraphicsAllocation()->getGpuAddressToPatch());
     EXPECT_EQ(expectedAddr, globalSurfaceStorage[0]);
     EXPECT_EQ(sentinel, globalSurfaceStorage[1]);
-    globalSurface.mockGfxAllocation.is32BitAllocation = false;
+    globalSurface.mockGfxAllocation.set32BitAllocation(false);
     prog->setGlobalSurface(nullptr);
 }

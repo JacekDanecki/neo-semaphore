@@ -1,39 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "gtest/gtest.h"
-#include "CL/cl.h"
 #include "runtime/device/device.h"
+#include "runtime/helpers/array_count.h"
 #include "runtime/helpers/file_io.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/program/program.h"
-#include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/program_fixture.h"
+#include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_kernel.h"
+#include "unit_tests/mocks/mock_program.h"
 
-namespace OCLRT {
+#include "CL/cl.h"
+#include "gtest/gtest.h"
+
+#include <type_traits>
+
+namespace NEO {
 
 class Kernel;
 class Program;
@@ -132,8 +121,10 @@ class SimpleArgKernelFixture : public ProgramFixture {
     }
 
     virtual void TearDown() {
-        delete pKernel;
-        pKernel = nullptr;
+        if (pKernel) {
+            delete pKernel;
+            pKernel = nullptr;
+        }
 
         pContext->release();
 
@@ -144,4 +135,112 @@ class SimpleArgKernelFixture : public ProgramFixture {
     Kernel *pKernel;
     MockContext *pContext;
 };
-} // namespace OCLRT
+
+class SimpleArgNonUniformKernelFixture : public ProgramFixture {
+  public:
+    using ProgramFixture::SetUp;
+    SimpleArgNonUniformKernelFixture()
+        : retVal(CL_SUCCESS), kernel(nullptr) {
+    }
+
+  protected:
+    void SetUp(Device *device, Context *context) {
+        ProgramFixture::SetUp();
+
+        cl_device_id deviceId = device;
+        cl_context clContext = context;
+
+        CreateProgramFromBinary<Program>(
+            clContext,
+            &deviceId,
+            "simple_nonuniform",
+            "-cl-std=CL2.0");
+        ASSERT_NE(nullptr, pProgram);
+
+        retVal = pProgram->build(
+            1,
+            &deviceId,
+            "-cl-std=CL2.0",
+            nullptr,
+            nullptr,
+            false);
+        ASSERT_EQ(CL_SUCCESS, retVal);
+
+        kernel = Kernel::create<MockKernel>(
+            pProgram,
+            *pProgram->getKernelInfo("simpleNonUniform"),
+            &retVal);
+        ASSERT_NE(nullptr, kernel);
+        ASSERT_EQ(CL_SUCCESS, retVal);
+    }
+
+    virtual void TearDown() {
+        if (kernel) {
+            delete kernel;
+            kernel = nullptr;
+        }
+
+        ProgramFixture::TearDown();
+    }
+
+    cl_int retVal;
+    Kernel *kernel;
+};
+
+class SimpleKernelFixture : public ProgramFixture {
+  public:
+    using ProgramFixture::SetUp;
+
+  protected:
+    void SetUp(Device *device, Context *context) {
+        ProgramFixture::SetUp();
+
+        cl_device_id deviceId = device;
+        cl_context clContext = context;
+        std::string programName("simple_kernels");
+        CreateProgramFromBinary<Program>(
+            clContext,
+            &deviceId,
+            programName);
+        ASSERT_NE(nullptr, pProgram);
+
+        retVal = pProgram->build(
+            1,
+            &deviceId,
+            nullptr,
+            nullptr,
+            nullptr,
+            false);
+        ASSERT_EQ(CL_SUCCESS, retVal);
+
+        for (size_t i = 0; i < maxKernelsCount; i++) {
+            if ((1 << i) & kernelIds) {
+                std::string kernelName("simple_kernel_");
+                kernelName.append(std::to_string(i));
+                kernels[i].reset(Kernel::create<MockKernel>(
+                    pProgram,
+                    *pProgram->getKernelInfo(kernelName.c_str()),
+                    &retVal));
+                ASSERT_NE(nullptr, kernels[i]);
+                ASSERT_EQ(CL_SUCCESS, retVal);
+            }
+        }
+    }
+
+    virtual void TearDown() {
+        for (size_t i = 0; i < maxKernelsCount; i++) {
+            if (kernels[i]) {
+                kernels[i].reset(nullptr);
+            }
+        }
+
+        ProgramFixture::TearDown();
+    }
+
+    uint32_t kernelIds = 0;
+    static constexpr size_t maxKernelsCount = std::numeric_limits<decltype(kernelIds)>::digits;
+    cl_int retVal = CL_SUCCESS;
+    std::array<std::unique_ptr<Kernel>, maxKernelsCount> kernels;
+};
+
+} // namespace NEO

@@ -1,30 +1,16 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "unit_tests/fixtures/gmm_environment_fixture.h"
-#include "unit_tests/mocks/mock_wddm20.h"
+#include "runtime/command_stream/preemption.h"
+#include "runtime/helpers/options.h"
 #include "test.h"
+#include "unit_tests/mocks/mock_wddm.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 class WddmMockReserveAddress : public WddmMock {
   public:
@@ -68,14 +54,12 @@ class WddmMockReserveAddress : public WddmMock {
     uint32_t returnNullIter = 0;
 };
 
-using WddmReserveAddressTest = Test<GmmEnvironmentFixture>;
-
-HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsSuccessfulThenReturnReserveAddress) {
+TEST(WddmReserveAddressTest, givenWddmWhenFirstIsSuccessfulThenReturnReserveAddress) {
     std::unique_ptr<WddmMockReserveAddress> wddm(new WddmMockReserveAddress());
     size_t size = 0x1000;
     void *reserve = nullptr;
 
-    bool ret = wddm->init<FamilyType>();
+    bool ret = wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     EXPECT_TRUE(ret);
 
     wddm->returnGood = 1;
@@ -87,12 +71,12 @@ HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsSuccessfulThenReturnReserve
     wddm->releaseReservedAddress(reserve);
 }
 
-HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsNullThenReturnNull) {
+TEST(WddmReserveAddressTest, givenWddmWhenFirstIsNullThenReturnNull) {
     std::unique_ptr<WddmMockReserveAddress> wddm(new WddmMockReserveAddress());
     size_t size = 0x1000;
     void *reserve = nullptr;
 
-    bool ret = wddm->init<FamilyType>();
+    bool ret = wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     EXPECT_TRUE(ret);
     uintptr_t expectedReserve = 0;
     ret = wddm->reserveValidAddressRange(size, reserve);
@@ -100,12 +84,12 @@ HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsNullThenReturnNull) {
     EXPECT_EQ(expectedReserve, reinterpret_cast<uintptr_t>(reserve));
 }
 
-HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsInvalidSecondSuccessfulThenReturnSecond) {
+TEST(WddmReserveAddressTest, givenWddmWhenFirstIsInvalidSecondSuccessfulThenReturnSecond) {
     std::unique_ptr<WddmMockReserveAddress> wddm(new WddmMockReserveAddress());
     size_t size = 0x1000;
     void *reserve = nullptr;
 
-    bool ret = wddm->init<FamilyType>();
+    bool ret = wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     EXPECT_TRUE(ret);
 
     wddm->returnInvalidCount = 1;
@@ -117,12 +101,12 @@ HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsInvalidSecondSuccessfulThen
     wddm->releaseReservedAddress(reserve);
 }
 
-HWTEST_F(WddmReserveAddressTest, givenWddmWhenSecondIsInvalidThirdSuccessfulThenReturnThird) {
+TEST(WddmReserveAddressTest, givenWddmWhenSecondIsInvalidThirdSuccessfulThenReturnThird) {
     std::unique_ptr<WddmMockReserveAddress> wddm(new WddmMockReserveAddress());
     size_t size = 0x1000;
     void *reserve = nullptr;
 
-    bool ret = wddm->init<FamilyType>();
+    bool ret = wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     EXPECT_TRUE(ret);
 
     wddm->returnInvalidCount = 2;
@@ -134,12 +118,12 @@ HWTEST_F(WddmReserveAddressTest, givenWddmWhenSecondIsInvalidThirdSuccessfulThen
     wddm->releaseReservedAddress(reserve);
 }
 
-HWTEST_F(WddmReserveAddressTest, givenWddmWhenFirstIsInvalidSecondNullThenReturnSecondNull) {
+TEST(WddmReserveAddressTest, givenWddmWhenFirstIsInvalidSecondNullThenReturnSecondNull) {
     std::unique_ptr<WddmMockReserveAddress> wddm(new WddmMockReserveAddress());
     size_t size = 0x1000;
     void *reserve = nullptr;
 
-    bool ret = wddm->init<FamilyType>();
+    bool ret = wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     EXPECT_TRUE(ret);
 
     wddm->returnInvalidCount = 2;

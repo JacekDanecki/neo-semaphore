@@ -1,32 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
-#include "hw_info.h"
 #include "runtime/aub_mem_dump/aub_services.h"
-#include "runtime/helpers/engine_node.h"
 #include "runtime/memory_manager/memory_constants.h"
 
-namespace OCLRT {
+#include "engine_node.h"
+#include "hw_cmds.h"
+#include "hw_info.h"
+
+namespace NEO {
 
 const char *HwMapper<IGFX_CANNONLAKE>::abbreviation = "cnl";
 
@@ -54,30 +40,35 @@ const PLATFORM CNL::platform = {
     GTTYPE_UNDEFINED};
 
 const RuntimeCapabilityTable CNL::capabilityTable{
-    0,
-    83.333,
-    21,
-    true,
-    true,
-    true,
-    true,
-    true,  // ftrSupportsVmeAvcTextureSampler
-    true,  // ftrSupportsVmeAvcPreemption
-    false, // ftrRenderCompressedBuffers
-    false, // ftrRenderCompressedImages
-    PreemptionMode::MidThread,
-    {true, true},
-    &isSimulationCNL,
-    true,
-    true,                           // forceStatelessCompilationFor32Bit
-    {false, 0, false, 0, false, 0}, // KmdNotifyProperties
-    true,                           // ftr64KBpages
-    EngineType::ENGINE_RCS,         // defaultEngineType
-    MemoryConstants::pageSize,      //requiredPreemptionSurfaceSize
-    true,
-    true, // sourceLevelDebuggerSupported
-    CmdServicesMemTraceVersion::DeviceValues::Cnl,
-    0}; // extraQuantityThreadsPerEU
+    {0, 0, 0, false, false, false},                // kmdNotifyProperties
+    {true, true},                                  // whitelistedRegisters
+    MemoryConstants::max48BitAddress,              // gpuAddressSpace
+    83.333,                                        // defaultProfilingTimerResolution
+    MemoryConstants::pageSize,                     // requiredPreemptionSurfaceSize
+    &isSimulationCNL,                              // isSimulation
+    PreemptionMode::MidThread,                     // defaultPreemptionMode
+    aub_stream::ENGINE_RCS,                        // defaultEngineType
+    0,                                             // maxRenderFrequency
+    21,                                            // clVersionSupport
+    CmdServicesMemTraceVersion::DeviceValues::Cnl, // aubDeviceId
+    0,                                             // extraQuantityThreadsPerEU
+    64,                                            // slmSize
+    true,                                          // ftrSupportsFP64
+    true,                                          // ftrSupports64BitMath
+    true,                                          // ftrSvm
+    true,                                          // ftrSupportsCoherency
+    true,                                          // ftrSupportsVmeAvcTextureSampler
+    true,                                          // ftrSupportsVmeAvcPreemption
+    false,                                         // ftrRenderCompressedBuffers
+    false,                                         // ftrRenderCompressedImages
+    true,                                          // ftr64KBpages
+    true,                                          // instrumentationEnabled
+    true,                                          // forceStatelessCompilationFor32Bit
+    true,                                          // isCore
+    true,                                          // sourceLevelDebuggerSupported
+    true,                                          // supportsVme
+    false                                          // supportCacheFlushAfterWalker
+};
 
 const HardwareInfo CNL_2x5x8::hwInfo = {
     &CNL::platform,
@@ -87,11 +78,11 @@ const HardwareInfo CNL_2x5x8::hwInfo = {
     CNL::capabilityTable,
 };
 GT_SYSTEM_INFO CNL_2x5x8::gtSystemInfo = {0};
-void CNL_2x5x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void CNL_2x5x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 39;
     gtSysInfo->ThreadCount = 39 * CNL::threadsPerEu;
     gtSysInfo->SliceCount = 2;
-    gtSysInfo->SubSliceCount = 5;
+    gtSysInfo->SubSliceCount = 10;
     gtSysInfo->L3CacheSizeInKb = 1536;
     gtSysInfo->L3BankCount = 6;
     gtSysInfo->MaxFillRate = 16;
@@ -115,11 +106,11 @@ const HardwareInfo CNL_2x4x8::hwInfo = {
     CNL::capabilityTable,
 };
 GT_SYSTEM_INFO CNL_2x4x8::gtSystemInfo = {0};
-void CNL_2x4x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void CNL_2x4x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 31;
     gtSysInfo->ThreadCount = 31 * CNL::threadsPerEu;
     gtSysInfo->SliceCount = 2;
-    gtSysInfo->SubSliceCount = 4;
+    gtSysInfo->SubSliceCount = 8;
     gtSysInfo->L3CacheSizeInKb = 1536;
     gtSysInfo->L3BankCount = 6;
     gtSysInfo->MaxFillRate = 16;
@@ -143,7 +134,7 @@ const HardwareInfo CNL_1x3x8::hwInfo = {
     CNL::capabilityTable,
 };
 GT_SYSTEM_INFO CNL_1x3x8::gtSystemInfo = {0};
-void CNL_1x3x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void CNL_1x3x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 23;
     gtSysInfo->ThreadCount = 23 * CNL::threadsPerEu;
     gtSysInfo->SliceCount = 1;
@@ -171,7 +162,7 @@ const HardwareInfo CNL_1x2x8::hwInfo = {
     CNL::capabilityTable,
 };
 GT_SYSTEM_INFO CNL_1x2x8::gtSystemInfo = {0};
-void CNL_1x2x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void CNL_1x2x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 15;
     gtSysInfo->ThreadCount = 15 * CNL::threadsPerEu;
     gtSysInfo->SliceCount = 1;
@@ -199,11 +190,11 @@ const HardwareInfo CNL_4x9x8::hwInfo = {
     CNL::capabilityTable,
 };
 GT_SYSTEM_INFO CNL_4x9x8::gtSystemInfo = {0};
-void CNL_4x9x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
+void CNL_4x9x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
     gtSysInfo->EUCount = 71;
     gtSysInfo->ThreadCount = 71 * CNL::threadsPerEu;
     gtSysInfo->SliceCount = 4;
-    gtSysInfo->SubSliceCount = 9;
+    gtSysInfo->SubSliceCount = 36;
     gtSysInfo->L3CacheSizeInKb = 1536;
     gtSysInfo->L3BankCount = 6;
     gtSysInfo->MaxFillRate = 16;
@@ -220,5 +211,25 @@ void CNL_4x9x8::setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo) {
     gtSysInfo->IsDynamicallyPopulated = false;
 };
 const HardwareInfo CNL::hwInfo = CNL_2x5x8::hwInfo;
-void (*CNL::setupGtSystemInfo)(GT_SYSTEM_INFO *) = CNL_2x5x8::setupGtSystemInfo;
-} // namespace OCLRT
+
+void setupCNLHardwareInfoImpl(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable, const std::string &hwInfoConfig) {
+    if (hwInfoConfig == "1x2x8") {
+        CNL_1x2x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "1x3x8") {
+        CNL_1x3x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "2x5x8") {
+        CNL_2x5x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "2x4x8") {
+        CNL_2x4x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "4x9x8") {
+        CNL_4x9x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else if (hwInfoConfig == "default") {
+        // Default config
+        CNL_2x5x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+    } else {
+        UNRECOVERABLE_IF(true);
+    }
+}
+
+void (*CNL::setupHardwareInfo)(GT_SYSTEM_INFO *, FeatureTable *, bool, const std::string &) = setupCNLHardwareInfoImpl;
+} // namespace NEO

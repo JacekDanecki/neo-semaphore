@@ -1,45 +1,34 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/command_stream/device_command_stream.h"
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/helpers/aligned_memory.h"
+#include "runtime/mem_obj/buffer.h"
+#include "runtime/os_interface/linux/drm_buffer_object.h"
+#include "runtime/os_interface/linux/drm_command_stream.h"
+#include "runtime/os_interface/linux/drm_gem_close_worker.h"
+#include "runtime/os_interface/linux/drm_memory_manager.h"
+#include "runtime/os_interface/linux/os_interface.h"
+#include "test.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
+
+#include "drm/i915_drm.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "hw_cmds.h"
+
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <thread>
 
-#include "runtime/command_stream/device_command_stream.h"
-#include "hw_cmds.h"
-#include "runtime/helpers/aligned_memory.h"
-#include "runtime/mem_obj/buffer.h"
-#include "drm/i915_drm.h"
-#include "runtime/os_interface/linux/drm_buffer_object.h"
-#include "runtime/os_interface/linux/drm_command_stream.h"
-#include "runtime/os_interface/linux/drm_gem_close_worker.h"
-#include "runtime/os_interface/linux/drm_memory_manager.h"
-#include "test.h"
-#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
-
-using namespace OCLRT;
+using namespace NEO;
 
 class DrmMockForWorker : public Drm {
   public:
@@ -66,6 +55,7 @@ class DrmMockForWorker : public Drm {
 
 class DrmGemCloseWorkerFixture {
   public:
+    DrmGemCloseWorkerFixture() : executionEnvironment(*platformDevices){};
     //max loop count for while
     static const uint32_t deadCntInit = 10 * 1000 * 1000;
 
@@ -79,7 +69,13 @@ class DrmGemCloseWorkerFixture {
         this->drmMock->gem_close_cnt = 0;
         this->drmMock->gem_close_expected = 0;
 
-        this->mm = new DrmMemoryManager(this->drmMock, gemCloseWorkerMode::gemCloseWorkerInactive, false, false);
+        executionEnvironment.osInterface = std::make_unique<OSInterface>();
+        executionEnvironment.osInterface->get()->setDrm(drmMock);
+
+        this->mm = new DrmMemoryManager(gemCloseWorkerMode::gemCloseWorkerInactive,
+                                        false,
+                                        false,
+                                        executionEnvironment);
     }
 
     void TearDown() {
@@ -95,14 +91,17 @@ class DrmGemCloseWorkerFixture {
   protected:
     class BufferObjectWrapper : public BufferObject {
       public:
-        BufferObjectWrapper(Drm *drm, int handle) : BufferObject(drm, handle, false) {
+        BufferObjectWrapper(Drm *drm, int handle)
+            : BufferObject(drm, handle, false) {
         }
     };
     class DrmAllocationWrapper : public DrmAllocation {
       public:
-        DrmAllocationWrapper(BufferObject *bo) : DrmAllocation(bo, nullptr, 0, MemoryPool::MemoryNull) {
+        DrmAllocationWrapper(BufferObject *bo)
+            : DrmAllocation(GraphicsAllocation::AllocationType::UNDECIDED, bo, nullptr, 0, MemoryPool::MemoryNull, 1u, false) {
         }
     };
+    MockExecutionEnvironment executionEnvironment;
 };
 
 typedef Test<DrmGemCloseWorkerFixture> DrmGemCloseWorkerTests;

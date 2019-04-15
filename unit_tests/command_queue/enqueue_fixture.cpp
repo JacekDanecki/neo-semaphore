@@ -1,27 +1,13 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/ptr_math.h"
 #include "unit_tests/command_queue/enqueue_fixture.h"
+
+#include "runtime/helpers/ptr_math.h"
 
 // clang-format off
 // EnqueueTraits
@@ -91,11 +77,12 @@ cl_int *EnqueueMapBufferTraits::errcodeRet       = nullptr;
 cl_command_type EnqueueMapBufferTraits::cmdType = CL_COMMAND_MAP_BUFFER;
 
 // EnqueueReadBufferTraits
-const cl_bool EnqueueReadBufferTraits::blocking   = CL_TRUE;
-const size_t EnqueueReadBufferTraits::offset      = 0;
-const size_t EnqueueReadBufferTraits::sizeInBytes = negOne;
-void *EnqueueReadBufferTraits::hostPtr            = ptrOutput;
-cl_command_type EnqueueReadBufferTraits::cmdType = CL_COMMAND_READ_BUFFER;
+const cl_bool EnqueueReadBufferTraits::blocking             = CL_TRUE;
+const size_t EnqueueReadBufferTraits::offset                = 0;
+const size_t EnqueueReadBufferTraits::sizeInBytes           = negOne;
+void *EnqueueReadBufferTraits::hostPtr                      = ptrOutput;
+cl_command_type EnqueueReadBufferTraits::cmdType            = CL_COMMAND_READ_BUFFER;
+GraphicsAllocation *EnqueueReadBufferTraits::mapAllocation  = nullptr;
 
 // EnqueueReadImageTraits
 const cl_bool EnqueueReadImageTraits::blocking  = CL_TRUE;
@@ -107,12 +94,13 @@ void *EnqueueReadImageTraits::hostPtr           = ptrOutput;
 cl_command_type EnqueueReadImageTraits::cmdType = CL_COMMAND_READ_IMAGE;
 
 // EnqueueWriteBufferTraits
-const bool EnqueueWriteBufferTraits::zeroCopy      = true;
-const cl_bool EnqueueWriteBufferTraits::blocking   = CL_TRUE;
-const size_t EnqueueWriteBufferTraits::offset      = 0;
-const size_t EnqueueWriteBufferTraits::sizeInBytes = negOne;
-void *EnqueueWriteBufferTraits::hostPtr            = ptrGarbage;
-cl_command_type EnqueueWriteBufferTraits::cmdType  = CL_COMMAND_WRITE_BUFFER;
+const bool EnqueueWriteBufferTraits::zeroCopy               = true;
+const cl_bool EnqueueWriteBufferTraits::blocking            = CL_TRUE;
+const size_t EnqueueWriteBufferTraits::offset               = 0;
+const size_t EnqueueWriteBufferTraits::sizeInBytes          = negOne;
+void *EnqueueWriteBufferTraits::hostPtr                     = ptrGarbage;
+cl_command_type EnqueueWriteBufferTraits::cmdType           = CL_COMMAND_WRITE_BUFFER;
+GraphicsAllocation *EnqueueWriteBufferTraits::mapAllocation = nullptr;
 
 // EnqueueWriteBufferRectTraits
 const bool EnqueueWriteBufferRectTraits::zeroCopy          = true;

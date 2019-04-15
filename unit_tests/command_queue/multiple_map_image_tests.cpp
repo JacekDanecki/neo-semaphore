@@ -1,33 +1,19 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/command_queue/command_queue_hw.h"
+#include "runtime/event/user_event.h"
+#include "runtime/gmm_helper/gmm_helper.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct MultipleMapImageTest : public DeviceFixture, public ::testing::Test {
     template <typename T>
@@ -102,13 +88,13 @@ struct MultipleMapImageTest : public DeviceFixture, public ::testing::Test {
 
     template <typename Traits, typename FamilyType>
     std::unique_ptr<MockImage<FamilyType>> createMockImage() {
-        auto mockAlloc = pDevice->getMemoryManager()->allocateGraphicsMemory(1024);
+        auto allocationSize = Traits::imageDesc.image_width * 4 * Traits::imageDesc.image_height * Traits::imageDesc.image_depth;
+        auto mockAlloc = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{allocationSize});
         auto tiledImage = GmmHelper::allowTiling(Traits::imageDesc);
 
         auto surfaceFormat = Image::getSurfaceFormatFromTable(Traits::flags, &Traits::imageFormat);
-        auto img = new MockImage<FamilyType>(context, Traits::flags, 1024, Traits::hostPtr,
-                                             Traits::imageFormat, Traits::imageDesc, false, mockAlloc, false,
-                                             tiledImage, 0, 0, *surfaceFormat);
+        auto img = new MockImage<FamilyType>(context, Traits::flags, allocationSize, Traits::hostPtr, Traits::imageFormat,
+                                             Traits::imageDesc, false, mockAlloc, false, tiledImage, 0, 0, *surfaceFormat);
         return std::unique_ptr<MockImage<FamilyType>>(img);
     }
 
@@ -320,10 +306,9 @@ HWTEST_F(MultipleMapImageTest, givenMultimpleMapsWhenUnmappingThenRemoveCorrectP
     auto image = createMockImage<Image3dDefaults, FamilyType>();
     auto cmdQ = createMockCmdQ<FamilyType>();
 
-    MapInfo mappedPtrs[3] = {
-        {nullptr, 1, {{1, 1, 1}}, {{1, 1, 1}}, 0},
-        {nullptr, 1, {{4, 4, 2}}, {{4, 4, 4}}, 0},
-        {nullptr, 1, {{10, 10, 10}}, {{10, 10, 10}}, 0}};
+    MapInfo mappedPtrs[3] = {{nullptr, 1, {{1, 1, 1}}, {{1, 1, 1}}, 0},
+                             {nullptr, 1, {{2, 2, 2}}, {{2, 2, 2}}, 0},
+                             {nullptr, 1, {{3, 5, 7}}, {{4, 4, 4}}, 0}};
 
     for (size_t i = 0; i < 3; i++) {
         mappedPtrs[i].ptr = clEnqueueMapImage(cmdQ.get(), image.get(), CL_TRUE, CL_MAP_WRITE, &mappedPtrs[i].offset[0], &mappedPtrs[i].size[0],

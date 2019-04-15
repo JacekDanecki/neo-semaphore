@@ -1,27 +1,12 @@
-# Copyright (c) 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2018-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 macro(macro_for_each_gen)
   list(APPEND IGDRCL_SRCS_ENABLE_TESTED_HW
     ${IGDRCL_SOURCE_DIR}/unit_tests/${GEN_TYPE_LOWER}/cmd_parse_${GEN_TYPE_LOWER}.cpp
-    ${IGDRCL_SOURCE_DIR}/unit_tests/${GEN_TYPE_LOWER}/gen_cmd_parse.h
     ${IGDRCL_SOURCE_DIR}/unit_tests/libult/${GEN_TYPE_LOWER}.cpp
     ${IGDRCL_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/enable_family_full_${GEN_TYPE_LOWER}.cpp
     ${IGDRCL_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/enable_hw_info_config_${GEN_TYPE_LOWER}.cpp
@@ -34,6 +19,8 @@ apply_macro_for_each_gen("TESTED")
 set(IGDRCL_SRCS_LIB_ULT
   ${IGDRCL_SOURCE_DIR}/unit_tests/abort.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/helpers/built_ins_helper.cpp
+  ${IGDRCL_SOURCE_DIR}/unit_tests/helpers/execution_environment_helper.cpp
+  ${IGDRCL_SOURCE_DIR}/unit_tests/helpers/execution_environment_helper.h
   ${IGDRCL_SOURCE_DIR}/unit_tests/libult/create_tbx_sockets.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/libult/ult_command_stream_receiver.h
   ${IGDRCL_SOURCE_DIR}/unit_tests/helpers/debug_helpers.cpp
@@ -43,18 +30,16 @@ set(IGDRCL_SRCS_LIB_ULT
   ${IGDRCL_SOURCE_DIR}/unit_tests/helpers/test_files.h
   ${IGDRCL_SOURCE_DIR}/unit_tests/libult/create_tbx_sockets.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/libult/ult_command_stream_receiver.h
+  ${IGDRCL_SOURCE_DIR}/unit_tests/libult/source_level_debugger.cpp
+  ${IGDRCL_SOURCE_DIR}/unit_tests/libult/source_level_debugger_library.cpp
+  ${IGDRCL_SOURCE_DIR}/unit_tests/libult/source_level_debugger_library.h
   ${IGDRCL_SOURCE_DIR}/unit_tests/program/evaluate_unhandled_token_ult.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_family.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_family.cpp
+  ${IGDRCL_SOURCE_DIR}/unit_tests/utilities/debug_settings_reader_creator.cpp
 )
 
-if(SOURCE_LEVEL_DEBUGGER_HEADERS_DIR)
-  list(APPEND IGDRCL_SRCS_LIB_ULT
-    ${IGDRCL_SOURCE_DIR}/unit_tests/libult/source_level_debugger.cpp
-    ${IGDRCL_SOURCE_DIR}/unit_tests/libult/source_level_debugger_library.cpp
-    ${IGDRCL_SOURCE_DIR}/unit_tests/libult/source_level_debugger_library.h
-  )
-endif()
+set(IGDRCL_SRCS_LIB_ULT_WINDOWS
+  ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/windows/mock_environment_variables.cpp
+)
 
 add_library (igdrcl_libult OBJECT
   ${IGDRCL_SRCS_LIB_ULT}
@@ -108,6 +93,7 @@ add_library (igdrcl_libult_env OBJECT
 )
 
 set(IGDRCL_SRCS_LIB_ULT_ENV_WINDOWS
+  ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/windows/create_wddm_memory_manager.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/windows/options.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/windows/sys_calls.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/windows/ult_dxgi_factory.cpp
@@ -116,12 +102,14 @@ set(IGDRCL_SRCS_LIB_ULT_ENV_WINDOWS
 )
 
 set(IGDRCL_SRCS_LIB_ULT_ENV_LINUX
+  ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/linux/create_drm_memory_manager.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/linux/options.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/linux/allocator_helper.cpp
 )
 
 if(WIN32)
   target_sources(igdrcl_libult_env PRIVATE ${IGDRCL_SRCS_LIB_ULT_ENV_WINDOWS})
+  target_sources(igdrcl_libult PRIVATE ${IGDRCL_SRCS_LIB_ULT_WINDOWS})
 else()
   target_sources(igdrcl_libult_env PRIVATE ${IGDRCL_SRCS_LIB_ULT_ENV_LINUX})
 endif()

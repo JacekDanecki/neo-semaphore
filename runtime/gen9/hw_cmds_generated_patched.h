@@ -1,24 +1,10 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
 #pragma once
 
 #pragma pack(1)
@@ -283,10 +269,10 @@ typedef struct tagMEDIA_SURFACE_STATE {
         return (TheStructure.Common.SurfaceMemoryObjectControlState_Reserved);
     }
     inline void setSurfaceMemoryObjectControlStateIndexToMocsTables(const uint32_t value) {
-        TheStructure.Common.SurfaceMemoryObjectControlState_IndexToMocsTables = value;
+        TheStructure.Common.SurfaceMemoryObjectControlState_IndexToMocsTables = value >> 1;
     }
     inline uint32_t getSurfaceMemoryObjectControlStateIndexToMocsTables(void) const {
-        return (TheStructure.Common.SurfaceMemoryObjectControlState_IndexToMocsTables);
+        return (TheStructure.Common.SurfaceMemoryObjectControlState_IndexToMocsTables << 1);
     }
     inline void setTiledResourceMode(const TILED_RESOURCE_MODE value) {
         TheStructure.Common.TiledResourceMode = value;
@@ -489,4 +475,105 @@ typedef struct tagMI_SEMAPHORE_WAIT {
 } MI_SEMAPHORE_WAIT;
 STATIC_ASSERT(16 == sizeof(MI_SEMAPHORE_WAIT));
 
+typedef struct tagMI_STORE_DATA_IMM {
+    union tagTheStructure {
+        struct tagCommon {
+            uint32_t DwordLength : BITFIELD_RANGE(0, 9);
+            uint32_t Reserved_10 : BITFIELD_RANGE(10, 20);
+            uint32_t StoreQword : BITFIELD_RANGE(21, 21);
+            uint32_t UseGlobalGtt : BITFIELD_RANGE(22, 22);
+            uint32_t MiCommandOpcode : BITFIELD_RANGE(23, 28);
+            uint32_t CommandType : BITFIELD_RANGE(29, 31);
+            uint64_t CoreModeEnable : BITFIELD_RANGE(0, 0);
+            uint64_t Reserved_33 : BITFIELD_RANGE(1, 1);
+            uint64_t Address_Graphicsaddress47_2 : BITFIELD_RANGE(2, 47);
+            uint64_t Address_Reserved : BITFIELD_RANGE(48, 63);
+            uint32_t DataDword0;
+            uint32_t DataDword1;
+        } Common;
+        uint32_t RawData[5];
+    } TheStructure;
+    typedef enum tagDWORD_LENGTH {
+        DWORD_LENGTH_STORE_DWORD = 0x2,
+        DWORD_LENGTH_STORE_QWORD = 0x3,
+    } DWORD_LENGTH;
+    typedef enum tagMI_COMMAND_OPCODE {
+        MI_COMMAND_OPCODE_MI_STORE_DATA_IMM = 0x20,
+    } MI_COMMAND_OPCODE;
+    typedef enum tagCOMMAND_TYPE {
+        COMMAND_TYPE_MI_COMMAND = 0x0,
+    } COMMAND_TYPE;
+    inline void init(void) {
+        memset(&TheStructure, 0, sizeof(TheStructure));
+        TheStructure.Common.DwordLength = DWORD_LENGTH_STORE_DWORD;
+        TheStructure.Common.MiCommandOpcode = MI_COMMAND_OPCODE_MI_STORE_DATA_IMM;
+        TheStructure.Common.CommandType = COMMAND_TYPE_MI_COMMAND;
+    }
+    static tagMI_STORE_DATA_IMM sInit(void) {
+        MI_STORE_DATA_IMM state;
+        state.init();
+        return state;
+    }
+    inline uint32_t &getRawData(const uint32_t index) {
+        DEBUG_BREAK_IF(index >= 5);
+        return TheStructure.RawData[index];
+    }
+    inline void setDwordLength(const DWORD_LENGTH value) {
+        TheStructure.Common.DwordLength = value;
+    }
+    inline DWORD_LENGTH getDwordLength(void) const {
+        return static_cast<DWORD_LENGTH>(TheStructure.Common.DwordLength);
+    }
+    inline void setStoreQword(const bool value) {
+        TheStructure.Common.StoreQword = value;
+    }
+    inline bool getStoreQword(void) const {
+        return (TheStructure.Common.StoreQword);
+    }
+    inline void setUseGlobalGtt(const bool value) {
+        TheStructure.Common.UseGlobalGtt = value;
+    }
+    inline bool getUseGlobalGtt(void) const {
+        return (TheStructure.Common.UseGlobalGtt);
+    }
+    inline void setCoreModeEnable(const uint64_t value) {
+        TheStructure.Common.CoreModeEnable = value;
+    }
+    inline uint64_t getCoreModeEnable(void) const {
+        return (TheStructure.Common.CoreModeEnable);
+    }
+    typedef enum tagADDRESS_GRAPHICSADDRESS47_2 {
+        ADDRESS_GRAPHICSADDRESS47_2_BIT_SHIFT = 0x2,
+        ADDRESS_GRAPHICSADDRESS47_2_ALIGN_SIZE = 0x4,
+    } ADDRESS_GRAPHICSADDRESS47_2;
+    inline void setAddress(const uint64_t value) {
+        TheStructure.Common.Address_Graphicsaddress47_2 = value >> ADDRESS_GRAPHICSADDRESS47_2_BIT_SHIFT;
+    }
+    inline uint64_t getAddress(void) const {
+        return (TheStructure.Common.Address_Graphicsaddress47_2 << ADDRESS_GRAPHICSADDRESS47_2_BIT_SHIFT);
+    }
+    typedef enum tagADDRESS_RESERVED {
+        ADDRESS_RESERVED_BIT_SHIFT = 0x2,
+        ADDRESS_RESERVED_ALIGN_SIZE = 0x4,
+    } ADDRESS_RESERVED;
+    inline void setAddressReserved(const uint64_t value) {
+        TheStructure.Common.Address_Reserved = value >> ADDRESS_RESERVED_BIT_SHIFT;
+    }
+    inline uint64_t getAddressReserved(void) const {
+        return (TheStructure.Common.Address_Reserved << ADDRESS_RESERVED_BIT_SHIFT);
+    }
+    inline void setDataDword0(const uint32_t value) {
+        TheStructure.Common.DataDword0 = value;
+    }
+    inline uint32_t getDataDword0(void) const {
+        return (TheStructure.Common.DataDword0);
+    }
+    inline void setDataDword1(const uint32_t value) {
+        TheStructure.Common.DataDword1 = value;
+    }
+    inline uint32_t getDataDword1(void) const {
+        return (TheStructure.Common.DataDword1);
+    }
+} MI_STORE_DATA_IMM;
+STATIC_ASSERT(20 == sizeof(MI_STORE_DATA_IMM));
 #pragma pack()

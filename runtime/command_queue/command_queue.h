@@ -1,52 +1,52 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "runtime/api/cl_types.h"
-#include "runtime/indirect_heap/indirect_heap.h"
+#include "runtime/event/event.h"
 #include "runtime/helpers/base_object.h"
-#include "runtime/helpers/properties_helper.h"
-#include "runtime/event/user_event.h"
-#include "runtime/os_interface/performance_counters.h"
+#include "runtime/helpers/dispatch_info.h"
+#include "runtime/helpers/engine_control.h"
+#include "runtime/helpers/task_information.h"
+
+#include "instrumentation.h"
+
 #include <atomic>
 #include <cstdint>
 
-namespace OCLRT {
+namespace NEO {
+class BarrierCommand;
 class Buffer;
 class LinearStream;
 class Context;
 class Device;
+class Event;
 class EventBuilder;
+class FlushStampTracker;
 class Image;
 class IndirectHeap;
 class Kernel;
 class MemObj;
+class PerformanceCounters;
 struct CompletionStamp;
+struct MultiDispatchInfo;
 
 enum class QueuePriority {
     LOW,
     MEDIUM,
     HIGH
 };
+
+inline bool shouldFlushDC(uint32_t commandType, PrintfHandler *printfHandler) {
+    return (commandType == CL_COMMAND_READ_BUFFER ||
+            commandType == CL_COMMAND_READ_BUFFER_RECT ||
+            commandType == CL_COMMAND_READ_IMAGE ||
+            commandType == CL_COMMAND_SVM_MAP ||
+            printfHandler);
+}
 
 template <>
 struct OpenCLObjectMapper<_cl_command_queue> {
@@ -207,6 +207,7 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
 
     virtual cl_int enqueueReadBuffer(Buffer *buffer, cl_bool blockingRead,
                                      size_t offset, size_t size, void *ptr,
+                                     GraphicsAllocation *mapAllocation,
                                      cl_uint numEventsInWaitList,
                                      const cl_event *eventWaitList,
                                      cl_event *event) {
@@ -224,6 +225,7 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
 
     virtual cl_int enqueueWriteBuffer(Buffer *buffer, cl_bool blockingWrite,
                                       size_t offset, size_t cb, const void *ptr,
+                                      GraphicsAllocation *mapAllocation,
                                       cl_uint numEventsInWaitList,
                                       const cl_event *eventWaitList,
                                       cl_event *event) {
@@ -297,13 +299,22 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
                                        cl_event *oclEvent,
                                        cl_uint cmdType);
 
-    void *cpuDataTransferHandler(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &retVal);
+    MOCKABLE_VIRTUAL void *cpuDataTransferHandler(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &retVal);
+
+    virtual cl_int enqueueResourceBarrier(BarrierCommand *resourceBarrier,
+                                          cl_uint numEventsInWaitList,
+                                          const cl_event *eventWaitList,
+                                          cl_event *event) {
+        return CL_SUCCESS;
+    }
 
     virtual cl_int finish(bool dcFlush) { return CL_SUCCESS; }
 
     virtual cl_int flush() { return CL_SUCCESS; }
 
-    void updateFromCompletionStamp(const CompletionStamp &completionStamp);
+    MOCKABLE_VIRTUAL void updateFromCompletionStamp(const CompletionStamp &completionStamp);
+
+    virtual bool isCacheFlushCommand(uint32_t commandType) { return false; }
 
     cl_int getCommandQueueInfo(cl_command_queue_info paramName,
                                size_t paramValueSize, void *paramValue,
@@ -319,19 +330,17 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
 
     MOCKABLE_VIRTUAL void waitUntilComplete(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep);
 
-    void flushWaitList(cl_uint numEventsInWaitList,
-                       const cl_event *eventWaitList,
-                       bool ndRangeKernel);
-
     static uint32_t getTaskLevelFromWaitList(uint32_t taskLevel,
                                              cl_uint numEventsInWaitList,
                                              const cl_event *eventWaitList);
 
-    Device &getDevice() { return *device; }
-    Context &getContext() { return *context; }
-    Context *getContextPtr() { return context; }
+    CommandStreamReceiver &getCommandStreamReceiver() const;
+    Device &getDevice() const { return *device; }
+    Context &getContext() const { return *context; }
+    Context *getContextPtr() const { return context; }
+    EngineControl &getEngine() const { return *engine; }
 
-    LinearStream &getCS(size_t minRequiredSize = 1024u);
+    MOCKABLE_VIRTUAL LinearStream &getCS(size_t minRequiredSize);
     IndirectHeap &getIndirectHeap(IndirectHeap::Type heapType,
                                   size_t minRequiredSize);
 
@@ -339,6 +348,13 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
                             size_t minRequiredSize, IndirectHeap *&indirectHeap);
 
     MOCKABLE_VIRTUAL void releaseIndirectHeap(IndirectHeap::Type heapType);
+
+    void releaseVirtualEvent() {
+        if (this->virtualEvent != nullptr) {
+            this->virtualEvent->decRefInternal();
+            this->virtualEvent = nullptr;
+        }
+    }
 
     cl_command_queue_properties getCommandQueueProperties() const {
         return commandQueueProperties;
@@ -393,18 +409,26 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
 
     MOCKABLE_VIRTUAL bool setupDebugSurface(Kernel *kernel);
 
+    bool getRequiresCacheFlushAfterWalker() const {
+        return requiresCacheFlushAfterWalker;
+    }
+
+    bool isMultiEngineQueue() const { return this->multiEngineQueue; }
+
     // taskCount of last task
-    uint32_t taskCount;
+    uint32_t taskCount = 0;
 
     // current taskLevel. Used for determining if a PIPE_CONTROL is needed.
-    uint32_t taskLevel;
+    uint32_t taskLevel = 0;
 
     std::unique_ptr<FlushStampTracker> flushStamp;
 
-    std::atomic<uint32_t> latestTaskCountWaited{(uint32_t)-1};
+    std::atomic<uint32_t> latestTaskCountWaited{std::numeric_limits<uint32_t>::max()};
 
     // virtual event that holds last Enqueue information
-    Event *virtualEvent;
+    Event *virtualEvent = nullptr;
+
+    size_t estimateTimestampPacketNodesCount(const MultiDispatchInfo &dispatchInfo) const;
 
   protected:
     void *enqueueReadMemObjForMap(TransferProperties &transferProperties, EventsRequest &eventsRequest, cl_int &errcodeRet);
@@ -415,25 +439,36 @@ class CommandQueue : public BaseObject<_cl_command_queue> {
 
     virtual void obtainTaskLevelAndBlockedStatus(unsigned int &taskLevel, cl_uint &numEventsInWaitList, const cl_event *&eventWaitList, bool &blockQueue, unsigned int commandType){};
 
-    Context *context;
-    Device *device;
+    MOCKABLE_VIRTUAL void dispatchAuxTranslation(MultiDispatchInfo &multiDispatchInfo, MemObjsForAuxTranslation &memObjsForAuxTranslation,
+                                                 AuxTranslationDirection auxTranslationDirection);
 
-    cl_command_queue_properties commandQueueProperties;
+    void obtainNewTimestampPacketNodes(size_t numberOfNodes, TimestampPacketContainer &previousNodes);
+    void processProperties(const cl_queue_properties *properties);
 
-    QueuePriority priority;
-    QueueThrottle throttle;
+    Context *context = nullptr;
+    Device *device = nullptr;
+    EngineControl *engine = nullptr;
 
-    bool perfCountersEnabled;
-    cl_uint perfCountersConfig;
-    uint32_t perfCountersUserRegistersNumber;
-    InstrPmRegsCfg *perfConfigurationData;
-    uint32_t perfCountersRegsCfgHandle;
-    bool perfCountersRegsCfgPending;
+    cl_command_queue_properties commandQueueProperties = 0;
 
-    LinearStream *commandStream;
+    QueuePriority priority = QueuePriority::MEDIUM;
+    QueueThrottle throttle = QueueThrottle::MEDIUM;
+
+    bool perfCountersEnabled = false;
+    cl_uint perfCountersConfig = std::numeric_limits<uint32_t>::max();
+    uint32_t perfCountersUserRegistersNumber = 0;
+    InstrPmRegsCfg *perfConfigurationData = nullptr;
+    uint32_t perfCountersRegsCfgHandle = 0;
+    bool perfCountersRegsCfgPending = false;
+
+    LinearStream *commandStream = nullptr;
 
     bool mapDcFlushRequired = false;
     bool isSpecialCommandQueue = false;
+    bool requiresCacheFlushAfterWalker = false;
+    bool multiEngineQueue = false;
+
+    std::unique_ptr<TimestampPacketContainer> timestampPacketContainer;
 
   private:
     void providePerformanceHint(TransferProperties &transferProperties);
@@ -450,4 +485,4 @@ LinearStream &getCommandStream(CommandQueue &commandQueue,
 
 template <typename GfxFamily, IndirectHeap::Type heapType>
 IndirectHeap &getIndirectHeap(CommandQueue &commandQueue, const Kernel &kernel);
-} // namespace OCLRT
+} // namespace NEO

@@ -1,45 +1,33 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/basic_math.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT::Math;
-using namespace OCLRT;
+using namespace Math;
 
 TEST(NextPowerOfTwo, aFewCases) {
-    EXPECT_EQ(1u, nextPowerOfTwo(1));
-    EXPECT_EQ(2u, nextPowerOfTwo(2));
-    EXPECT_EQ(4u, nextPowerOfTwo(3));
-    EXPECT_EQ(32u, nextPowerOfTwo(31));
-    EXPECT_EQ(32u, nextPowerOfTwo(32));
-    EXPECT_EQ(64u, nextPowerOfTwo(33));
-    EXPECT_EQ(1u << 31, nextPowerOfTwo((1u << 30) + 1));
-    EXPECT_EQ(1u << 31, nextPowerOfTwo(1u << 31));
+    EXPECT_EQ(1u, nextPowerOfTwo(1U));
+    EXPECT_EQ(2u, nextPowerOfTwo(2U));
+    EXPECT_EQ(4u, nextPowerOfTwo(3U));
+    EXPECT_EQ(32u, nextPowerOfTwo(31U));
+    EXPECT_EQ(32u, nextPowerOfTwo(32U));
+    EXPECT_EQ(64u, nextPowerOfTwo(33U));
+    EXPECT_EQ(1u << 31, nextPowerOfTwo((1u << 30U) + 1));
+    EXPECT_EQ(1u << 31, nextPowerOfTwo(1u << 31U));
+
+    EXPECT_EQ(1ULL << 32, nextPowerOfTwo(static_cast<uint64_t>((1ULL << 31ULL) + 1)));
+    EXPECT_EQ(1ULL << 32, nextPowerOfTwo(static_cast<uint64_t>(1ULL << 32ULL)));
 }
 
 TEST(PrevPowerOfTwo, aroundPowers) {
-    EXPECT_EQ(0u, prevPowerOfTwo(0));
-    EXPECT_EQ(1u, prevPowerOfTwo(1));
+    EXPECT_EQ(0u, prevPowerOfTwo(0U));
+    EXPECT_EQ(1u, prevPowerOfTwo(1U));
     for (uint32_t i = 1; i < 32; i++) {
         uint32_t b = 1 << i;
 
@@ -47,6 +35,9 @@ TEST(PrevPowerOfTwo, aroundPowers) {
         EXPECT_EQ(b, prevPowerOfTwo(b));
         EXPECT_EQ(b, prevPowerOfTwo(b + 1));
     }
+
+    EXPECT_EQ(1ULL << 32, prevPowerOfTwo(static_cast<uint64_t>(1ULL << 32ULL)));
+    EXPECT_EQ(1ULL << 32, prevPowerOfTwo(static_cast<uint64_t>((1ULL << 32ULL) + 7)));
 }
 
 TEST(getMinLsbSet, basicValues) {
@@ -187,4 +178,39 @@ typedef ::testing::TestWithParam<ElementCountsTestData> ComputeTotalElementsCoun
 TEST_P(ComputeTotalElementsCount, givenVariousInputVectorsWhenComputeTotalElementsCountIsUsedThenProperProductIsComputed) {
     Vec3<size_t> inputData(GetParam().x, GetParam().y, GetParam().z);
     EXPECT_EQ(GetParam().result, computeTotalElementsCount(inputData));
+}
+
+TEST(isPow2Test, WhenArgZeroThenReturnFalse) {
+    EXPECT_FALSE(isPow2(0u));
+}
+
+TEST(isPow2Test, WhenArgNonPow2ThenReturnFalse) {
+    EXPECT_FALSE(isPow2(3u));
+    EXPECT_FALSE(isPow2(5u));
+    EXPECT_FALSE(isPow2(6u));
+    EXPECT_FALSE(isPow2(7u));
+    EXPECT_FALSE(isPow2(10u));
+}
+
+TEST(isPow2Test, WhenArgPow2ThenReturnTrue) {
+    EXPECT_TRUE(isPow2(1u));
+    EXPECT_TRUE(isPow2(4u));
+    EXPECT_TRUE(isPow2(8u));
+    EXPECT_TRUE(isPow2(128u));
+    EXPECT_TRUE(isPow2(4096u));
+}
+
+TEST(ffs, givenZeroReturnMaxRange) {
+    EXPECT_EQ(std::numeric_limits<uint32_t>::max(), ffs(0U));
+}
+
+TEST(ffs, givenNonZeroReturnFirstSetBitIndex) {
+    EXPECT_EQ(0U, ffs(0b1U));
+    EXPECT_EQ(0U, ffs(0b11U));
+    EXPECT_EQ(1U, ffs(0b10U));
+    EXPECT_EQ(3U, ffs(0b1001000U));
+    EXPECT_EQ(31U, ffs(1U << 31U));
+    EXPECT_EQ(16U, ffs((1U << 31U) | (1U << 31U) | (1U << 16U)));
+    EXPECT_EQ(16ULL, ffs((1ULL << 63ULL) | (1ULL << 32ULL) | (1ULL << 16ULL)));
+    EXPECT_EQ(63ULL, ffs(1ULL << 63ULL));
 }

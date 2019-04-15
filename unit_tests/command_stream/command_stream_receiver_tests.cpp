@@ -1,43 +1,40 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/aub_mem_dump/aub_services.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/helpers/cache_policy.h"
+#include "runtime/helpers/timestamp_packet.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/graphics_allocation.h"
+#include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "runtime/memory_manager/surface.h"
+#include "runtime/platform/platform.h"
+#include "runtime/utilities/tag_allocator.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/gen_common/matchers.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/unit_test_helper.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_builtins.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
 #include "unit_tests/mocks/mock_program.h"
 
 #include "gmock/gmock.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct CommandStreamReceiverTest : public DeviceFixture,
                                    public ::testing::Test {
@@ -46,6 +43,8 @@ struct CommandStreamReceiverTest : public DeviceFixture,
 
         commandStreamReceiver = &pDevice->getCommandStreamReceiver();
         ASSERT_NE(nullptr, commandStreamReceiver);
+        memoryManager = commandStreamReceiver->getMemoryManager();
+        internalAllocationStorage = commandStreamReceiver->getInternalAllocationStorage();
     }
 
     void TearDown() override {
@@ -53,7 +52,18 @@ struct CommandStreamReceiverTest : public DeviceFixture,
     }
 
     CommandStreamReceiver *commandStreamReceiver;
+    MemoryManager *memoryManager;
+    InternalAllocationStorage *internalAllocationStorage;
 };
+
+TEST_F(CommandStreamReceiverTest, whenCommandStreamReceiverIsSetAsSpecialCommandStreamReceiverInExecutionEnvironmentThenItIsMulitOsContextCapable) {
+    EXPECT_FALSE(commandStreamReceiver->isMultiOsContextCapable());
+
+    auto executionEnvironment = pDevice->getExecutionEnvironment();
+    executionEnvironment->specialCommandStreamReceiver.reset(commandStreamReceiver);
+    EXPECT_TRUE(commandStreamReceiver->isMultiOsContextCapable());
+    executionEnvironment->specialCommandStreamReceiver.release();
+}
 
 HWTEST_F(CommandStreamReceiverTest, testCtor) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
@@ -65,15 +75,15 @@ HWTEST_F(CommandStreamReceiverTest, testCtor) {
 HWTEST_F(CommandStreamReceiverTest, testInitProgrammingFlags) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.initProgrammingFlags();
-    EXPECT_FALSE(csr.isPreambleProgrammed());
-    EXPECT_FALSE(csr.isGSBAFor32BitProgrammed());
-    EXPECT_TRUE(csr.isMediaVfeStateDirty());
-    EXPECT_FALSE(csr.isLastVmeSubslicesConfig());
-    EXPECT_EQ(0u, csr.getLastSentL3Config());
-    EXPECT_EQ(-1, csr.getLastSentCoherencyRequest());
-    EXPECT_EQ(-1, csr.getLastMediaSamplerConfig());
-    EXPECT_EQ(PreemptionMode::Initial, csr.getLastPreemptionMode());
-    EXPECT_EQ(0u, csr.getLatestSentStatelessMocsConfig());
+    EXPECT_FALSE(csr.isPreambleSent);
+    EXPECT_FALSE(csr.GSBAFor32BitProgrammed);
+    EXPECT_TRUE(csr.mediaVfeStateDirty);
+    EXPECT_FALSE(csr.lastVmeSubslicesConfig);
+    EXPECT_EQ(0u, csr.lastSentL3Config);
+    EXPECT_EQ(-1, csr.lastSentCoherencyRequest);
+    EXPECT_EQ(-1, csr.lastMediaSamplerConfig);
+    EXPECT_EQ(PreemptionMode::Initial, csr.lastPreemptionMode);
+    EXPECT_EQ(0u, csr.latestSentStatelessMocsConfig);
 }
 
 TEST_F(CommandStreamReceiverTest, makeResident_setsBufferResidencyFlag) {
@@ -88,11 +98,11 @@ TEST_F(CommandStreamReceiverTest, makeResident_setsBufferResidencyFlag) {
         srcMemory,
         retVal);
     ASSERT_NE(nullptr, buffer);
-    EXPECT_FALSE(buffer->getGraphicsAllocation()->isResident());
+    EXPECT_FALSE(buffer->getGraphicsAllocation()->isResident(commandStreamReceiver->getOsContext().getContextId()));
 
     commandStreamReceiver->makeResident(*buffer->getGraphicsAllocation());
 
-    EXPECT_TRUE(buffer->getGraphicsAllocation()->isResident());
+    EXPECT_TRUE(buffer->getGraphicsAllocation()->isResident(commandStreamReceiver->getOsContext().getContextId()));
 
     delete buffer;
 }
@@ -120,7 +130,7 @@ TEST_F(CommandStreamReceiverTest, getCsReturnsCsWithCsOverfetchSizeIncludedInGra
     auto *allocation = commandStream.getGraphicsAllocation();
     ASSERT_NE(nullptr, allocation);
 
-    size_t expectedTotalSize = alignUp(sizeRequested + MemoryConstants::cacheLineSize, MemoryConstants::pageSize) + CSRequirements::csOverfetchSize;
+    size_t expectedTotalSize = alignUp(sizeRequested + MemoryConstants::cacheLineSize + CSRequirements::csOverfetchSize, MemoryConstants::pageSize64k);
 
     EXPECT_LT(commandStream.getAvailableSpace(), expectedTotalSize);
     EXPECT_LE(commandStream.getAvailableSpace(), expectedTotalSize - CSRequirements::csOverfetchSize);
@@ -141,92 +151,56 @@ TEST_F(CommandStreamReceiverTest, givenCommandStreamReceiverWhenGetCSIsCalledThe
     auto commandStreamAllocation = commandStream.getGraphicsAllocation();
     ASSERT_NE(nullptr, commandStreamAllocation);
 
-    EXPECT_EQ(GraphicsAllocation::AllocationType::LINEAR_STREAM, commandStreamAllocation->getAllocationType());
+    EXPECT_EQ(GraphicsAllocation::AllocationType::COMMAND_BUFFER, commandStreamAllocation->getAllocationType());
 }
 
-TEST_F(CommandStreamReceiverTest, createAllocationAndHandleResidency) {
-    void *host_ptr = (void *)0x1212341;
-    auto size = 17262u;
-
-    GraphicsAllocation *graphicsAllocation = commandStreamReceiver->createAllocationAndHandleResidency(host_ptr, size);
-    ASSERT_NE(nullptr, graphicsAllocation);
-
-    EXPECT_EQ(host_ptr, graphicsAllocation->getUnderlyingBuffer());
-    EXPECT_EQ(size, graphicsAllocation->getUnderlyingBufferSize());
-}
-
-TEST_F(CommandStreamReceiverTest, givenCommandStreamerWhenAllocationIsNotAddedToListThenCallerMustFreeAllocation) {
-    void *hostPtr = reinterpret_cast<void *>(0x1212341);
-    auto size = 17262u;
-
-    GraphicsAllocation *graphicsAllocation = commandStreamReceiver->createAllocationAndHandleResidency(hostPtr, size, false);
-    ASSERT_NE(nullptr, graphicsAllocation);
-
-    EXPECT_EQ(hostPtr, graphicsAllocation->getUnderlyingBuffer());
-    EXPECT_EQ(size, graphicsAllocation->getUnderlyingBufferSize());
-
-    commandStreamReceiver->getMemoryManager()->freeGraphicsMemory(graphicsAllocation);
-}
-
-HWTEST_F(CommandStreamReceiverTest, givenCommandStreamerWhenPtrAndSizeMeetL3CriteriaThenCsrEnableL3) {
+HWTEST_F(CommandStreamReceiverTest, givenPtrAndSizeThatMeetL3CriteriaWhenMakeResidentHostPtrThenCsrEnableL3) {
     void *hostPtr = reinterpret_cast<void *>(0xF000);
     auto size = 0x2000u;
 
-    GraphicsAllocation *graphicsAllocation = commandStreamReceiver->createAllocationAndHandleResidency(hostPtr, size);
+    auto memoryManager = commandStreamReceiver->getMemoryManager();
+    GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, hostPtr);
     ASSERT_NE(nullptr, graphicsAllocation);
+    commandStreamReceiver->makeResidentHostPtrAllocation(graphicsAllocation);
 
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
 
     EXPECT_FALSE(csr.disableL3Cache);
+    memoryManager->freeGraphicsMemory(graphicsAllocation);
 }
 
-HWTEST_F(CommandStreamReceiverTest, givenCommandStreamerWhenPtrAndSizeDoNotMeetL3CriteriaThenCsrDisableL3) {
+HWTEST_F(CommandStreamReceiverTest, givenPtrAndSizeThatDoNotMeetL3CriteriaWhenMakeResidentHostPtrThenCsrDisableL3) {
     void *hostPtr = reinterpret_cast<void *>(0xF001);
     auto size = 0x2001u;
 
-    GraphicsAllocation *graphicsAllocation = commandStreamReceiver->createAllocationAndHandleResidency(hostPtr, size);
+    auto memoryManager = commandStreamReceiver->getMemoryManager();
+    GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, hostPtr);
     ASSERT_NE(nullptr, graphicsAllocation);
+    commandStreamReceiver->makeResidentHostPtrAllocation(graphicsAllocation);
 
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
 
     EXPECT_TRUE(csr.disableL3Cache);
+    memoryManager->freeGraphicsMemory(graphicsAllocation);
 }
 
 TEST_F(CommandStreamReceiverTest, memoryManagerHasAccessToCSR) {
     auto *memoryManager = commandStreamReceiver->getMemoryManager();
-    EXPECT_EQ(commandStreamReceiver, memoryManager->csr);
+    EXPECT_EQ(commandStreamReceiver, memoryManager->getDefaultCommandStreamReceiver(0));
 }
 
-HWTEST_F(CommandStreamReceiverTest, storedAllocationsHaveCSRtaskCount) {
+HWTEST_F(CommandStreamReceiverTest, whenStoreAllocationThenStoredAllocationHasTaskCountFromCsr) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     auto *memoryManager = csr.getMemoryManager();
-    void *host_ptr = (void *)0x1234;
-    auto allocation = memoryManager->allocateGraphicsMemory(1, host_ptr);
+    auto allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+
+    EXPECT_FALSE(allocation->isUsed());
 
     csr.taskCount = 2u;
 
-    memoryManager->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
+    csr.getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
 
-    EXPECT_EQ(csr.peekTaskCount(), allocation->taskCount);
-}
-
-HWTEST_F(CommandStreamReceiverTest, dontReuseSurfaceIfStillInUse) {
-    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
-    auto *memoryManager = csr.getMemoryManager();
-    void *host_ptr = (void *)0x1234;
-    auto allocation = memoryManager->allocateGraphicsMemory(1, host_ptr);
-
-    csr.taskCount = 2u;
-
-    memoryManager->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
-
-    auto *hwTag = csr.getTagAddress();
-
-    *hwTag = 1;
-
-    auto newAllocation = memoryManager->obtainReusableAllocation(1, false);
-
-    EXPECT_EQ(nullptr, newAllocation);
+    EXPECT_EQ(csr.peekTaskCount(), allocation->getTaskCount(csr.getOsContext().getContextId()));
 }
 
 HWTEST_F(CommandStreamReceiverTest, givenCommandStreamReceiverWhenCheckedForInitialStatusOfStatelessMocsIndexThenUnknownMocsIsReturend) {
@@ -238,13 +212,13 @@ HWTEST_F(CommandStreamReceiverTest, givenCommandStreamReceiverWhenCheckedForInit
 TEST_F(CommandStreamReceiverTest, makeResidentPushesAllocationToMemoryManagerResidencyList) {
     auto *memoryManager = commandStreamReceiver->getMemoryManager();
 
-    GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemory(0x1000);
+    GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     ASSERT_NE(nullptr, graphicsAllocation);
 
     commandStreamReceiver->makeResident(*graphicsAllocation);
 
-    auto &residencyAllocations = memoryManager->getResidencyAllocations();
+    auto &residencyAllocations = commandStreamReceiver->getResidencyAllocations();
 
     ASSERT_EQ(1u, residencyAllocations.size());
     EXPECT_EQ(graphicsAllocation, residencyAllocations[0]);
@@ -253,9 +227,8 @@ TEST_F(CommandStreamReceiverTest, makeResidentPushesAllocationToMemoryManagerRes
 }
 
 TEST_F(CommandStreamReceiverTest, makeResidentWithoutParametersDoesNothing) {
-    auto *memoryManager = commandStreamReceiver->getMemoryManager();
-    commandStreamReceiver->processResidency(nullptr);
-    auto &residencyAllocations = memoryManager->getResidencyAllocations();
+    commandStreamReceiver->processResidency(commandStreamReceiver->getResidencyAllocations());
+    auto &residencyAllocations = commandStreamReceiver->getResidencyAllocations();
     EXPECT_EQ(0u, residencyAllocations.size());
 }
 
@@ -263,7 +236,7 @@ TEST_F(CommandStreamReceiverTest, givenForced32BitAddressingWhenDebugSurfaceIsAl
     auto *memoryManager = commandStreamReceiver->getMemoryManager();
     memoryManager->setForce32BitAllocations(true);
     auto allocation = commandStreamReceiver->allocateDebugSurface(1024);
-    EXPECT_FALSE(allocation->is32BitAllocation);
+    EXPECT_FALSE(allocation->is32BitAllocation());
 }
 
 HWTEST_F(CommandStreamReceiverTest, givenDefaultCommandStreamReceiverThenDefaultDispatchingPolicyIsImmediateSubmission) {
@@ -298,55 +271,368 @@ HWTEST_F(CommandStreamReceiverTest, givenCsrWhenAllocateHeapMemoryIsCalledThenHe
 }
 
 TEST(CommandStreamReceiverSimpleTest, givenCSRWithoutTagAllocationWhenGetTagAllocationIsCalledThenNullptrIsReturned) {
-    MockCommandStreamReceiver csr;
+    ExecutionEnvironment executionEnvironment;
+    MockCommandStreamReceiver csr(executionEnvironment);
     EXPECT_EQ(nullptr, csr.getTagAllocation());
 }
 
+HWTEST_F(CommandStreamReceiverTest, givenDebugVariableEnabledWhenCreatingCsrThenEnableTimestampPacketWriteMode) {
+    DebugManagerStateRestore restore;
+
+    DebugManager.flags.EnableTimestampPacket.set(true);
+    CommandStreamReceiverHw<FamilyType> csr1(*pDevice->executionEnvironment);
+    EXPECT_TRUE(csr1.peekTimestampPacketWriteEnabled());
+
+    DebugManager.flags.EnableTimestampPacket.set(false);
+    CommandStreamReceiverHw<FamilyType> csr2(*pDevice->executionEnvironment);
+    EXPECT_FALSE(csr2.peekTimestampPacketWriteEnabled());
+}
+
+HWTEST_F(CommandStreamReceiverTest, whenCsrIsCreatedThenUseTimestampPacketWriteIfPossible) {
+    CommandStreamReceiverHw<FamilyType> csr(*pDevice->executionEnvironment);
+    EXPECT_EQ(UnitTestHelper<FamilyType>::isTimestampPacketWriteSupported(), csr.peekTimestampPacketWriteEnabled());
+}
+
+TEST_F(CommandStreamReceiverTest, whenGetEventTsAllocatorIsCalledItReturnsSameTagAllocator) {
+    TagAllocator<HwTimeStamps> *allocator = commandStreamReceiver->getEventTsAllocator();
+    EXPECT_NE(nullptr, allocator);
+    TagAllocator<HwTimeStamps> *allocator2 = commandStreamReceiver->getEventTsAllocator();
+    EXPECT_EQ(allocator2, allocator);
+}
+
+TEST_F(CommandStreamReceiverTest, whenGetEventPerfCountAllocatorIsCalledItReturnsSameTagAllocator) {
+    TagAllocator<HwPerfCounter> *allocator = commandStreamReceiver->getEventPerfCountAllocator();
+    EXPECT_NE(nullptr, allocator);
+    TagAllocator<HwPerfCounter> *allocator2 = commandStreamReceiver->getEventPerfCountAllocator();
+    EXPECT_EQ(allocator2, allocator);
+}
+
+HWTEST_F(CommandStreamReceiverTest, givenTimestampPacketAllocatorWhenAskingForTagThenReturnValidObject) {
+    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    EXPECT_EQ(nullptr, csr.timestampPacketAllocator.get());
+
+    TagAllocator<TimestampPacket> *allocator = csr.getTimestampPacketAllocator();
+    EXPECT_NE(nullptr, csr.timestampPacketAllocator.get());
+    EXPECT_EQ(allocator, csr.timestampPacketAllocator.get());
+
+    TagAllocator<TimestampPacket> *allocator2 = csr.getTimestampPacketAllocator();
+    EXPECT_EQ(allocator, allocator2);
+
+    auto node1 = allocator->getTag();
+    auto node2 = allocator->getTag();
+    EXPECT_NE(nullptr, node1);
+    EXPECT_NE(nullptr, node2);
+    EXPECT_NE(node1, node2);
+}
+
+HWTEST_F(CommandStreamReceiverTest, givenUltCommandStreamReceiverWhenAddAubCommentIsCalledThenCallAddAubCommentOnCsr) {
+    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    csr.addAubComment("message");
+    EXPECT_TRUE(csr.addAubCommentCalled);
+}
+
 TEST(CommandStreamReceiverSimpleTest, givenCSRWithTagAllocationSetWhenGetTagAllocationIsCalledThenCorrectAllocationIsReturned) {
-    MockCommandStreamReceiver csr;
-    GraphicsAllocation allocation(reinterpret_cast<void *>(0x1000), 0x1000);
+    ExecutionEnvironment executionEnvironment;
+    MockCommandStreamReceiver csr(executionEnvironment);
+    MockGraphicsAllocation allocation(reinterpret_cast<void *>(0x1000), 0x1000);
     csr.setTagAllocation(&allocation);
     EXPECT_EQ(&allocation, csr.getTagAllocation());
 }
 
 TEST(CommandStreamReceiverSimpleTest, givenCommandStreamReceiverWhenItIsDestroyedThenItDestroysTagAllocation) {
-    struct MockGraphicsAllocation : public GraphicsAllocation {
+    struct MockGraphicsAllocationWithDestructorTracing : public GraphicsAllocation {
         using GraphicsAllocation::GraphicsAllocation;
-        ~MockGraphicsAllocation() override { *destructorCalled = true; }
+        ~MockGraphicsAllocationWithDestructorTracing() override { *destructorCalled = true; }
         bool *destructorCalled = nullptr;
     };
 
     bool destructorCalled = false;
 
-    auto mockGraphicsAllocation = new MockGraphicsAllocation(nullptr, 1u);
+    auto mockGraphicsAllocation = new MockGraphicsAllocationWithDestructorTracing(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, 0llu, 0llu, 1u, MemoryPool::MemoryNull, false);
     mockGraphicsAllocation->destructorCalled = &destructorCalled;
-    std::unique_ptr<MockCommandStreamReceiver> csr(new MockCommandStreamReceiver);
-    std::unique_ptr<OsAgnosticMemoryManager> memoryManager(new OsAgnosticMemoryManager);
-    csr->setMemoryManager(memoryManager.get());
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    executionEnvironment.commandStreamReceivers.resize(1);
+    executionEnvironment.commandStreamReceivers[0].push_back(std::make_unique<MockCommandStreamReceiver>(executionEnvironment));
+    auto csr = executionEnvironment.commandStreamReceivers[0][0].get();
+    executionEnvironment.memoryManager.reset(new OsAgnosticMemoryManager(executionEnvironment));
     csr->setTagAllocation(mockGraphicsAllocation);
     EXPECT_FALSE(destructorCalled);
-    csr.reset(nullptr);
+    executionEnvironment.commandStreamReceivers[0][0].reset(nullptr);
     EXPECT_TRUE(destructorCalled);
 }
 
 TEST(CommandStreamReceiverSimpleTest, givenCommandStreamReceiverWhenInitializeTagAllocationIsCalledThenTagAllocationIsBeingAllocated) {
-    std::unique_ptr<OsAgnosticMemoryManager> memoryManager(new OsAgnosticMemoryManager);
-    std::unique_ptr<MockCommandStreamReceiver> csr(new MockCommandStreamReceiver);
-    csr->setMemoryManager(memoryManager.get());
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    auto csr = new MockCommandStreamReceiver(executionEnvironment);
+    executionEnvironment.commandStreamReceivers.resize(1);
+    executionEnvironment.commandStreamReceivers[0].push_back(std::unique_ptr<CommandStreamReceiver>(csr));
+    executionEnvironment.memoryManager.reset(new OsAgnosticMemoryManager(executionEnvironment));
     EXPECT_EQ(nullptr, csr->getTagAllocation());
     EXPECT_TRUE(csr->getTagAddress() == nullptr);
     csr->initializeTagAllocation();
     EXPECT_NE(nullptr, csr->getTagAllocation());
     EXPECT_TRUE(csr->getTagAddress() != nullptr);
+    EXPECT_EQ(*csr->getTagAddress(), initialHardwareTag);
+}
+
+TEST(CommandStreamReceiverSimpleTest, givenNullHardwareDebugModeWhenInitializeTagAllocationIsCalledThenTagAllocationIsBeingAllocatedAndinitialValueIsMinusOne) {
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableNullHardware.set(true);
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    executionEnvironment.commandStreamReceivers.resize(1);
+    auto csr = new MockCommandStreamReceiver(executionEnvironment);
+    executionEnvironment.commandStreamReceivers[0].push_back(std::unique_ptr<CommandStreamReceiver>(csr));
+    executionEnvironment.memoryManager.reset(new OsAgnosticMemoryManager(executionEnvironment));
+    EXPECT_EQ(nullptr, csr->getTagAllocation());
+    EXPECT_TRUE(csr->getTagAddress() == nullptr);
+    csr->initializeTagAllocation();
+    EXPECT_NE(nullptr, csr->getTagAllocation());
+    EXPECT_TRUE(csr->getTagAddress() != nullptr);
+    EXPECT_EQ(*csr->getTagAddress(), static_cast<uint32_t>(-1));
 }
 
 TEST(CommandStreamReceiverSimpleTest, givenCSRWhenWaitBeforeMakingNonResidentWhenRequiredIsCalledWithBlockingFlagSetThenItReturnsImmediately) {
-    MockCommandStreamReceiver csr;
+    ExecutionEnvironment executionEnvironment;
+    MockCommandStreamReceiver csr(executionEnvironment);
     uint32_t tag = 0;
-    GraphicsAllocation allocation(&tag, sizeof(tag));
+    MockGraphicsAllocation allocation(&tag, sizeof(tag));
     csr.latestFlushedTaskCount = 3;
     csr.setTagAllocation(&allocation);
-    csr.waitBeforeMakingNonResidentWhenRequired(true);
+    csr.waitBeforeMakingNonResidentWhenRequired();
 
     EXPECT_EQ(0u, tag);
+}
+
+TEST(CommandStreamReceiverSimpleTest, givenVariousDataSetsWhenVerifyingMemoryThenCorrectValueIsReturned) {
+    ExecutionEnvironment executionEnvironment;
+    MockCommandStreamReceiver csr(executionEnvironment);
+
+    constexpr size_t setSize = 6;
+    uint8_t setA1[setSize] = {4, 3, 2, 1, 2, 10};
+    uint8_t setA2[setSize] = {4, 3, 2, 1, 2, 10};
+    uint8_t setB1[setSize] = {40, 15, 3, 11, 17, 4};
+    uint8_t setB2[setSize] = {40, 15, 3, 11, 17, 4};
+
+    constexpr auto compareEqual = CmdServicesMemTraceMemoryCompare::CompareOperationValues::CompareEqual;
+    constexpr auto compareNotEqual = CmdServicesMemTraceMemoryCompare::CompareOperationValues::CompareNotEqual;
+
+    EXPECT_EQ(CL_SUCCESS, csr.expectMemory(setA1, setA2, setSize, compareEqual));
+    EXPECT_EQ(CL_SUCCESS, csr.expectMemory(setB1, setB2, setSize, compareEqual));
+    EXPECT_EQ(CL_INVALID_VALUE, csr.expectMemory(setA1, setA2, setSize, compareNotEqual));
+    EXPECT_EQ(CL_INVALID_VALUE, csr.expectMemory(setB1, setB2, setSize, compareNotEqual));
+
+    EXPECT_EQ(CL_INVALID_VALUE, csr.expectMemory(setA1, setB1, setSize, compareEqual));
+    EXPECT_EQ(CL_INVALID_VALUE, csr.expectMemory(setA2, setB2, setSize, compareEqual));
+    EXPECT_EQ(CL_SUCCESS, csr.expectMemory(setA1, setB1, setSize, compareNotEqual));
+    EXPECT_EQ(CL_SUCCESS, csr.expectMemory(setA2, setB2, setSize, compareNotEqual));
+}
+
+TEST(CommandStreamReceiverMultiContextTests, givenMultipleCsrsWhenSameResourcesAreUsedThenResidencyIsProperlyHandled) {
+    auto executionEnvironment = platformImpl->peekExecutionEnvironment();
+
+    std::unique_ptr<MockDevice> device(Device::create<MockDevice>(nullptr, executionEnvironment, 0u));
+
+    auto &commandStreamReceiver0 = *executionEnvironment->commandStreamReceivers[0][0];
+    auto &commandStreamReceiver1 = *executionEnvironment->commandStreamReceivers[0][1];
+
+    auto csr0ContextId = commandStreamReceiver0.getOsContext().getContextId();
+    auto csr1ContextId = commandStreamReceiver1.getOsContext().getContextId();
+
+    MockGraphicsAllocation graphicsAllocation;
+
+    commandStreamReceiver0.makeResident(graphicsAllocation);
+    EXPECT_EQ(1u, commandStreamReceiver0.getResidencyAllocations().size());
+    EXPECT_EQ(0u, commandStreamReceiver1.getResidencyAllocations().size());
+
+    commandStreamReceiver1.makeResident(graphicsAllocation);
+    EXPECT_EQ(1u, commandStreamReceiver0.getResidencyAllocations().size());
+    EXPECT_EQ(1u, commandStreamReceiver1.getResidencyAllocations().size());
+
+    EXPECT_EQ(1u, graphicsAllocation.getResidencyTaskCount(csr0ContextId));
+    EXPECT_EQ(1u, graphicsAllocation.getResidencyTaskCount(csr1ContextId));
+
+    commandStreamReceiver0.makeNonResident(graphicsAllocation);
+    EXPECT_FALSE(graphicsAllocation.isResident(csr0ContextId));
+    EXPECT_TRUE(graphicsAllocation.isResident(csr1ContextId));
+
+    commandStreamReceiver1.makeNonResident(graphicsAllocation);
+    EXPECT_FALSE(graphicsAllocation.isResident(csr0ContextId));
+    EXPECT_FALSE(graphicsAllocation.isResident(csr1ContextId));
+
+    EXPECT_EQ(1u, commandStreamReceiver0.getEvictionAllocations().size());
+    EXPECT_EQ(1u, commandStreamReceiver1.getEvictionAllocations().size());
+}
+
+struct CreateAllocationForHostSurfaceTest : public ::testing::Test {
+    void SetUp() override {
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
+        executionEnvironment->setHwInfo(&hwInfo);
+        gmockMemoryManager = new ::testing::NiceMock<GMockMemoryManager>(*executionEnvironment);
+        executionEnvironment->memoryManager.reset(gmockMemoryManager);
+        device.reset(MockDevice::create<MockDevice>(&hwInfo, executionEnvironment, 0u));
+        commandStreamReceiver = &device->getCommandStreamReceiver();
+    }
+    HardwareInfo hwInfo = *platformDevices[0];
+    ExecutionEnvironment *executionEnvironment = nullptr;
+    GMockMemoryManager *gmockMemoryManager = nullptr;
+    std::unique_ptr<MockDevice> device;
+    CommandStreamReceiver *commandStreamReceiver = nullptr;
+};
+
+TEST_F(CreateAllocationForHostSurfaceTest, givenReadOnlyHostPointerWhenAllocationForHostSurfaceWithPtrCopyAllowedIsCreatedThenCopyAllocationIsCreatedAndMemoryCopied) {
+    const char memory[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    size_t size = sizeof(memory);
+    HostPtrSurface surface(const_cast<char *>(memory), size, true);
+
+    if (device->isFullRangeSvm()) {
+        EXPECT_CALL(*gmockMemoryManager, populateOsHandles(::testing::_))
+            .Times(1)
+            .WillOnce(::testing::Return(MemoryManager::AllocationStatus::InvalidHostPointer));
+    } else {
+        EXPECT_CALL(*gmockMemoryManager, allocateGraphicsMemoryForNonSvmHostPtr(::testing::_))
+            .Times(1)
+            .WillOnce(::testing::Return(nullptr));
+    }
+
+    bool result = commandStreamReceiver->createAllocationForHostSurface(surface, false);
+    EXPECT_TRUE(result);
+
+    auto allocation = surface.getAllocation();
+    ASSERT_NE(nullptr, allocation);
+
+    EXPECT_NE(memory, allocation->getUnderlyingBuffer());
+    EXPECT_THAT(allocation->getUnderlyingBuffer(), MemCompare(memory, size));
+
+    allocation->updateTaskCount(commandStreamReceiver->peekLatestFlushedTaskCount(), commandStreamReceiver->getOsContext().getContextId());
+}
+
+TEST_F(CreateAllocationForHostSurfaceTest, givenReadOnlyHostPointerWhenAllocationForHostSurfaceWithPtrCopyNotAllowedIsCreatedThenCopyAllocationIsNotCreated) {
+    const char memory[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    size_t size = sizeof(memory);
+    HostPtrSurface surface(const_cast<char *>(memory), size, false);
+
+    if (device->isFullRangeSvm()) {
+        EXPECT_CALL(*gmockMemoryManager, populateOsHandles(::testing::_))
+            .Times(1)
+            .WillOnce(::testing::Return(MemoryManager::AllocationStatus::InvalidHostPointer));
+    } else {
+        EXPECT_CALL(*gmockMemoryManager, allocateGraphicsMemoryForNonSvmHostPtr(::testing::_))
+            .Times(1)
+            .WillOnce(::testing::Return(nullptr));
+    }
+
+    bool result = commandStreamReceiver->createAllocationForHostSurface(surface, false);
+    EXPECT_FALSE(result);
+
+    auto allocation = surface.getAllocation();
+    EXPECT_EQ(nullptr, allocation);
+}
+
+struct ReducedAddrSpaceCommandStreamReceiverTest : public CreateAllocationForHostSurfaceTest {
+    void SetUp() override {
+        hwInfo.capabilityTable.gpuAddressSpace = MemoryConstants::max32BitAddress;
+        CreateAllocationForHostSurfaceTest::SetUp();
+    }
+};
+
+TEST_F(ReducedAddrSpaceCommandStreamReceiverTest,
+       givenReducedGpuAddressSpaceWhenAllocationForHostSurfaceIsCreatedThenAllocateGraphicsMemoryForNonSvmHostPtrIsCalled) {
+
+    char memory[8] = {};
+    HostPtrSurface surface(memory, sizeof(memory), false);
+
+    EXPECT_CALL(*gmockMemoryManager, allocateGraphicsMemoryForNonSvmHostPtr(::testing::_))
+        .Times(1)
+        .WillOnce(::testing::Return(nullptr));
+
+    bool result = commandStreamReceiver->createAllocationForHostSurface(surface, false);
+    EXPECT_FALSE(result);
+}
+
+TEST_F(CommandStreamReceiverTest, givenMinimumSizeDoesNotExceedCurrentWhenCallingEnsureCommandBufferAllocationThenDoNotReallocate) {
+    GraphicsAllocation *allocation = memoryManager->allocateGraphicsMemoryWithProperties({128u, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    LinearStream commandStream{allocation};
+
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 100u, 0u);
+    EXPECT_EQ(allocation, commandStream.getGraphicsAllocation());
+    EXPECT_EQ(128u, commandStream.getMaxAvailableSpace());
+
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 128u, 0u);
+    EXPECT_EQ(allocation, commandStream.getGraphicsAllocation());
+    EXPECT_EQ(128u, commandStream.getMaxAvailableSpace());
+
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
+}
+
+TEST_F(CommandStreamReceiverTest, givenMinimumSizeExceedsCurrentWhenCallingEnsureCommandBufferAllocationThenReallocate) {
+    GraphicsAllocation *allocation = memoryManager->allocateGraphicsMemoryWithProperties({128u, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    LinearStream commandStream{allocation};
+
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 129u, 0u);
+    EXPECT_NE(allocation, commandStream.getGraphicsAllocation());
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
+}
+
+TEST_F(CommandStreamReceiverTest, givenMinimumSizeExceedsCurrentWhenCallingEnsureCommandBufferAllocationThenReallocateAndAlignSizeTo64kb) {
+    GraphicsAllocation *allocation = memoryManager->allocateGraphicsMemoryWithProperties({128u, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    LinearStream commandStream{allocation};
+
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 129u, 0u);
+    EXPECT_EQ(MemoryConstants::pageSize64k, commandStream.getGraphicsAllocation()->getUnderlyingBufferSize());
+    EXPECT_EQ(MemoryConstants::pageSize64k, commandStream.getMaxAvailableSpace());
+
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, MemoryConstants::pageSize64k + 1u, 0u);
+    EXPECT_EQ(2 * MemoryConstants::pageSize64k, commandStream.getGraphicsAllocation()->getUnderlyingBufferSize());
+    EXPECT_EQ(2 * MemoryConstants::pageSize64k, commandStream.getMaxAvailableSpace());
+
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
+}
+
+TEST_F(CommandStreamReceiverTest, givenAdditionalAllocationSizeWhenCallingEnsureCommandBufferAllocationThenSizesOfAllocationAndCommandBufferAreCorrect) {
+    GraphicsAllocation *allocation = memoryManager->allocateGraphicsMemoryWithProperties({128u, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    LinearStream commandStream{allocation};
+
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 129u, 350u);
+    EXPECT_NE(allocation, commandStream.getGraphicsAllocation());
+    EXPECT_EQ(MemoryConstants::pageSize64k, commandStream.getGraphicsAllocation()->getUnderlyingBufferSize());
+    EXPECT_EQ(MemoryConstants::pageSize64k - 350u, commandStream.getMaxAvailableSpace());
+
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
+}
+
+TEST_F(CommandStreamReceiverTest, givenMinimumSizeExceedsCurrentAndNoAllocationsForReuseWhenCallingEnsureCommandBufferAllocationThenAllocateMemoryFromMemoryManager) {
+    LinearStream commandStream;
+
+    EXPECT_TRUE(internalAllocationStorage->getAllocationsForReuse().peekIsEmpty());
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 1u, 0u);
+    EXPECT_NE(nullptr, commandStream.getGraphicsAllocation());
+
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
+}
+
+TEST_F(CommandStreamReceiverTest, givenMinimumSizeExceedsCurrentAndAllocationsForReuseWhenCallingEnsureCommandBufferAllocationThenObtainAllocationFromInternalAllocationStorage) {
+    auto allocation = memoryManager->allocateGraphicsMemoryWithProperties({MemoryConstants::pageSize64k, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    internalAllocationStorage->storeAllocation(std::unique_ptr<GraphicsAllocation>{allocation}, REUSABLE_ALLOCATION);
+    LinearStream commandStream;
+
+    EXPECT_FALSE(internalAllocationStorage->getAllocationsForReuse().peekIsEmpty());
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, 1u, 0u);
+    EXPECT_EQ(allocation, commandStream.getGraphicsAllocation());
+    EXPECT_TRUE(internalAllocationStorage->getAllocationsForReuse().peekIsEmpty());
+
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
+}
+
+TEST_F(CommandStreamReceiverTest, givenMinimumSizeExceedsCurrentAndNoSuitableReusableAllocationWhenCallingEnsureCommandBufferAllocationThenObtainAllocationMemoryManager) {
+    auto allocation = memoryManager->allocateGraphicsMemoryWithProperties({MemoryConstants::pageSize64k, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    internalAllocationStorage->storeAllocation(std::unique_ptr<GraphicsAllocation>{allocation}, REUSABLE_ALLOCATION);
+    LinearStream commandStream;
+
+    EXPECT_FALSE(internalAllocationStorage->getAllocationsForReuse().peekIsEmpty());
+    commandStreamReceiver->ensureCommandBufferAllocation(commandStream, MemoryConstants::pageSize64k + 1, 0u);
+    EXPECT_NE(allocation, commandStream.getGraphicsAllocation());
+    EXPECT_NE(nullptr, commandStream.getGraphicsAllocation());
+    EXPECT_FALSE(internalAllocationStorage->getAllocationsForReuse().peekIsEmpty());
+
+    memoryManager->freeGraphicsMemory(commandStream.getGraphicsAllocation());
 }

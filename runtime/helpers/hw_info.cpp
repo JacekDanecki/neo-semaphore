@@ -1,36 +1,24 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "hw_info.h"
+
+#include "runtime/os_interface/debug_settings_manager.h"
+
 #include "hw_cmds.h"
 
-namespace OCLRT {
+namespace NEO {
 HardwareInfo::HardwareInfo(const PLATFORM *platform, const FeatureTable *skuTable, const WorkaroundTable *waTable,
                            const GT_SYSTEM_INFO *sysInfo, const RuntimeCapabilityTable &capabilityTable)
     : pPlatform(platform), pSkuTable(skuTable), pWaTable(waTable), pSysInfo(sysInfo), capabilityTable(capabilityTable) {
 }
 
 const HardwareInfo *hardwareInfoTable[IGFX_MAX_PRODUCT] = {};
-void (*hardwareInfoSetupGt[IGFX_MAX_PRODUCT])(GT_SYSTEM_INFO *) = {
+void (*hardwareInfoSetup[IGFX_MAX_PRODUCT])(GT_SYSTEM_INFO *, FeatureTable *, bool, const std::string &) = {
     nullptr,
 };
 
@@ -57,4 +45,10 @@ bool getHwInfoForPlatformString(const char *str, const HardwareInfo *&hwInfoIn) 
     }
     return ret;
 }
-} // namespace OCLRT
+
+aub_stream::EngineType getChosenEngineType(const HardwareInfo &hwInfo) {
+    return DebugManager.flags.NodeOrdinal.get() == -1
+               ? hwInfo.capabilityTable.defaultEngineType
+               : static_cast<aub_stream::EngineType>(DebugManager.flags.NodeOrdinal.get());
+}
+} // namespace NEO

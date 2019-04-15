@@ -1,29 +1,15 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
+#include <mutex>
 
 #ifndef BIT
 #define BIT(x) (((uint64_t)1) << (x))
@@ -31,8 +17,18 @@
 
 #include "runtime/aub_mem_dump/aub_data.h"
 
+namespace NEO {
+class AubHelper;
+}
+
 namespace AubMemDump {
 #include "aub_services.h"
+
+constexpr uint32_t rcsRegisterBase = 0x2000;
+
+inline uint32_t computeRegisterOffset(uint32_t mmioBase, uint32_t rcsRegisterOffset) {
+    return mmioBase + rcsRegisterOffset - rcsRegisterBase;
+}
 
 template <typename Cmd>
 inline void setAddress(Cmd &cmd, uint64_t address) {
@@ -44,16 +40,6 @@ inline void setAddress(CmdServicesMemTraceMemoryCompare &cmd, uint64_t address) 
     cmd.address = static_cast<uint32_t>(address);
     cmd.addressHigh = static_cast<uint32_t>(address >> 32);
 }
-
-template <typename TypeTrue, typename TypeFalse, bool is32Bits>
-struct TypeSelector {
-    typedef TypeTrue type;
-};
-
-template <typename TypeTrue, typename TypeFalse>
-struct TypeSelector<TypeTrue, TypeFalse, false> {
-    typedef TypeFalse type;
-};
 
 union IAPageTableEntry {
     struct
@@ -124,11 +110,14 @@ struct AubStream {
     virtual void writeMemoryWriteHeader(uint64_t physAddress, size_t size, uint32_t addressSpace) {
         return writeMemoryWriteHeader(physAddress, size, addressSpace, CmdServicesMemTraceMemoryWrite::DataTypeHintValues::TraceNotype);
     }
-    virtual void writePTE(uint64_t physAddress, uint64_t entry) = 0;
+    virtual void writePTE(uint64_t physAddress, uint64_t entry, uint32_t addressSpace) = 0;
     virtual void writeGTT(uint32_t offset, uint64_t entry) = 0;
-    virtual void writeMMIO(uint32_t offset, uint32_t value) = 0;
+    void writeMMIO(uint32_t offset, uint32_t value);
     virtual void registerPoll(uint32_t registerOffset, uint32_t mask, uint32_t value, bool pollNotEqual, uint32_t timeoutAction) = 0;
     virtual ~AubStream() = default;
+
+  protected:
+    virtual void writeMMIOImpl(uint32_t offset, uint32_t value) = 0;
 };
 
 struct AubFileStream : public AubStream {
@@ -138,19 +127,23 @@ struct AubFileStream : public AubStream {
     void createContext(const AubPpgttContextCreate &cmd) override;
     void writeMemory(uint64_t physAddress, const void *memory, size_t size, uint32_t addressSpace, uint32_t hint) override;
     void writeMemoryWriteHeader(uint64_t physAddress, size_t size, uint32_t addressSpace, uint32_t hint) override;
-    void writePTE(uint64_t physAddress, uint64_t entry) override;
+    void writePTE(uint64_t physAddress, uint64_t entry, uint32_t addressSpace) override;
     void writeGTT(uint32_t offset, uint64_t entry) override;
-    void writeMMIO(uint32_t offset, uint32_t value) override;
+    void writeMMIOImpl(uint32_t offset, uint32_t value) override;
     void registerPoll(uint32_t registerOffset, uint32_t mask, uint32_t value, bool pollNotEqual, uint32_t timeoutAction) override;
-    bool isOpen() const { return fileHandle.is_open(); }
-    const std::string &getFileName() const { return fileName; }
+    MOCKABLE_VIRTUAL bool isOpen() const { return fileHandle.is_open(); }
+    MOCKABLE_VIRTUAL const std::string &getFileName() const { return fileName; }
     MOCKABLE_VIRTUAL void write(const char *data, size_t size);
     MOCKABLE_VIRTUAL void flush();
-    MOCKABLE_VIRTUAL void expectMemory(uint64_t physAddress, const void *memory, size_t size);
+    MOCKABLE_VIRTUAL void expectMMIO(uint32_t mmioRegister, uint32_t expectedValue);
+    MOCKABLE_VIRTUAL void expectMemory(uint64_t physAddress, const void *memory, size_t size,
+                                       uint32_t addressSpace, uint32_t compareOperation);
     MOCKABLE_VIRTUAL bool addComment(const char *message);
+    MOCKABLE_VIRTUAL std::unique_lock<std::mutex> lockStream();
 
     std::ofstream fileHandle;
     std::string fileName;
+    std::mutex mutex;
 };
 
 template <int addressingBits>
@@ -248,7 +241,9 @@ struct AubPageTableHelper32 : public AubPageTableHelper<Traits>, PageTableTraits
     typedef AubPageTableHelper<Traits> BaseClass;
 
     static void createContext(typename Traits::Stream &stream, uint32_t context);
-    static uint64_t reserveAddressPPGTT(typename Traits::Stream &stream, uintptr_t gfxAddress, size_t blockSize, uint64_t physAddress, uint64_t additionalBits);
+    static uint64_t reserveAddressPPGTT(typename Traits::Stream &stream, uintptr_t gfxAddress,
+                                        size_t blockSize, uint64_t physAddress,
+                                        uint64_t additionalBits, const NEO::AubHelper &aubHelper);
 
     static void fixupLRC(uint8_t *pLrc);
 };
@@ -262,17 +257,19 @@ struct AubPageTableHelper64 : public AubPageTableHelper<Traits>, PageTableTraits
     }
 
     static void createContext(typename Traits::Stream &stream, uint32_t context);
-    static uint64_t reserveAddressPPGTT(typename Traits::Stream &stream, uintptr_t gfxAddress, size_t blockSize, uint64_t physAddress, uint64_t additionalBits);
+    static uint64_t reserveAddressPPGTT(typename Traits::Stream &stream, uintptr_t gfxAddress,
+                                        size_t blockSize, uint64_t physAddress,
+                                        uint64_t additionalBits, const NEO::AubHelper &aubHelper);
 
     static void fixupLRC(uint8_t *pLrc);
 };
 
 template <typename TraitsIn>
-struct AubDump : public TypeSelector<AubPageTableHelper32<TraitsIn>, AubPageTableHelper64<TraitsIn>, TraitsIn::addressingBits == 32>::type {
-    typedef TraitsIn Traits;
-    typedef typename TypeSelector<uint32_t, uint64_t, Traits::addressingBits == 32>::type AddressType;
-    typedef typename TypeSelector<AubPageTableHelper32<Traits>, AubPageTableHelper64<Traits>, Traits::addressingBits == 32>::type BaseHelper;
-    typedef typename Traits::Stream Stream;
+struct AubDump : public std::conditional<TraitsIn::addressingBits == 32, AubPageTableHelper32<TraitsIn>, AubPageTableHelper64<TraitsIn>>::type {
+    using Traits = TraitsIn;
+    using AddressType = typename std::conditional<Traits::addressingBits == 32, uint32_t, uint64_t>::type;
+    using BaseHelper = typename std::conditional<Traits::addressingBits == 32, AubPageTableHelper32<Traits>, AubPageTableHelper64<Traits>>::type;
+    using Stream = typename Traits::Stream;
 
     typedef union _MiContextDescriptorReg_ {
         struct {
@@ -296,7 +293,9 @@ struct AubDump : public TypeSelector<AubPageTableHelper32<TraitsIn>, AubPageTabl
     static void addMemoryWrite(Stream &stream, uint64_t addr, const void *memory, size_t blockSize, int addressSpace, int hint = DataTypeHintValues::TraceNotype);
     static uint64_t reserveAddressGGTT(Stream &stream, uint32_t addr, size_t size, uint64_t physStart, AubGTTData data);
     static uint64_t reserveAddressGGTT(Stream &stream, const void *memory, size_t size, uint64_t physStart, AubGTTData data);
-    static void reserveAddressGGTTAndWriteMmeory(Stream &stream, uintptr_t gfxAddress, const void *memory, uint64_t physAddress, size_t size, size_t offset, uint64_t additionalBits);
+    static void reserveAddressGGTTAndWriteMmeory(Stream &stream, uintptr_t gfxAddress, const void *memory, uint64_t physAddress,
+                                                 size_t size, size_t offset, uint64_t additionalBits, const NEO::AubHelper &aubHelper);
+
     static void setGttEntry(MiGttEntry &entry, uint64_t address, AubGTTData data);
 
   private:
@@ -355,6 +354,7 @@ struct LrcaHelper {
     void setPDP3(void *pLRCIn, uint64_t address) const;
 
     void setPML4(void *pLRCIn, uint64_t address) const;
+    MOCKABLE_VIRTUAL void setContextSaveRestoreFlags(uint32_t &value) const;
 };
 
 struct LrcaHelperRcs : public LrcaHelper {

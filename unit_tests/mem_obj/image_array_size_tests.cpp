@@ -1,33 +1,19 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/mem_obj/image.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include "hw_cmds.h"
+
+using namespace NEO;
 
 static const unsigned int testImageDimensions = 17;
 
@@ -96,9 +82,15 @@ HWTEST_P(CreateImageArraySize, arrayTypes) {
 
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, image);
-    ASSERT_EQ(true, image->isMemObjZeroCopy());
-    auto address = image->getCpuAddress();
-    EXPECT_NE(nullptr, address);
+
+    if (types == CL_MEM_OBJECT_IMAGE1D_ARRAY) {
+        EXPECT_TRUE(image->isMemObjZeroCopy());
+        auto address = image->getCpuAddress();
+        EXPECT_NE(nullptr, address);
+
+    } else if (types == CL_MEM_OBJECT_IMAGE2D_ARRAY) {
+        EXPECT_FALSE(image->isMemObjZeroCopy());
+    }
     ASSERT_EQ(10u, image->getImageDesc().image_array_size);
 
     delete image;
@@ -129,9 +121,13 @@ HWTEST_P(CreateImageNonArraySize, NonArrayTypes) {
 
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, image);
-    ASSERT_EQ(true, image->isMemObjZeroCopy());
-    auto address = image->getCpuAddress();
-    EXPECT_NE(nullptr, address);
+    if (types == CL_MEM_OBJECT_IMAGE2D || types == CL_MEM_OBJECT_IMAGE3D) {
+        EXPECT_FALSE(image->isMemObjZeroCopy());
+    } else {
+        EXPECT_TRUE(image->isMemObjZeroCopy());
+        auto address = image->getCpuAddress();
+        EXPECT_NE(nullptr, address);
+    }
     ASSERT_EQ(0u, image->getImageDesc().image_array_size);
 
     delete image;

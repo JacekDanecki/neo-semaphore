@@ -1,39 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/memory_manager/surface.h"
 #include "runtime/memory_manager/svm_memory_manager.h"
+#include "test.h"
+#include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/fixtures/buffer_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
-#include "gtest/gtest.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 class BufferSetArgTest : public ContextFixture,
                          public DeviceFixture,
@@ -52,7 +39,7 @@ class BufferSetArgTest : public ContextFixture,
         DeviceFixture::SetUp();
         cl_device_id device = pDevice;
         ContextFixture::SetUp(1, &device);
-        pKernelInfo = KernelInfo::create();
+        pKernelInfo = std::make_unique<KernelInfo>();
         ASSERT_NE(nullptr, pKernelInfo);
 
         // define kernel info
@@ -79,7 +66,7 @@ class BufferSetArgTest : public ContextFixture,
         pKernelInfo->heapInfo.pKernelHeader = &kernelHeader;
         pKernelInfo->usesSsh = true;
 
-        pProgram = new MockProgram(pContext, false);
+        pProgram = new MockProgram(*pDevice->getExecutionEnvironment(), pContext, false);
 
         pKernel = new MockKernel(pProgram, *pKernelInfo, *pDevice);
         ASSERT_NE(nullptr, pKernel);
@@ -97,8 +84,8 @@ class BufferSetArgTest : public ContextFixture,
     void TearDown() override {
         delete buffer;
         delete BufferDefaults::context;
-        delete pKernelInfo;
         delete pKernel;
+
         delete pProgram;
         ContextFixture::TearDown();
         DeviceFixture::TearDown();
@@ -107,7 +94,7 @@ class BufferSetArgTest : public ContextFixture,
     cl_int retVal = CL_SUCCESS;
     MockProgram *pProgram;
     MockKernel *pKernel = nullptr;
-    KernelInfo *pKernelInfo = nullptr;
+    std::unique_ptr<KernelInfo> pKernelInfo;
     SKernelBinaryHeaderCommon kernelHeader;
     char surfaceStateHeap[0x80];
     char pCrossThreadData[64];
@@ -125,10 +112,10 @@ TEST_F(BufferSetArgTest, setKernelArgBuffer) {
     EXPECT_EQ((void *)((uintptr_t)buffer->getGraphicsAllocation()->getGpuAddress()), *pKernelArg);
 }
 
-TEST_F(BufferSetArgTest, setKernelArgBufferWithWrongSizeReturnsInvalidArgValueError) {
+TEST_F(BufferSetArgTest, givenInvalidSizeWhenSettingKernelArgBufferThenReturnClInvalidArgSize) {
     cl_mem arg = buffer;
     cl_int err = pKernel->setArgBuffer(0, sizeof(cl_mem) + 1, arg);
-    EXPECT_EQ(CL_INVALID_ARG_VALUE, err);
+    EXPECT_EQ(CL_INVALID_ARG_SIZE, err);
 }
 
 HWTEST_F(BufferSetArgTest, givenSetArgBufferWhenNullArgStatefulThenProgramNullSurfaceState) {
@@ -168,6 +155,27 @@ HWTEST_F(BufferSetArgTest, givenSetArgBufferWithNullArgStatelessThenDontProgramN
     EXPECT_EQ(memcmp(sshOriginal, surfaceStateHeap, sizeof(surfaceStateHeap)), 0);
 }
 
+HWTEST_F(BufferSetArgTest, givenNonPureStatefulArgWhenRenderCompressedBufferIsSetThenSetNonAuxMode) {
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+
+    auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(pKernel->getSurfaceStateHeap(), pKernelInfo->kernelArgInfo[0].offsetHeap));
+    buffer->getGraphicsAllocation()->setAllocationType(GraphicsAllocation::AllocationType::BUFFER_COMPRESSED);
+    buffer->getGraphicsAllocation()->setDefaultGmm(new Gmm(buffer->getGraphicsAllocation()->getUnderlyingBuffer(), buffer->getSize(), false));
+    buffer->getGraphicsAllocation()->getDefaultGmm()->isRenderCompressed = true;
+    pKernelInfo->requiresSshForBuffers = true;
+    cl_mem clMem = buffer;
+
+    pKernelInfo->kernelArgInfo.at(0).pureStatefulBufferAccess = false;
+    cl_int ret = pKernel->setArgBuffer(0, sizeof(cl_mem), &clMem);
+    EXPECT_EQ(CL_SUCCESS, ret);
+    EXPECT_TRUE(RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE == surfaceState->getAuxiliarySurfaceMode());
+
+    pKernelInfo->kernelArgInfo.at(0).pureStatefulBufferAccess = true;
+    ret = pKernel->setArgBuffer(0, sizeof(cl_mem), &clMem);
+    EXPECT_EQ(CL_SUCCESS, ret);
+    EXPECT_TRUE(RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_CCS_E == surfaceState->getAuxiliarySurfaceMode());
+}
+
 TEST_F(BufferSetArgTest, setKernelArgBufferFor32BitAddressing) {
     auto pKernelArg = (void **)(pKernel->getCrossThreadData() +
                                 pKernelInfo->kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset);
@@ -175,7 +183,7 @@ TEST_F(BufferSetArgTest, setKernelArgBufferFor32BitAddressing) {
     auto tokenSize = pKernelInfo->kernelArgInfo[0].kernelArgPatchInfoVector[0].size;
 
     uintptr_t gpuBase = (uintptr_t)buffer->getGraphicsAllocation()->getGpuAddress() >> 2;
-    buffer->getGraphicsAllocation()->gpuBaseAddress = gpuBase;
+    buffer->getGraphicsAllocation()->setGpuBaseAddress(gpuBase);
     buffer->setArgStateless(pKernelArg, tokenSize, true);
 
     EXPECT_EQ((uintptr_t)buffer->getGraphicsAllocation()->getGpuAddress() - gpuBase, (uintptr_t)*pKernelArg);
@@ -253,10 +261,12 @@ TEST_F(BufferSetArgTest, clSetKernelArgBuffer) {
 }
 
 TEST_F(BufferSetArgTest, clSetKernelArgSVMPointer) {
-    void *ptrSVM = pContext->getSVMAllocsManager()->createSVMAlloc(256);
+    void *ptrSVM = pContext->getSVMAllocsManager()->createSVMAlloc(256, 0);
     EXPECT_NE(nullptr, ptrSVM);
 
-    GraphicsAllocation *pSvmAlloc = pContext->getSVMAllocsManager()->getSVMAlloc(ptrSVM);
+    auto svmData = pContext->getSVMAllocsManager()->getSVMAlloc(ptrSVM);
+    ASSERT_NE(nullptr, svmData);
+    GraphicsAllocation *pSvmAlloc = svmData->gpuAllocation;
     EXPECT_NE(nullptr, pSvmAlloc);
 
     retVal = pKernel->setArgSvmAlloc(

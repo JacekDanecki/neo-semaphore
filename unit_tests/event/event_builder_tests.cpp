@@ -1,35 +1,25 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/event/event_builder.h"
 #include "runtime/event/user_event.h"
+#include "runtime/helpers/task_information.h"
+#include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/utilities/arrayref.h"
-#include "unit_tests/mocks/mock_event.h"
-#include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_command_queue.h"
+#include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_device.h"
+#include "unit_tests/mocks/mock_event.h"
+#include "unit_tests/mocks/mock_kernel.h"
 
 #include "gtest/gtest.h"
 
-namespace OCLRT {
+namespace NEO {
 
 struct SmallEventBuilderEventMock : MockEvent<Event> {
     SmallEventBuilderEventMock(int param1, float param2)
@@ -76,6 +66,101 @@ TEST(EventBuilder, whenCreatingNewEventForwardsArgumentsToEventConstructor) {
     EXPECT_EQ(constrParam2, finalizedEvent->constructionParam2);
 
     finalizedEvent->release();
+}
+
+TEST(EventBuilder, givenVirtualEventWithCommandThenFinalizeAddChild) {
+    using UniqueIH = std::unique_ptr<IndirectHeap>;
+    class MockCommandComputeKernel : public CommandComputeKernel {
+      public:
+        using CommandComputeKernel::eventsWaitlist;
+        MockCommandComputeKernel(CommandQueue &commandQueue, KernelOperation *kernelResources, std::vector<Surface *> &surfaces, Kernel *kernel)
+            : CommandComputeKernel(commandQueue, std::unique_ptr<KernelOperation>(kernelResources), surfaces, false, false, false, nullptr, PreemptionMode::Disabled, kernel, 0) {}
+    };
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    CommandQueue cmdQ(nullptr, device.get(), nullptr);
+    MockKernelWithInternals kernel(*device);
+
+    IndirectHeap *ih1 = nullptr, *ih2 = nullptr, *ih3 = nullptr;
+    cmdQ.allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 1, ih1);
+    cmdQ.allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 1, ih2);
+    cmdQ.allocateHeapMemory(IndirectHeap::SURFACE_STATE, 1, ih3);
+    auto cmdStream = new LinearStream(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({1, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
+
+    std::vector<Surface *> surfaces;
+    auto kernelOperation = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(ih1), UniqueIH(ih2), UniqueIH(ih3),
+                                               *device->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage());
+
+    std::unique_ptr<MockCommandComputeKernel> command = std::make_unique<MockCommandComputeKernel>(cmdQ, kernelOperation, surfaces, kernel);
+
+    VirtualEvent virtualEvent;
+    virtualEvent.setCommand(std::move(command));
+
+    EventBuilder eventBuilder;
+    EXPECT_EQ(nullptr, eventBuilder.getEvent());
+
+    constexpr int constrParam1 = 7;
+    constexpr float constrParam2 = 13.0f;
+    eventBuilder.create<SmallEventBuilderEventMock>(constrParam1, constrParam2);
+    Event *peekedEvent = eventBuilder.getEvent();
+    ASSERT_NE(nullptr, peekedEvent);
+    virtualEvent.taskLevel = CL_SUBMITTED;
+    eventBuilder.addParentEvent(&virtualEvent);
+
+    eventBuilder.finalize();
+
+    peekedEvent->release();
+}
+
+TEST(EventBuilder, givenVirtualEventWithSubmittedCommandAsParentThenFinalizeNotAddChild) {
+    class MockVirtualEvent : public VirtualEvent {
+      public:
+        using VirtualEvent::eventWithoutCommand;
+        using VirtualEvent::submittedCmd;
+    };
+
+    using UniqueIH = std::unique_ptr<IndirectHeap>;
+    class MockCommandComputeKernel : public CommandComputeKernel {
+      public:
+        using CommandComputeKernel::eventsWaitlist;
+        MockCommandComputeKernel(CommandQueue &commandQueue, KernelOperation *kernelResources, std::vector<Surface *> &surfaces, Kernel *kernel)
+            : CommandComputeKernel(commandQueue, std::unique_ptr<KernelOperation>(kernelResources), surfaces, false, false, false, nullptr, PreemptionMode::Disabled, kernel, 0) {}
+    };
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    CommandQueue cmdQ(nullptr, device.get(), nullptr);
+    MockKernelWithInternals kernel(*device);
+
+    IndirectHeap *ih1 = nullptr, *ih2 = nullptr, *ih3 = nullptr;
+    cmdQ.allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 1, ih1);
+    cmdQ.allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 1, ih2);
+    cmdQ.allocateHeapMemory(IndirectHeap::SURFACE_STATE, 1, ih3);
+    auto cmdStream = new LinearStream(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
+
+    std::vector<Surface *> surfaces;
+    auto kernelOperation = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(ih1), UniqueIH(ih2), UniqueIH(ih3),
+                                               *device->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage());
+
+    std::unique_ptr<MockCommandComputeKernel> command = std::make_unique<MockCommandComputeKernel>(cmdQ, kernelOperation, surfaces, kernel);
+
+    MockVirtualEvent virtualEvent;
+    virtualEvent.eventWithoutCommand = false;
+    virtualEvent.submittedCmd.exchange(command.release());
+
+    EventBuilder eventBuilder;
+    EXPECT_EQ(nullptr, eventBuilder.getEvent());
+
+    constexpr int constrParam1 = 7;
+    constexpr float constrParam2 = 13.0f;
+    eventBuilder.create<SmallEventBuilderEventMock>(constrParam1, constrParam2);
+    Event *peekedEvent = eventBuilder.getEvent();
+    ASSERT_NE(nullptr, peekedEvent);
+    virtualEvent.taskLevel = CL_SUBMITTED;
+    eventBuilder.addParentEvent(&virtualEvent);
+
+    eventBuilder.finalize();
+
+    peekedEvent->release();
 }
 
 TEST(EventBuilder, whenDestroyingEventBuilderImplicitFinalizeIscalled) {
@@ -249,8 +334,9 @@ TEST(EventBuilder, whenAddingMultipleEventsAsNewParentsThenOnlyValidOnesAreInser
 }
 
 TEST(EventBuilder, parentListDoesNotHaveDuplicates) {
+    std::unique_ptr<MockDevice> mockDevice(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MockContext mockContext;
-    MockCommandQueue mockCommandQueue(&mockContext, nullptr, nullptr);
+    MockCommandQueue mockCommandQueue(&mockContext, mockDevice.get(), nullptr);
 
     SmallEventBuilderMock *eventBuilder = new SmallEventBuilderMock;
     eventBuilder->create<MockEvent<Event>>(&mockCommandQueue, CL_COMMAND_MARKER, 0, 0);
@@ -280,4 +366,4 @@ TEST(EventBuilder, parentListDoesNotHaveDuplicates) {
     delete eventBuilder;
 }
 
-} // namespace OCLRT
+} // namespace NEO

@@ -1,30 +1,22 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/gmm_helper/gmm_helper.h"
-#include "runtime/helpers/options.h"
 #include "unit_tests/ult_config_listener.h"
 
-void OCLRT::UltConfigListener::OnTestStart(const ::testing::TestInfo &testInfo) {
-    // Set default HardwareInfo for all ULTs that dont want to create Device and test initialization path
-    GmmHelper::hwInfo = platformDevices[0];
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/helpers/options.h"
+#include "runtime/platform/platform.h"
+
+void NEO::UltConfigListener::OnTestStart(const ::testing::TestInfo &testInfo) {
+    constructPlatform()->peekExecutionEnvironment()->setHwInfo(*platformDevices);
+    // Create platform and initialize gmm that dont want to create Platform and test gmm initialization path
+    platform()->peekExecutionEnvironment()->initGmm();
+}
+void NEO::UltConfigListener::OnTestEnd(const ::testing::TestInfo &testInfo) {
+    // Clear global platform that it shouldn't be reused between tests
+    platformImpl.reset();
 }

@@ -1,35 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "drm_neo.h"
+
 #include "runtime/os_interface/os_inc_base.h"
 #include "runtime/utilities/directory.h"
+
 #include "drm/i915_drm.h"
 
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 
-namespace OCLRT {
+namespace NEO {
 
 const char *Drm::sysFsDefaultGpuPath = "/drm/card0";
 const char *Drm::maxGpuFrequencyFile = "/gt_max_freq_mhz";
@@ -144,49 +131,35 @@ bool Drm::is48BitAddressRangeSupported() {
     return (ret == 0) && (value == 3);
 }
 
-bool Drm::hasPreemption() {
-#if defined(I915_PARAM_HAS_PREEMPTION)
+void Drm::checkPreemptionSupport() {
     int value = 0;
-    auto ret = getParam(I915_PARAM_HAS_PREEMPTION, &value);
-    if (ret == 0 && value == 1) {
-        return contextCreate() && setLowPriority();
-    }
-#endif
-    return false;
+    auto ret = getParamIoctl(I915_PARAM_HAS_SCHEDULER, &value);
+    preemptionSupported = ((0 == ret) && (value & I915_SCHEDULER_CAP_PREEMPTION));
 }
 
-bool Drm::setLowPriority() {
-#if defined(I915_PARAM_HAS_PREEMPTION)
-    struct drm_i915_gem_context_param gcp = {};
-    gcp.ctx_id = lowPriorityContextId;
+void Drm::setLowPriorityContextParam(uint32_t drmContextId) {
+    drm_i915_gem_context_param gcp = {};
+    gcp.ctx_id = drmContextId;
     gcp.param = I915_CONTEXT_PARAM_PRIORITY;
     gcp.value = -1023;
 
-    int ret = ioctl(DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &gcp);
-    if (ret == 0) {
-        return true;
-    }
-#endif
-    return false;
+    auto retVal = ioctl(DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &gcp);
+    UNRECOVERABLE_IF(retVal != 0);
 }
 
-bool Drm::contextCreate() {
-#if defined(I915_PARAM_HAS_PREEMPTION)
+uint32_t Drm::createDrmContext() {
     drm_i915_gem_context_create gcc = {};
-    if (ioctl(DRM_IOCTL_I915_GEM_CONTEXT_CREATE, &gcc) == 0) {
-        lowPriorityContextId = gcc.ctx_id;
-        return true;
-    }
-#endif
-    return false;
+    auto retVal = ioctl(DRM_IOCTL_I915_GEM_CONTEXT_CREATE, &gcc);
+    UNRECOVERABLE_IF(retVal != 0);
+
+    return gcc.ctx_id;
 }
 
-void Drm::contextDestroy() {
-#if defined(I915_PARAM_HAS_PREEMPTION)
+void Drm::destroyDrmContext(uint32_t drmContextId) {
     drm_i915_gem_context_destroy destroy = {};
-    destroy.ctx_id = lowPriorityContextId;
-    ioctl(DRM_IOCTL_I915_GEM_CONTEXT_DESTROY, &destroy);
-#endif
+    destroy.ctx_id = drmContextId;
+    auto retVal = ioctl(DRM_IOCTL_I915_GEM_CONTEXT_DESTROY, &destroy);
+    UNRECOVERABLE_IF(retVal != 0);
 }
 
 int Drm::getEuTotal(int &euTotal) {
@@ -223,4 +196,12 @@ int Drm::getErrno() {
     return errno;
 }
 
-} // namespace OCLRT
+bool Drm::getSimplifiedMocsTableUsage() const {
+    return useSimplifiedMocsTable;
+}
+
+void Drm::setSimplifiedMocsTableUsage(bool value) {
+    useSimplifiedMocsTable = value;
+}
+
+} // namespace NEO

@@ -1,43 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/event/event.h"
 #include "runtime/command_stream/aub_subcapture.h"
+#include "runtime/event/user_event.h"
 #include "runtime/memory_manager/surface.h"
+#include "runtime/platform/platform.h"
+#include "test.h"
 #include "unit_tests/fixtures/enqueue_handler_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_command_queue.h"
-#include "unit_tests/mocks/mock_csr.h"
 #include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_csr.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_mdi.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
-#include "test.h"
-
-using namespace OCLRT;
+using namespace NEO;
 
 HWTEST_F(EnqueueHandlerTest, enqueueHandlerWithKernelCallsProcessEvictionOnCSR) {
     int32_t tag;
-    auto csr = new MockCsrBase<FamilyType>(tag);
+    auto csr = new MockCsrBase<FamilyType>(tag, *pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(csr);
 
     MockKernelWithInternals mockKernel(*pDevice);
@@ -49,9 +34,72 @@ HWTEST_F(EnqueueHandlerTest, enqueueHandlerWithKernelCallsProcessEvictionOnCSR) 
     EXPECT_TRUE(csr->processEvictionCalled);
 }
 
+template <typename GfxFamily>
+class MyCommandQueueHw : public CommandQueueHw<GfxFamily> {
+    typedef CommandQueueHw<GfxFamily> BaseClass;
+
+  public:
+    MyCommandQueueHw(Context *context, Device *device, cl_queue_properties *properties) : BaseClass(context, device, properties){};
+    Vec3<size_t> lws = {1, 1, 1};
+    Vec3<size_t> elws = {1, 1, 1};
+    void enqueueHandlerHook(const unsigned int commandType, const MultiDispatchInfo &multiDispatchInfo) override {
+        elws = multiDispatchInfo.begin()->getEnqueuedWorkgroupSize();
+        lws = multiDispatchInfo.begin()->getActualWorkgroupSize();
+    }
+};
+
+HWTEST_F(EnqueueHandlerTest, givenLocalWorkgroupSizeGreaterThenGlobalWorkgroupSizeWhenEnqueueKernelThenLwsIsClamped) {
+    int32_t tag;
+    auto csr = new MockCsrBase<FamilyType>(tag, *pDevice->executionEnvironment);
+    pDevice->resetCommandStreamReceiver(csr);
+    MockKernelWithInternals mockKernel(*pDevice);
+    auto mockProgram = mockKernel.mockProgram;
+    mockProgram->setAllowNonUniform(true);
+    MyCommandQueueHw<FamilyType> myCmdQ(context, pDevice, 0);
+
+    size_t lws1d[] = {4, 1, 1};
+    size_t gws1d[] = {2, 1, 1};
+    myCmdQ.enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws1d, lws1d, 0, nullptr, nullptr);
+    EXPECT_EQ(myCmdQ.elws.x, lws1d[0]);
+    EXPECT_EQ(myCmdQ.lws.x, gws1d[0]);
+
+    size_t lws2d[] = {3, 3, 1};
+    size_t gws2d[] = {2, 1, 1};
+    myCmdQ.enqueueKernel(mockKernel.mockKernel, 2, nullptr, gws2d, lws2d, 0, nullptr, nullptr);
+    EXPECT_EQ(myCmdQ.elws.x, lws2d[0]);
+    EXPECT_EQ(myCmdQ.elws.y, lws2d[1]);
+    EXPECT_EQ(myCmdQ.lws.x, gws2d[0]);
+    EXPECT_EQ(myCmdQ.lws.y, gws2d[1]);
+
+    size_t lws3d[] = {5, 4, 3};
+    size_t gws3d[] = {2, 2, 2};
+    myCmdQ.enqueueKernel(mockKernel.mockKernel, 3, nullptr, gws3d, lws3d, 0, nullptr, nullptr);
+    EXPECT_EQ(myCmdQ.elws.x, lws3d[0]);
+    EXPECT_EQ(myCmdQ.elws.y, lws3d[1]);
+    EXPECT_EQ(myCmdQ.elws.z, lws3d[2]);
+    EXPECT_EQ(myCmdQ.lws.x, gws3d[0]);
+    EXPECT_EQ(myCmdQ.lws.y, gws3d[1]);
+    EXPECT_EQ(myCmdQ.lws.z, gws3d[2]);
+}
+
+HWTEST_F(EnqueueHandlerTest, givenLocalWorkgroupSizeGreaterThenGlobalWorkgroupSizeAndNonUniformWorkGroupWhenEnqueueKernelThenClIvalidWorkGroupSizeIsReturned) {
+    int32_t tag;
+    auto csr = new MockCsrBase<FamilyType>(tag, *pDevice->executionEnvironment);
+    pDevice->resetCommandStreamReceiver(csr);
+    MockKernelWithInternals mockKernel(*pDevice);
+    auto mockProgram = mockKernel.mockProgram;
+    mockProgram->setAllowNonUniform(false);
+    MyCommandQueueHw<FamilyType> myCmdQ(context, pDevice, 0);
+
+    size_t lws1d[] = {4, 1, 1};
+    size_t gws1d[] = {2, 1, 1};
+    cl_int retVal = myCmdQ.enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws1d, lws1d, 0, nullptr, nullptr);
+    EXPECT_EQ(retVal, CL_INVALID_WORK_GROUP_SIZE);
+}
+
 HWTEST_F(EnqueueHandlerTest, enqueueHandlerCallOnEnqueueMarkerDoesntCallProcessEvictionOnCSR) {
     int32_t tag;
-    auto csr = new MockCsrBase<FamilyType>(tag);
+    auto csr = new MockCsrBase<FamilyType>(tag, *pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(csr);
 
     auto mockCmdQ = std::unique_ptr<MockCommandQueueHw<FamilyType>>(new MockCommandQueueHw<FamilyType>(context, pDevice, 0));
@@ -68,7 +116,7 @@ HWTEST_F(EnqueueHandlerTest, enqueueHandlerCallOnEnqueueMarkerDoesntCallProcessE
 
 HWTEST_F(EnqueueHandlerTest, enqueueHandlerForMarkerOnUnblockedQueueDoesntIncrementTaskLevel) {
     int32_t tag;
-    auto csr = new MockCsrBase<FamilyType>(tag);
+    auto csr = new MockCsrBase<FamilyType>(tag, *pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(csr);
 
     auto mockCmdQ = std::unique_ptr<MockCommandQueueHw<FamilyType>>(new MockCommandQueueHw<FamilyType>(context, pDevice, 0));
@@ -86,7 +134,7 @@ HWTEST_F(EnqueueHandlerTest, enqueueHandlerForMarkerOnUnblockedQueueDoesntIncrem
 
 HWTEST_F(EnqueueHandlerTest, enqueueHandlerForMarkerOnBlockedQueueShouldNotIncrementTaskLevel) {
     int32_t tag;
-    auto csr = new MockCsrBase<FamilyType>(tag);
+    auto csr = new MockCsrBase<FamilyType>(tag, *pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(csr);
 
     auto mockCmdQ = std::unique_ptr<MockCommandQueueHw<FamilyType>>(new MockCommandQueueHw<FamilyType>(context, pDevice, 0));
@@ -160,51 +208,8 @@ HWTEST_F(EnqueueHandlerTest, enqueueBlockedSetsVirtualEventAsCurrentCmdQVirtualE
 
     ASSERT_NE(nullptr, mockCmdQ->virtualEvent);
 
-    EXPECT_TRUE(mockCmdQ->virtualEvent->isCurrentCmdQVirtualEvent());
-
     mockCmdQ->virtualEvent->setStatus(CL_COMPLETE);
     mockCmdQ->isQueueBlocked();
-    mockCmdQ->release();
-}
-
-HWTEST_F(EnqueueHandlerTest, enqueueBlockedUnsetsCurrentCmdQVirtualEventForPreviousVirtualEvent) {
-
-    UserEvent userEvent;
-    cl_event clUserEvent = &userEvent;
-
-    MockKernelWithInternals kernelInternals(*pDevice, context);
-
-    Kernel *kernel = kernelInternals.mockKernel;
-
-    MockMultiDispatchInfo multiDispatchInfo(kernel);
-
-    auto mockCmdQ = new MockCommandQueueHw<FamilyType>(context, pDevice, 0);
-
-    // put queue into initial blocked state with userEvent
-
-    bool blocking = false;
-    mockCmdQ->template enqueueHandler<CL_COMMAND_NDRANGE_KERNEL>(nullptr,
-                                                                 0,
-                                                                 blocking,
-                                                                 multiDispatchInfo,
-                                                                 1,
-                                                                 &clUserEvent,
-                                                                 nullptr);
-
-    ASSERT_NE(nullptr, mockCmdQ->virtualEvent);
-    Event *previousVirtualEvent = mockCmdQ->virtualEvent;
-
-    mockCmdQ->template enqueueHandler<CL_COMMAND_NDRANGE_KERNEL>(nullptr,
-                                                                 0,
-                                                                 blocking,
-                                                                 multiDispatchInfo,
-                                                                 0,
-                                                                 nullptr,
-                                                                 nullptr);
-
-    EXPECT_FALSE(previousVirtualEvent->isCurrentCmdQVirtualEvent());
-    EXPECT_TRUE(mockCmdQ->virtualEvent->isCurrentCmdQVirtualEvent());
-
     mockCmdQ->release();
 }
 
@@ -233,8 +238,8 @@ HWTEST_F(EnqueueHandlerTest, enqueueWithOutputEventRegistersEvent) {
 }
 
 HWTEST_F(EnqueueHandlerTest, givenEnqueueHandlerWhenAddPatchInfoCommentsForAUBDumpIsNotSetThenPatchInfoDataIsNotTransferredToCSR) {
-    auto csr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
-    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(csr->getMemoryManager());
+    auto csr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
+    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(*pDevice->executionEnvironment);
     csr->overwriteFlatBatchBufferHelper(mockHelper);
     pDevice->resetCommandStreamReceiver(csr);
 
@@ -255,8 +260,8 @@ HWTEST_F(EnqueueHandlerTest, givenEnqueueHandlerWhenAddPatchInfoCommentsForAUBDu
     DebugManager.flags.AddPatchInfoCommentsForAUBDump.set(true);
     DebugManager.flags.FlattenBatchBufferForAUBDump.set(true);
 
-    auto csr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
-    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(csr->getMemoryManager());
+    auto csr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
+    auto mockHelper = new MockFlatBatchBufferHelper<FamilyType>(*pDevice->executionEnvironment);
     csr->overwriteFlatBatchBufferHelper(mockHelper);
     pDevice->resetCommandStreamReceiver(csr);
 
@@ -276,7 +281,7 @@ HWTEST_F(EnqueueHandlerTest, givenEnqueueHandlerWhenAddPatchInfoCommentsForAUBDu
 
 HWTEST_F(EnqueueHandlerTest, givenExternallySynchronizedParentEventWhenRequestingEnqueueWithoutGpuSubmissionThenTaskCountIsNotInherited) {
     struct ExternallySynchEvent : Event {
-        ExternallySynchEvent() : Event(nullptr, CL_COMMAND_MARKER, 0, 0) {
+        ExternallySynchEvent(CommandQueue *cmdQueue) : Event(cmdQueue, CL_COMMAND_MARKER, 0, 0) {
             transitionExecutionStatus(CL_COMPLETE);
             this->updateTaskCount(7);
         }
@@ -284,11 +289,13 @@ HWTEST_F(EnqueueHandlerTest, givenExternallySynchronizedParentEventWhenRequestin
             return true;
         }
     };
-    ExternallySynchEvent synchEvent;
+
+    auto mockCmdQ = new MockCommandQueueHw<FamilyType>(context, pDevice, 0);
+
+    ExternallySynchEvent synchEvent(mockCmdQ);
     cl_event inEv = &synchEvent;
     cl_event outEv = nullptr;
 
-    auto mockCmdQ = new MockCommandQueueHw<FamilyType>(context, pDevice, 0);
     bool blocking = false;
     MultiDispatchInfo emptyDispatchInfo;
     mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr,
@@ -347,5 +354,29 @@ HWTEST_F(EnqueueHandlerTest, givenEnqueueHandlerWhenSubCaptureIsOnThenActivateSu
                                                                  nullptr);
     EXPECT_TRUE(pDevice->getUltCommandStreamReceiver<FamilyType>().activateAubSubCaptureCalled);
 
+    mockCmdQ->release();
+}
+using EnqueueHandlerTestBasic = ::testing::Test;
+HWTEST_F(EnqueueHandlerTestBasic, givenEnqueueHandlerWhenCommandIsBlokingThenCompletionStampTaskCountIsPassedToWaitForTaskCountAndCleanAllocationListAsRequiredTaskCount) {
+    int32_t tag;
+    auto executionEnvironment = platformImpl->peekExecutionEnvironment();
+    auto mockCsr = new MockCsrBase<FamilyType>(tag, *executionEnvironment);
+    executionEnvironment->commandStreamReceivers.resize(1);
+    std::unique_ptr<MockDevice> pDevice(MockDevice::createWithExecutionEnvironment<MockDevice>(nullptr, executionEnvironment, 0u));
+    pDevice->resetCommandStreamReceiver(mockCsr);
+    auto context = std::make_unique<MockContext>(pDevice.get());
+    MockKernelWithInternals kernelInternals(*pDevice, context.get());
+    Kernel *kernel = kernelInternals.mockKernel;
+    MockMultiDispatchInfo multiDispatchInfo(kernel);
+    auto mockCmdQ = new MockCommandQueueHw<FamilyType>(context.get(), pDevice.get(), 0);
+    mockCmdQ->deltaTaskCount = 100;
+    mockCmdQ->template enqueueHandler<CL_COMMAND_WRITE_BUFFER>(nullptr,
+                                                               0,
+                                                               true,
+                                                               multiDispatchInfo,
+                                                               0,
+                                                               nullptr,
+                                                               nullptr);
+    EXPECT_EQ(mockCsr->waitForTaskCountRequiredTaskCount, mockCmdQ->completionStampTaskCount);
     mockCmdQ->release();
 }

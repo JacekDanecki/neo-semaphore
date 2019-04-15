@@ -1,34 +1,21 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/memory_constants.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "test.h"
 #include "unit_tests/fixtures/ult_command_stream_receiver_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_experimental_command_buffer.h"
-#include "test.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct ExperimentalCommandBufferTest : public UltCommandStreamReceiverTest {
     void SetUp() override {
@@ -175,26 +162,6 @@ HWTEST_F(MockExperimentalCommandBufferTest, givenEnabledExperimentalCmdBufferWhe
     EXPECT_EQ(expectedExOffset, mockExCmdBuffer->experimentalAllocationOffset);
 }
 
-HWTEST_F(MockExperimentalCommandBufferTest, givenEnabledExperimentalCmdBufferWhenMemoryManagerIsNotAvailableThenExperimentalBufferAllocationsRemainAllocated) {
-    auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
-    MockExperimentalCommandBuffer *mockExCmdBuffer = static_cast<MockExperimentalCommandBuffer *>(commandStreamReceiver.experimentalCmdBuffer.get());
-
-    EXPECT_NE(nullptr, mockExCmdBuffer->experimentalAllocation);
-    EXPECT_NE(nullptr, mockExCmdBuffer->timestamps);
-
-    auto experimentalAllocation = mockExCmdBuffer->experimentalAllocation;
-    auto timestamps = mockExCmdBuffer->timestamps;
-    auto memoryManager = commandStreamReceiver.getMemoryManager();
-
-    //null memManager
-    commandStreamReceiver.setMemoryManager(nullptr);
-    //delete experimental cmd buffer and verify its allocations remain intact
-    commandStreamReceiver.setExperimentalCmdBuffer(std::move(std::unique_ptr<ExperimentalCommandBuffer>(nullptr)));
-    memoryManager->freeGraphicsMemory(experimentalAllocation);
-    memoryManager->freeGraphicsMemory(timestamps);
-    commandStreamReceiver.setMemoryManager(memoryManager);
-}
-
 HWTEST_F(MockExperimentalCommandBufferTest, givenEnabledExperimentalCmdBufferWhenCsrIsFlushedTwiceThenExpectProperlyFilledExperimentalCmdBufferAndTimestampOffset) {
     using MI_BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
     using MI_BATCH_BUFFER_END = typename FamilyType::MI_BATCH_BUFFER_END;
@@ -276,14 +243,15 @@ HWTEST_F(MockExperimentalCommandBufferTest, givenEnabledExperimentalCmdBufferWhe
 
 HWTEST_F(MockExperimentalCommandBufferTest, givenEnabledExperimentalCmdBufferWhenMemoryManagerAlreadyStoresAllocationThenUseItForLinearSteam) {
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    auto storage = commandStreamReceiver.getInternalAllocationStorage();
     commandStreamReceiver.storeMakeResidentAllocations = true;
     MemoryManager *memoryManager = commandStreamReceiver.getMemoryManager();
 
     //Make two allocations, since CSR will try to reuse it also
-    auto allocation = memoryManager->allocateGraphicsMemory(3 * MemoryConstants::pageSize);
-    memoryManager->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
-    allocation = memoryManager->allocateGraphicsMemory(3 * MemoryConstants::pageSize);
-    memoryManager->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
+    auto allocation = memoryManager->allocateGraphicsMemoryWithProperties({3 * MemoryConstants::pageSize64k, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    storage->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
+    allocation = memoryManager->allocateGraphicsMemoryWithProperties({3 * MemoryConstants::pageSize64k, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+    storage->storeAllocation(std::unique_ptr<GraphicsAllocation>(allocation), REUSABLE_ALLOCATION);
 
     MockExperimentalCommandBuffer *mockExCmdBuffer = static_cast<MockExperimentalCommandBuffer *>(commandStreamReceiver.experimentalCmdBuffer.get());
 

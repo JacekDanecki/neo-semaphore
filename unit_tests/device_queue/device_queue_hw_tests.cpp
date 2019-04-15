@@ -1,42 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
-
-#include "hw_cmds.h"
-#include "runtime/helpers/options.h"
-#include "unit_tests/fixtures/device_host_queue_fixture.h"
-#include "unit_tests/fixtures/execution_model_fixture.h"
-#include "unit_tests/helpers/hw_parse.h"
-#include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/mocks/mock_device_queue.h"
-#include "unit_tests/mocks/mock_device.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/helpers/kernel_commands.h"
+#include "runtime/helpers/options.h"
+#include "runtime/utilities/tag_allocator.h"
+#include "unit_tests/fixtures/device_host_queue_fixture.h"
+#include "unit_tests/fixtures/execution_model_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/hw_parse.h"
+#include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_device.h"
+#include "unit_tests/mocks/mock_device_queue.h"
+#include "unit_tests/mocks/mock_kernel.h"
+
+#include "hw_cmds.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace DeviceHostQueue;
 
 HWTEST_F(DeviceQueueHwTest, resetOnlyExpected) {
@@ -310,7 +296,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, cleanupSection) {
     auto mockDeviceQueueHw = new MockDeviceQueueHw<FamilyType>(pContext, device, deviceQueueProperties::minimumProperties[0]);
     auto commandsSize = mockDeviceQueueHw->getMinimumSlbSize() + mockDeviceQueueHw->getWaCommandsSize();
     auto igilCmdQueue = reinterpret_cast<IGIL_CommandQueue *>(mockDeviceQueueHw->getQueueBuffer()->getUnderlyingBuffer());
-    MockParentKernel *mockParentKernel = MockParentKernel::create(*device);
+    MockParentKernel *mockParentKernel = MockParentKernel::create(*pContext);
     uint32_t taskCount = 7;
 
     mockDeviceQueueHw->buildSlbDummyCommands();
@@ -364,21 +350,22 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, AddEMCleanupSectionWithProfiling) {
     auto mockDeviceQueueHw = new MockDeviceQueueHw<FamilyType>(pContext, device, deviceQueueProperties::minimumProperties[0]);
     auto commandsSize = mockDeviceQueueHw->getMinimumSlbSize() + mockDeviceQueueHw->getWaCommandsSize();
     auto igilCmdQueue = reinterpret_cast<IGIL_CommandQueue *>(mockDeviceQueueHw->getQueueBuffer()->getUnderlyingBuffer());
-    MockParentKernel *mockParentKernel = MockParentKernel::create(*device);
+    MockParentKernel *mockParentKernel = MockParentKernel::create(*pContext);
     uint32_t taskCount = 7;
 
-    HwTimeStamps hwTimeStamp;
+    auto hwTimeStamp = pCommandQueue->getCommandStreamReceiver().getEventTsAllocator()->getTag();
     mockDeviceQueueHw->buildSlbDummyCommands();
-    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel, &hwTimeStamp, taskCount);
+    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel, hwTimeStamp, taskCount);
 
-    uint32_t eventTimestampLow = (uint32_t)(igilCmdQueue->m_controls.m_EventTimestampAddress & 0xFFFFFFFF);
-    uint32_t eventTimestampHigh = (uint32_t)((igilCmdQueue->m_controls.m_EventTimestampAddress & 0xFFFFFFFF00000000) >> 32);
+    uint32_t eventTimestampAddrLow = static_cast<uint32_t>(igilCmdQueue->m_controls.m_EventTimestampAddress & 0xFFFFFFFF);
+    uint32_t eventTimestampAddrHigh = static_cast<uint32_t>((igilCmdQueue->m_controls.m_EventTimestampAddress & 0xFFFFFFFF00000000) >> 32);
 
-    uint32_t contextCompleteLow = (uint32_t)((uint64_t)((uintptr_t)(&hwTimeStamp.ContextCompleteTS)) & 0xFFFFFFFF);
-    uint32_t contextCompleteHigh = (uint32_t)(((uint64_t)((uintptr_t)(&hwTimeStamp.ContextCompleteTS)) & 0xFFFFFFFF00000000) >> 32);
+    uint64_t contextCompleteAddr = hwTimeStamp->getBaseGraphicsAllocation()->getGpuAddress() + ptrDiff(&hwTimeStamp->tagForCpuAccess->ContextCompleteTS, hwTimeStamp->tagForCpuAccess);
+    uint32_t contextCompleteAddrLow = static_cast<uint32_t>(contextCompleteAddr & 0xFFFFFFFF);
+    uint32_t contextCompleteAddrHigh = static_cast<uint32_t>((contextCompleteAddr & 0xFFFFFFFF00000000) >> 32);
 
-    EXPECT_EQ(contextCompleteLow, eventTimestampLow);
-    EXPECT_EQ(contextCompleteHigh, eventTimestampHigh);
+    EXPECT_EQ(contextCompleteAddrLow, eventTimestampAddrLow);
+    EXPECT_EQ(contextCompleteAddrHigh, eventTimestampAddrHigh);
 
     HardwareParse hwParser;
     auto *slbCS = mockDeviceQueueHw->getSlbCS();
@@ -684,10 +671,10 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, addExecutionModelClea
         }
     };
     std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
-    MockContext context;
+    MockContext context(device.get());
     std::unique_ptr<MockDeviceQueueWithMediaStateClearRegistering> mockDeviceQueueHw(new MockDeviceQueueWithMediaStateClearRegistering(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
-    std::unique_ptr<MockParentKernel> mockParentKernel(MockParentKernel::create(*device));
+    std::unique_ptr<MockParentKernel> mockParentKernel(MockParentKernel::create(context));
     uint32_t taskCount = 7;
     mockDeviceQueueHw->buildSlbDummyCommands();
 

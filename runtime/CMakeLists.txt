@@ -1,22 +1,8 @@
-# Copyright (c) 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2018-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
@@ -62,6 +48,9 @@ if(WIN32)
 endif()
 
 target_link_libraries(${NEO_STATIC_LIB_NAME} elflib)
+if(DEFINED AUB_STREAM_DIR)
+  target_link_libraries(${NEO_STATIC_LIB_NAME} ${AUB_STREAM_PROJECT_NAME})
+endif()
 
 target_include_directories(${NEO_STATIC_LIB_NAME} PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}
@@ -69,10 +58,11 @@ target_include_directories(${NEO_STATIC_LIB_NAME} PRIVATE
 )
 
 target_include_directories(${NEO_STATIC_LIB_NAME} PUBLIC
+  ${ENGINE_NODE_DIR}
   ${KHRONOS_HEADERS_DIR}
+  ${KHRONOS_GL_HEADERS_DIR}
   ${CIF_BASE_DIR}
   ${GMM_INCLUDE_PATHS}
-  ${GTPIN_HEADERS_DIR}
   ${HW_SRC_INCLUDE_PATH}
   ${IGC_OCL_ADAPTOR_DIR}
   ${IGDRCL__IGC_INCLUDE_DIR}
@@ -96,15 +86,7 @@ else()
   )
 endif()
 
-target_compile_definitions(${NEO_STATIC_LIB_NAME} PUBLIC DEFAULT_PLATFORM=${DEFAULT_SUPPORTED_PLATFORM})
-
-link_directories(${GMM_LIB_PATHS})
-
-if(USE_STATIC_GMM)
-  target_link_libraries(${NEO_STATIC_LIB_NAME} ${GMMUMD_LIB_NAME})
-else()
-  target_compile_definitions(${NEO_STATIC_LIB_NAME} PUBLIC GMM_LIB_DLL)
-endif()
+target_compile_definitions(${NEO_STATIC_LIB_NAME} PUBLIC GMM_LIB_DLL DEFAULT_PLATFORM=${DEFAULT_SUPPORTED_PLATFORM})
 
 if(INSTRUMENTATION_LIB_NAME)
   add_dependencies(${NEO_STATIC_LIB_NAME} ${INSTRUMENTATION_LIB_NAME})
@@ -135,14 +117,21 @@ if(${GENERATE_EXECUTABLE})
     $<TARGET_OBJECTS:${BUILTINS_BINARIES_LIB_NAME}>
     $<TARGET_OBJECTS:${SCHEDULER_BINARY_LIB_NAME}>
   )
+
+  if(DEFINED AUB_STREAM_DIR)
+    list(APPEND NEO_DYNAMIC_LIB__TARGET_OBJECTS $<TARGET_OBJECTS:${AUB_STREAM_PROJECT_NAME}_all_hw>)
+  endif()
+
   add_library(${NEO_DYNAMIC_LIB_NAME} SHARED
     ${NEO_DYNAMIC_LIB__TARGET_OBJECTS}
+    ${IGDRCL_SOURCE_DIR}/runtime/aub/aub_stream_interface.cpp
   )
-  if(TARGET GMMUMD_LIB_NAME)
+
+  if(TARGET ${GMMUMD_LIB_NAME})
     add_dependencies(${NEO_DYNAMIC_LIB_NAME} ${GMMUMD_LIB_NAME})
   endif()
 
-  if(GTPIN_HEADERS_DIR)
+  if(NOT DISABLED_GTPIN_SUPPORT)
     macro(macro_for_each_gen)
       target_sources(${NEO_DYNAMIC_LIB_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/${GEN_TYPE_LOWER}/gtpin_setup_${GEN_TYPE_LOWER}.cpp)
     endmacro()
@@ -160,6 +149,7 @@ if(${GENERATE_EXECUTABLE})
   target_include_directories(${NEO_DYNAMIC_LIB_NAME} BEFORE PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}
     ${INSTRUMENTATION_INCLUDE_PATH}
+    ${AUB_STREAM_DIR}/..
   )
 
   if(WIN32)

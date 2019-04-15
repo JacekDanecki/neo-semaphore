@@ -1,31 +1,17 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
 #include "runtime/gtpin/gtpin_hw_helper.h"
 #include "runtime/helpers/string.h"
 #include "runtime/kernel/kernel.h"
 
-namespace OCLRT {
+#include "hw_cmds.h"
+
+namespace NEO {
 
 template <typename GfxFamily>
 bool GTPinHwHelperHw<GfxFamily>::addSurfaceState(Kernel *pKernel) {
@@ -46,15 +32,13 @@ bool GTPinHwHelperHw<GfxFamily>::addSurfaceState(Kernel *pKernel) {
     char *pNewSsh = new char[sshSize + sizeToEnlarge];
     memcpy_s(pNewSsh, sshSize + sizeToEnlarge, pSsh, currSurfaceStateSize);
     RENDER_SURFACE_STATE *pSS = reinterpret_cast<RENDER_SURFACE_STATE *>(pNewSsh + currSurfaceStateSize);
-    pSS->init();
+    *pSS = GfxFamily::cmdInitRenderSurfaceState;
     size_t newSurfaceStateSize = currSurfaceStateSize + ssSize;
     size_t currBTCount = pKernel->getNumberOfBindingTableStates();
     memcpy_s(pNewSsh + newSurfaceStateSize, sshSize + sizeToEnlarge - newSurfaceStateSize, pSsh + currBTOffset, currBTCount * btsSize);
     BINDING_TABLE_STATE *pNewBTS = reinterpret_cast<BINDING_TABLE_STATE *>(pNewSsh + newSurfaceStateSize + currBTCount * btsSize);
-    BINDING_TABLE_STATE bti;
-    bti.init();
-    bti.setSurfaceStatePointer((uint64_t)currBTOffset);
-    *pNewBTS = bti;
+    *pNewBTS = GfxFamily::cmdInitBindingTableState;
+    pNewBTS->setSurfaceStatePointer((uint64_t)currBTOffset);
     pKernel->resizeSurfaceStateHeap(pNewSsh, sshSize + sizeToEnlarge, currBTCount + 1, newSurfaceStateSize);
     return true;
 }
@@ -71,4 +55,4 @@ void *GTPinHwHelperHw<GfxFamily>::getSurfaceState(Kernel *pKernel, size_t bti) {
     return pSurfaceState;
 }
 
-} // namespace OCLRT
+} // namespace NEO

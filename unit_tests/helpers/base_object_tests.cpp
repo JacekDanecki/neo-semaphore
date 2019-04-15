@@ -1,43 +1,30 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/accelerators/intel_accelerator.h"
+#include "runtime/api/api.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/command_queue/command_queue.h"
+#include "runtime/context/context.h"
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/helpers/base_object.h"
-#include "runtime/context/context.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/mem_obj/mem_obj.h"
 #include "runtime/platform/platform.h"
-#include "runtime/accelerators/intel_accelerator.h"
 #include "runtime/program/program.h"
 #include "runtime/sampler/sampler.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
+#include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/mocks/mock_buffer.h"
-#include "unit_tests/fixtures/device_fixture.h"
-#include "runtime/api/api.h"
 
-namespace OCLRT {
+#include "gmock/gmock.h"
+
+namespace NEO {
 typedef struct _cl_object_for_test2 *cl_object_for_test2;
 
 struct _cl_object_for_test2 : public ClDispatch {
@@ -53,7 +40,7 @@ struct OpenCLObjectMapper<ObjectForTest2> {
     typedef _cl_object_for_test2 BaseType;
 };
 
-struct ObjectForTest2 : public OCLRT::BaseObject<_cl_object_for_test2> {
+struct ObjectForTest2 : public NEO::BaseObject<_cl_object_for_test2> {
     static const cl_ulong objectMagic = 0x13650a12b79ce4dfLL;
 };
 
@@ -61,9 +48,11 @@ template <typename TypeParam>
 struct BaseObjectTests : public ::testing::Test {
 };
 
-template <typename BaseType>
-class MockObject : public BaseType {
+template <typename OclObject>
+class MockObjectBase : public OclObject {
   public:
+    using OclObject::OclObject;
+
     void setInvalidMagic() {
         validMagic = this->magic;
         this->magic = 0x0101010101010101LL;
@@ -79,25 +68,23 @@ class MockObject : public BaseType {
     cl_ulong validMagic;
 };
 
+template <typename BaseType>
+class MockObject : public MockObjectBase<BaseType> {};
+
 template <>
-class MockObject<Buffer> : public Buffer {
+class MockObject<Buffer> : public MockObjectBase<Buffer> {
   public:
-    void setInvalidMagic() {
-        validMagic = this->magic;
-        this->magic = 0x0101010101010101LL;
-    }
-    void setValidMagic() {
-        this->magic = validMagic;
-    }
+    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) override {}
+};
 
-    bool isObjectValid() const {
-        return this->isValid();
-    }
+template <>
+class MockObject<Program> : public MockObjectBase<Program> {
+  public:
+    MockObject() : MockObjectBase<Program>(*new ExecutionEnvironment()),
+                   executionEnvironment(&this->peekExecutionEnvironment()) {}
 
-    void setArgStateful(void *memory) override {
-    }
-
-    cl_ulong validMagic;
+  private:
+    std::unique_ptr<ExecutionEnvironment> executionEnvironment;
 };
 
 typedef ::testing::Types<
@@ -291,7 +278,7 @@ class MockBuffer : public MockBufferStorage, public Buffer {
     MockBuffer() : MockBufferStorage(), Buffer(nullptr, CL_MEM_USE_HOST_PTR, sizeof(data), &data, &data, &mockGfxAllocation, true, false, false) {
     }
 
-    void setArgStateful(void *memory) override {
+    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) override {
     }
 
     void setFakeOwnership() {
@@ -338,13 +325,13 @@ TYPED_TEST(BaseObjectTests, getCond) {
 }
 
 TYPED_TEST(BaseObjectTests, convertToInternalObject) {
-    class ObjectForTest : public OCLRT::MemObj {
+    class ObjectForTest : public NEO::MemObj {
       public:
         ObjectForTest() : MemObj(nullptr, 0, 0, 0u, nullptr, nullptr, nullptr, false, false, false) {
         }
 
         void convertToInternalObject(void) {
-            OCLRT::BaseObject<_cl_mem>::convertToInternalObject();
+            NEO::BaseObject<_cl_mem>::convertToInternalObject();
         }
     };
     ObjectForTest *object = new ObjectForTest;
@@ -375,4 +362,4 @@ TYPED_TEST(BaseObjectTests, castToOrAbortDifferentTypeAborts) {
     auto notOriginalType = reinterpret_cast<ObjectForTest2::BaseType *>(baseObject);
     EXPECT_ANY_THROW(castToObjectOrAbort<ObjectForTest2>(notOriginalType));
 }
-} // namespace OCLRT
+} // namespace NEO

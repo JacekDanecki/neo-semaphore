@@ -1,37 +1,22 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/kernel/image_transformer.h"
 #include "runtime/program/kernel_info.h"
-#include "unit_tests/fixtures/image_fixture.h"
 #include "test.h"
+#include "unit_tests/fixtures/image_fixture.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 class ImageTransformerTest : public ::testing::Test {
   public:
     void SetUp() override {
         using SimpleKernelArgInfo = Kernel::SimpleKernelArgInfo;
-        pKernelInfo.reset(KernelInfo::create());
+        pKernelInfo = std::make_unique<KernelInfo>();
         pKernelInfo->kernelArgInfo.resize(2);
         pKernelInfo->kernelArgInfo[0].isTransformable = true;
         pKernelInfo->kernelArgInfo[0].offsetHeap = firstImageOffset;
@@ -44,7 +29,9 @@ class ImageTransformerTest : public ::testing::Test {
         clImage1 = static_cast<cl_mem>(image2.get());
         clImage2 = static_cast<cl_mem>(image2.get());
         imageArg1.value = &clImage1;
+        imageArg1.object = clImage1;
         imageArg2.value = &clImage2;
+        imageArg2.object = clImage2;
         kernelArguments.push_back(imageArg1);
         kernelArguments.push_back(imageArg2);
     }

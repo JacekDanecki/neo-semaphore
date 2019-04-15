@@ -1,29 +1,14 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #pragma once
 #include "runtime/os_interface/windows/gdi_interface.h"
 
-namespace OCLRT {
+namespace NEO {
 
 class MockGdi : public Gdi {
   public:
@@ -56,8 +41,15 @@ class MockGdi : public Gdi {
         return 0;
     }
 
-    static NTSTATUS __stdcall registerTimNotificationMock(IN D3DKMT_REGISTERTRIMNOTIFICATION *arg) {
+    static NTSTATUS __stdcall registerTrimNotificationMock(IN D3DKMT_REGISTERTRIMNOTIFICATION *arg) {
         getRegisterTrimNotificationArg() = *arg;
+        arg->Handle = reinterpret_cast<VOID *>(1);
+        return 0;
+    }
+
+    static NTSTATUS __stdcall unregisterTrimNotificationMock(IN D3DKMT_UNREGISTERTRIMNOTIFICATION *arg) {
+        getUnregisterTrimNotificationArg() = *arg;
+        arg->Handle = reinterpret_cast<VOID *>(1);
         return 0;
     }
 
@@ -101,7 +93,8 @@ class MockGdi : public Gdi {
         } else {
             evict = reinterpret_cast<PFND3DKMT_EVICT>(evictMock);
         }
-        registerTrimNotification = reinterpret_cast<PFND3DKMT_REGISTERTRIMNOTIFICATION>(registerTimNotificationMock);
+        registerTrimNotification = reinterpret_cast<PFND3DKMT_REGISTERTRIMNOTIFICATION>(registerTrimNotificationMock);
+        unregisterTrimNotification = reinterpret_cast<PFND3DKMT_UNREGISTERTRIMNOTIFICATION>(unregisterTrimNotificationMock);
         destroyAllocation2 = reinterpret_cast<PFND3DKMT_DESTROYALLOCATION2>(destroyAllocation2Mock);
         waitForSynchronizationObjectFromCpu = reinterpret_cast<PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMCPU>(waitFromCpuMock);
         queryResourceInfo = reinterpret_cast<PFND3DKMT_QUERYRESOURCEINFO>(queryResourceInfoMock);
@@ -122,6 +115,11 @@ class MockGdi : public Gdi {
     static D3DKMT_REGISTERTRIMNOTIFICATION &getRegisterTrimNotificationArg() {
         static D3DKMT_REGISTERTRIMNOTIFICATION registerTrimArg;
         return registerTrimArg;
+    }
+
+    static D3DKMT_UNREGISTERTRIMNOTIFICATION &getUnregisterTrimNotificationArg() {
+        static D3DKMT_UNREGISTERTRIMNOTIFICATION unregisterTrimArg;
+        return unregisterTrimArg;
     }
 
     static D3DKMT_DESTROYALLOCATION2 &getDestroyArg() {
@@ -160,4 +158,4 @@ class MockGdi : public Gdi {
     }
 };
 
-} // namespace OCLRT
+} // namespace NEO

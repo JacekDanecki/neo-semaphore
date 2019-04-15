@@ -1,42 +1,39 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
+#include "runtime/device/device.h"
 #include "runtime/helpers/string.h"
+#include "runtime/kernel/grf_config.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/scheduler/scheduler_kernel.h"
-#include "runtime/device/device.h"
-#include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/mocks/mock_context.h"
+#include "unit_tests/mocks/mock_program.h"
+
 #include <cassert>
 
-namespace OCLRT {
+namespace NEO {
 
 ////////////////////////////////////////////////////////////////////////////////
 // Kernel - Core implementation
 ////////////////////////////////////////////////////////////////////////////////
 class MockKernel : public Kernel {
   public:
+    using Kernel::addAllocationToCacheFlushVector;
+    using Kernel::allBufferArgsStateful;
+    using Kernel::auxTranslationRequired;
+    using Kernel::isSchedulerKernel;
+    using Kernel::kernelArgRequiresCacheFlush;
+    using Kernel::kernelArguments;
+    using Kernel::kernelSvmGfxAllocations;
+    using Kernel::numberOfBindingTableStates;
+    using Kernel::svmAllocationsRequireCacheFlush;
+
     struct BlockPatchValues {
         uint64_t offset;
         uint32_t size;
@@ -94,10 +91,6 @@ class MockKernel : public Kernel {
             Kernel::crossThreadData = nullptr;
         }
 
-        if (Kernel::pSshLocal == mockSshLocal.data()) {
-            Kernel::pSshLocal = nullptr;
-        }
-
         if (kernelInfoAllocated) {
             delete kernelInfoAllocated->heapInfo.pKernelHeader;
             delete kernelInfoAllocated->patchInfo.executionEnvironment;
@@ -108,7 +101,12 @@ class MockKernel : public Kernel {
 
     template <typename KernelType = MockKernel>
     static KernelType *create(Device &device, Program *program) {
-        KernelInfo *info = new KernelInfo();
+        return create<KernelType>(device, program, GrfConfig::DefaultGrfNumber);
+    }
+
+    template <typename KernelType = MockKernel>
+    static KernelType *create(Device &device, Program *program, uint32_t grfNumber) {
+        auto info = new KernelInfo();
         const size_t crossThreadSize = 160;
 
         SKernelBinaryHeaderCommon *header = new SKernelBinaryHeaderCommon;
@@ -132,6 +130,7 @@ class MockKernel : public Kernel {
         SPatchExecutionEnvironment *executionEnvironment = new SPatchExecutionEnvironment;
         memset(executionEnvironment, 0, sizeof(SPatchExecutionEnvironment));
         executionEnvironment->HasDeviceEnqueue = 0;
+        executionEnvironment->NumGRFRequired = grfNumber;
         info->patchInfo.executionEnvironment = executionEnvironment;
 
         info->crossThreadData = new char[crossThreadSize];
@@ -148,9 +147,6 @@ class MockKernel : public Kernel {
 
     uint32_t getPatchedArgumentsNum() const { return patchedArgumentsNum; }
 
-    cl_int initialize() {
-        return Kernel::initialize();
-    }
     bool isPatched() const override;
 
     bool canTransformImages() const override;
@@ -177,25 +173,16 @@ class MockKernel : public Kernel {
     }
 
     void setSshLocal(const void *sshPattern, uint32_t newSshSize) {
-        if ((Kernel::pSshLocal != nullptr) && (Kernel::pSshLocal != mockSshLocal.data())) {
-            delete[] Kernel::pSshLocal;
-            Kernel::pSshLocal = nullptr;
-            Kernel::sshLocalSize = 0;
-        }
-
-        if (sshPattern && (newSshSize > 0)) {
-            mockSshLocal.clear();
-            mockSshLocal.insert(mockSshLocal.begin(), (char *)sshPattern, ((char *)sshPattern) + newSshSize);
-        } else {
-            mockSshLocal.resize(newSshSize, 0);
-        }
+        sshLocalSize = newSshSize;
 
         if (newSshSize == 0) {
-            return;
+            pSshLocal.reset(nullptr);
+        } else {
+            pSshLocal = std::make_unique<char[]>(newSshSize);
+            if (sshPattern) {
+                memcpy_s(pSshLocal.get(), newSshSize, sshPattern, newSshSize);
+            }
         }
-
-        Kernel::pSshLocal = mockSshLocal.data();
-        Kernel::sshLocalSize = static_cast<uint32_t>(mockSshLocal.size());
     }
 
     void setPrivateSurface(GraphicsAllocation *gfxAllocation, uint32_t size) {
@@ -238,9 +225,25 @@ class MockKernel : public Kernel {
 
     void makeResident(CommandStreamReceiver &commandStreamReceiver) override;
     void getResidency(std::vector<Surface *> &dst) override;
+    bool takeOwnership(bool lock) const override {
+        auto retVal = Kernel::takeOwnership(lock);
+        takeOwnershipCalls++;
+        return retVal;
+    }
+
+    void releaseOwnership() const override {
+        releaseOwnershipCalls++;
+        Kernel::releaseOwnership();
+    }
+
+    void setSpecialPipelineSelectMode(bool value) { specialPipelineSelectMode = value; }
+
+    bool requiresCacheFlushCommand(const CommandQueue &commandQueue) const override;
 
     uint32_t makeResidentCalls = 0;
     uint32_t getResidencyCalls = 0;
+    mutable uint32_t takeOwnershipCalls = 0;
+    mutable uint32_t releaseOwnershipCalls = 0;
 
     bool canKernelTransformImages = true;
 
@@ -251,22 +254,27 @@ class MockKernel : public Kernel {
 //class below have enough internals to service Enqueue operation.
 class MockKernelWithInternals {
   public:
-    MockKernelWithInternals(const Device &deviceArg, Context *context = nullptr) {
+    MockKernelWithInternals(const Device &deviceArg, Context *context = nullptr, bool addDefaultArg = false) {
         memset(&kernelHeader, 0, sizeof(SKernelBinaryHeaderCommon));
         memset(&threadPayload, 0, sizeof(SPatchThreadPayload));
         memset(&executionEnvironment, 0, sizeof(SPatchExecutionEnvironment));
         memset(&executionEnvironmentBlock, 0, sizeof(SPatchExecutionEnvironment));
         memset(&dataParameterStream, 0, sizeof(SPatchDataParameterStream));
+        memset(&mediaVfeState, 0, sizeof(SPatchMediaVFEState));
+        executionEnvironment.NumGRFRequired = GrfConfig::DefaultGrfNumber;
+        executionEnvironmentBlock.NumGRFRequired = GrfConfig::DefaultGrfNumber;
         kernelHeader.SurfaceStateHeapSize = sizeof(sshLocal);
         threadPayload.LocalIDXPresent = 1;
         threadPayload.LocalIDYPresent = 1;
         threadPayload.LocalIDZPresent = 1;
         kernelInfo.heapInfo.pKernelHeap = kernelIsa;
         kernelInfo.heapInfo.pSsh = sshLocal;
+        kernelInfo.heapInfo.pDsh = dshLocal;
         kernelInfo.heapInfo.pKernelHeader = &kernelHeader;
         kernelInfo.patchInfo.dataParameterStream = &dataParameterStream;
         kernelInfo.patchInfo.executionEnvironment = &executionEnvironment;
         kernelInfo.patchInfo.threadPayload = &threadPayload;
+        kernelInfo.patchInfo.mediavfestate = &mediaVfeState;
 
         if (context == nullptr) {
             mockContext = new MockContext;
@@ -276,10 +284,21 @@ class MockKernelWithInternals {
             mockContext = context;
         }
 
-        mockProgram = new MockProgram(context, false);
+        mockProgram = new MockProgram(*deviceArg.getExecutionEnvironment(), context, false);
         mockKernel = new MockKernel(mockProgram, kernelInfo, deviceArg);
         mockKernel->setCrossThreadData(&crossThreadData, sizeof(crossThreadData));
         mockKernel->setSshLocal(&sshLocal, sizeof(sshLocal));
+
+        if (addDefaultArg) {
+            defaultKernelArguments.resize(1);
+            defaultKernelArguments[0] = {};
+            kernelInfo.resizeKernelArgInfoAndRegisterParameter(1);
+            kernelInfo.kernelArgInfo.resize(1);
+            kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector.resize(1);
+            kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset = 0;
+            kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector[0].size = sizeof(uintptr_t);
+            mockKernel->setKernelArguments(defaultKernelArguments);
+        }
     }
     ~MockKernelWithInternals() {
         mockKernel->decRefInternal();
@@ -295,21 +314,27 @@ class MockKernelWithInternals {
     MockProgram *mockProgram;
     Context *mockContext;
     KernelInfo kernelInfo;
-    SKernelBinaryHeaderCommon kernelHeader;
-    SPatchThreadPayload threadPayload;
-    SPatchDataParameterStream dataParameterStream;
-    SPatchExecutionEnvironment executionEnvironment;
-    SPatchExecutionEnvironment executionEnvironmentBlock;
+    SKernelBinaryHeaderCommon kernelHeader = {};
+    SPatchThreadPayload threadPayload = {};
+    SPatchMediaVFEState mediaVfeState = {};
+    SPatchDataParameterStream dataParameterStream = {};
+    SPatchExecutionEnvironment executionEnvironment = {};
+    SPatchExecutionEnvironment executionEnvironmentBlock = {};
     uint32_t kernelIsa[32];
     char crossThreadData[256];
     char sshLocal[128];
+    char dshLocal[128];
+    std::vector<Kernel::SimpleKernelArgInfo> defaultKernelArguments;
 };
 
 class MockParentKernel : public Kernel {
   public:
+    using Kernel::auxTranslationRequired;
     using Kernel::patchBlocksCurbeWithConstantValues;
-    static MockParentKernel *create(Device &device, bool addChildSimdSize = false, bool addChildGlobalMemory = false, bool addChildConstantMemory = false, bool addPrintfForParent = true, bool addPrintfForBlock = true) {
-        KernelInfo *info = new KernelInfo();
+    static MockParentKernel *create(Context &context, bool addChildSimdSize = false, bool addChildGlobalMemory = false, bool addChildConstantMemory = false, bool addPrintfForParent = true, bool addPrintfForBlock = true) {
+        Device &device = *context.getDevice(0);
+
+        auto info = new KernelInfo();
         const size_t crossThreadSize = 160;
         uint32_t crossThreadOffset = 0;
         uint32_t crossThreadOffsetBlock = 0;
@@ -333,7 +358,9 @@ class MockParentKernel : public Kernel {
         info->patchInfo.threadPayload = threadPayload;
 
         SPatchExecutionEnvironment *executionEnvironment = new SPatchExecutionEnvironment;
+        *executionEnvironment = {};
         executionEnvironment->HasDeviceEnqueue = 1;
+        executionEnvironment->NumGRFRequired = GrfConfig::DefaultGrfNumber;
         info->patchInfo.executionEnvironment = executionEnvironment;
 
         SPatchAllocateStatelessDefaultDeviceQueueSurface *allocateDeviceQueue = new SPatchAllocateStatelessDefaultDeviceQueueSurface;
@@ -366,8 +393,8 @@ class MockParentKernel : public Kernel {
             crossThreadOffset += 8;
         }
 
-        MockProgram *mockProgram = new MockProgram();
-        mockProgram->setContext(getContext());
+        MockProgram *mockProgram = new MockProgram(*device.getExecutionEnvironment());
+        mockProgram->setContext(&context);
         mockProgram->setDevice(&device);
 
         if (addChildSimdSize) {
@@ -383,8 +410,9 @@ class MockParentKernel : public Kernel {
         parent->crossThreadData = new char[crossThreadSize];
         memset(parent->crossThreadData, 0, crossThreadSize);
         parent->crossThreadDataSize = crossThreadSize;
+        parent->mockKernelInfo = info;
 
-        KernelInfo *infoBlock = new KernelInfo();
+        auto infoBlock = new KernelInfo();
         SPatchAllocateStatelessDefaultDeviceQueueSurface *allocateDeviceQueueBlock = new SPatchAllocateStatelessDefaultDeviceQueueSurface;
         allocateDeviceQueueBlock->DataParamOffset = crossThreadOffsetBlock;
         allocateDeviceQueueBlock->DataParamSize = 8;
@@ -460,6 +488,7 @@ class MockParentKernel : public Kernel {
 
         SPatchExecutionEnvironment *executionEnvironmentBlock = new SPatchExecutionEnvironment;
         executionEnvironmentBlock->HasDeviceEnqueue = 1;
+        executionEnvironmentBlock->NumGRFRequired = GrfConfig::DefaultGrfNumber;
         infoBlock->patchInfo.executionEnvironment = executionEnvironmentBlock;
 
         SPatchDataParameterStream *streamBlock = new SPatchDataParameterStream;
@@ -502,7 +531,6 @@ class MockParentKernel : public Kernel {
         delete kernelInfo.patchInfo.threadPayload;
         delete kernelInfo.heapInfo.pKernelHeader;
         delete &kernelInfo;
-        cleanContext();
         BlockKernelManager *blockManager = program->getBlockKernelManager();
 
         for (uint32_t i = 0; i < blockManager->getCount(); i++) {
@@ -525,17 +553,8 @@ class MockParentKernel : public Kernel {
         }
     }
 
-    static MockContext *&getContext() {
-        static MockContext *context;
-        if (context == nullptr)
-            context = new MockContext;
-        return context;
-    }
-
-    static void cleanContext() {
-        MockContext *&context = getContext();
-        delete context;
-        context = nullptr;
+    Context *getContext() {
+        return &mockProgram->getContext();
     }
 
     void setReflectionSurface(GraphicsAllocation *reflectionSurface) {
@@ -543,6 +562,7 @@ class MockParentKernel : public Kernel {
     }
 
     MockProgram *mockProgram;
+    KernelInfo *mockKernelInfo = nullptr;
 };
 
 class MockSchedulerKernel : public SchedulerKernel {
@@ -577,4 +597,4 @@ class MockDebugKernel : public MockKernel {
     bool systemThreadSurfaceAllocated = false;
 };
 
-} // namespace OCLRT
+} // namespace NEO

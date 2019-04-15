@@ -1,37 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/surface_formats.h"
 #include "runtime/helpers/options.h"
+#include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/platform_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device.h"
+
 #include "gtest/gtest.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct GetSupportedImageFormatsTest : public PlatformFixture,
                                       public ContextFixture,
@@ -161,12 +147,12 @@ TEST_P(GetSupportedImageFormatsTest, retrieveImageFormatsSRGB) {
 }
 
 TEST(ImageFormats, isDepthFormat) {
-    for (size_t i = 0; i < numReadOnlySurfaceFormats; i++) {
-        EXPECT_FALSE(Image::isDepthFormat(readOnlySurfaceFormats[i].OCLImageFormat));
+    for (auto &format : SurfaceFormats::readOnly()) {
+        EXPECT_FALSE(Image::isDepthFormat(format.OCLImageFormat));
     }
 
-    for (size_t i = 0; i < numReadOnlyDepthSurfaceFormats; i++) {
-        EXPECT_TRUE(Image::isDepthFormat(readOnlyDepthSurfaceFormats[i].OCLImageFormat));
+    for (auto &format : SurfaceFormats::readOnlyDepth()) {
+        EXPECT_TRUE(Image::isDepthFormat(format.OCLImageFormat));
     }
 }
 
@@ -289,17 +275,17 @@ TEST_P(NV12ExtensionSupportedImageFormatsTest, givenNV12ExtensionWhenQueriedForI
         nullptr,
         &numImageFormats);
 
-    size_t expectedNumReadOnlyFormats = numReadOnlySurfaceFormats;
+    size_t expectedNumReadOnlyFormats = SurfaceFormats::readOnly().size();
     if (Image::isImage2dOr2dArray(imageFormats) && imageFormatsFlags == CL_MEM_READ_ONLY) {
-        expectedNumReadOnlyFormats += numReadOnlyDepthSurfaceFormats;
+        expectedNumReadOnlyFormats += SurfaceFormats::readOnlyDepth().size();
     }
 
     if (Image::isImage2d(imageFormats)) {
         if (imageFormatsFlags == CL_MEM_READ_ONLY) {
-            EXPECT_EQ(expectedNumReadOnlyFormats + numPlanarYuvSurfaceFormats, static_cast<size_t>(numImageFormats));
+            EXPECT_EQ(expectedNumReadOnlyFormats + SurfaceFormats::planarYuv().size(), static_cast<size_t>(numImageFormats));
         }
         if (imageFormatsFlags == CL_MEM_NO_ACCESS_INTEL) {
-            EXPECT_EQ(expectedNumReadOnlyFormats + numPlanarYuvSurfaceFormats, static_cast<size_t>(numImageFormats));
+            EXPECT_EQ(expectedNumReadOnlyFormats + SurfaceFormats::planarYuv().size(), static_cast<size_t>(numImageFormats));
         }
     } else {
         if (imageFormatsFlags == CL_MEM_READ_ONLY) {
@@ -359,17 +345,19 @@ TEST_P(NV12ExtensionUnsupportedImageFormatsTest, givenNV12ExtensionWhenQueriedFo
 
     if (imageFormatsFlags == CL_MEM_WRITE_ONLY) {
         if (!Image::isImage2dOr2dArray(imageFormats)) {
-            EXPECT_EQ(numWriteOnlySurfaceFormats, static_cast<size_t>(numImageFormats));
+            EXPECT_EQ(SurfaceFormats::writeOnly().size(), static_cast<size_t>(numImageFormats));
         } else {
-            EXPECT_EQ(numWriteOnlySurfaceFormats + numReadWriteDepthSurfaceFormats, static_cast<size_t>(numImageFormats));
+            EXPECT_EQ(SurfaceFormats::writeOnly().size() + SurfaceFormats::readWriteDepth().size(),
+                      static_cast<size_t>(numImageFormats));
         }
     }
 
     if (imageFormatsFlags == CL_MEM_READ_WRITE) {
         if (!Image::isImage2dOr2dArray(imageFormats)) {
-            EXPECT_EQ(numReadWriteSurfaceFormats, static_cast<size_t>(numImageFormats));
+            EXPECT_EQ(SurfaceFormats::readWrite().size(), static_cast<size_t>(numImageFormats));
         } else {
-            EXPECT_EQ(numReadWriteSurfaceFormats + numReadWriteDepthSurfaceFormats, static_cast<size_t>(numImageFormats));
+            EXPECT_EQ(SurfaceFormats::readWrite().size() + SurfaceFormats::readWriteDepth().size(),
+                      static_cast<size_t>(numImageFormats));
         }
     }
 

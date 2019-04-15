@@ -1,22 +1,8 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 set(IGDRCL_SRCS_tests_command_queue
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
@@ -26,9 +12,9 @@ set(IGDRCL_SRCS_tests_command_queue
   ${CMAKE_CURRENT_SOURCE_DIR}/command_queue_hw_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/command_queue_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/dispatch_walker_tests.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/drm_requirements_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_api_tests_mt_with_asyncGPU.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_barrier_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_command_without_kernel_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_copy_buffer_event_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_copy_buffer_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_copy_buffer_rect_fixture.h
@@ -53,7 +39,8 @@ set(IGDRCL_SRCS_tests_command_queue
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_event_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_global_offset_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_local_work_size_tests.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_1_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_2_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_two_ioq_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_two_ooq_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_kernel_two_walker_ioq_tests.cpp
@@ -71,6 +58,7 @@ set(IGDRCL_SRCS_tests_command_queue
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_read_buffer_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_read_image_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_read_image_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/enqueue_resource_barier_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_svm_mem_copy_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_svm_mem_fill_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_svm_tests.cpp

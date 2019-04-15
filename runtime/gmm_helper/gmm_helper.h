@@ -1,33 +1,19 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
+#include "runtime/api/cl_types.h"
+#include "runtime/gmm_helper/gmm_lib.h"
+
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
-#include "runtime/gmm_helper/gmm_lib.h"
-#include "runtime/api/cl_types.h"
 
-namespace OCLRT {
+namespace NEO {
 enum class OCLPlane;
 struct HardwareInfo;
 struct FeatureTable;
@@ -43,38 +29,38 @@ class GmmHelper {
     GmmHelper() = delete;
     GmmHelper(const HardwareInfo *hwInfo);
     MOCKABLE_VIRTUAL ~GmmHelper();
+
+    const HardwareInfo *getHardwareInfo();
+    uint32_t getMOCS(uint32_t type);
+    void setSimplifiedMocsTableUsage(bool value);
+
     static constexpr uint32_t cacheDisabledIndex = 0;
     static constexpr uint32_t cacheEnabledIndex = 4;
-    static constexpr uint32_t maxPossiblePitch = 2147483648;
+    static constexpr uint64_t maxPossiblePitch = 2147483648;
 
     static uint64_t canonize(uint64_t address);
     static uint64_t decanonize(uint64_t address);
 
-    static uint32_t getMOCS(uint32_t type);
+    static GmmClientContext *getClientContext();
+    static GmmHelper *getInstance();
+
     static void queryImgFromBufferParams(ImageInfo &imgInfo, GraphicsAllocation *gfxAlloc);
     static GMM_CUBE_FACE_ENUM getCubeFaceIndex(uint32_t target);
     static bool allowTiling(const cl_image_desc &imageDesc);
-    static uint32_t getRenderTileMode(uint32_t tileWalk);
     static uint32_t getRenderAlignment(uint32_t alignment);
     static uint32_t getRenderMultisamplesCount(uint32_t numSamples);
     static GMM_YUV_PLANE convertPlane(OCLPlane oclPlane);
 
-    static decltype(GmmExportEntries::pfnCreateSingletonContext) initGlobalContextFunc;
-    static decltype(GmmExportEntries::pfnDestroySingletonContext) destroyGlobalContextFunc;
-    static decltype(GmmExportEntries::pfnCreateClientContext) createClientContextFunc;
-    static decltype(GmmExportEntries::pfnDeleteClientContext) deleteClientContextFunc;
-    static GmmClientContext *(*createGmmContextWrapperFunc)(GMM_CLIENT);
-
-    static bool useSimplifiedMocsTable;
-    static const HardwareInfo *hwInfo;
-    static OsLibrary *gmmLib;
-    static GmmClientContext *gmmClientContext;
+    static std::unique_ptr<GmmClientContext> (*createGmmContextWrapperFunc)(GMM_CLIENT, GmmExportEntries &);
 
   protected:
     void loadLib();
     void initContext(const PLATFORM *pPlatform, const FeatureTable *pSkuTable, const WorkaroundTable *pWaTable, const GT_SYSTEM_INFO *pGtSysInfo);
-    void destroyContext();
 
-    bool isLoaded = false;
+    bool useSimplifiedMocsTable = false;
+    const HardwareInfo *hwInfo = nullptr;
+    std::unique_ptr<OsLibrary> gmmLib;
+    std::unique_ptr<GmmClientContext> gmmClientContext;
+    GmmExportEntries gmmEntries = {};
 };
-} // namespace OCLRT
+} // namespace NEO

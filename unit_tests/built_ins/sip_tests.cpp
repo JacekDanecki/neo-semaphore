@@ -1,38 +1,23 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
-
-#include "gtest/gtest.h"
-#include "test.h"
 
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/sip.h"
 #include "runtime/helpers/options.h"
+#include "test.h"
 #include "unit_tests/global_environment.h"
 #include "unit_tests/helpers/test_files.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_device_factory.h"
 #include "unit_tests/mocks/mock_program.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 namespace SipKernelTests {
 std::string getDebugSipKernelNameWithBitnessAndProductSuffix(std::string &base, const char *product) {
@@ -98,16 +83,16 @@ TEST(Sip, SipLlContainsMetadataRequiredByCompiler) {
 }
 
 TEST(Sip, getType) {
-    SipKernel csr{SipKernelType::Csr, getSipProgramWithCustomBinary()};
+    SipKernel csr{SipKernelType::Csr, GlobalMockSipProgram::getSipProgramWithCustomBinary()};
     EXPECT_EQ(SipKernelType::Csr, csr.getType());
 
-    SipKernel dbgCsr{SipKernelType::DbgCsr, getSipProgramWithCustomBinary()};
+    SipKernel dbgCsr{SipKernelType::DbgCsr, GlobalMockSipProgram::getSipProgramWithCustomBinary()};
     EXPECT_EQ(SipKernelType::DbgCsr, dbgCsr.getType());
 
-    SipKernel dbgCsrLocal{SipKernelType::DbgCsrLocal, getSipProgramWithCustomBinary()};
+    SipKernel dbgCsrLocal{SipKernelType::DbgCsrLocal, GlobalMockSipProgram::getSipProgramWithCustomBinary()};
     EXPECT_EQ(SipKernelType::DbgCsrLocal, dbgCsrLocal.getType());
 
-    SipKernel undefined{SipKernelType::COUNT, getSipProgramWithCustomBinary()};
+    SipKernel undefined{SipKernelType::COUNT, GlobalMockSipProgram::getSipProgramWithCustomBinary()};
     EXPECT_EQ(SipKernelType::COUNT, undefined.getType());
 }
 
@@ -150,7 +135,7 @@ TEST(DebugSip, DISABLED_givenBuiltInsWhenDbgCsrSipIsRequestedThanCorrectSipKerne
     igcDebugVars.fileName = builtInGenFile;
     gEnvironment->igcPushDebugVars(igcDebugVars);
 
-    auto &builtins = BuiltIns::getInstance();
+    auto &builtins = *mockDevice->getExecutionEnvironment()->getBuiltIns();
     auto &sipKernel = builtins.getSipKernel(SipKernelType::DbgCsr, *mockDevice);
 
     EXPECT_NE(nullptr, &sipKernel);

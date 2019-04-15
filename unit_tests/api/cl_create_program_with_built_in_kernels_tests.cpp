@@ -1,54 +1,39 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#include "runtime/built_ins/built_ins.h"
+#include "runtime/compiler_interface/compiler_interface.h"
+#include "runtime/context/context.h"
+#include "runtime/helpers/base_object.h"
+#include "runtime/kernel/kernel.h"
+#include "runtime/program/program.h"
+#include "unit_tests/fixtures/run_kernel_fixture.h"
 
 #include "cl_api_tests.h"
 
-#include "unit_tests/fixtures/run_kernel_fixture.h"
-#include "runtime/built_ins/built_ins.h"
-#include "runtime/context/context.h"
-#include "runtime/compiler_interface/compiler_interface.h"
-#include "runtime/kernel/kernel.h"
-#include "runtime/helpers/base_object.h"
-#include "runtime/program/program.h"
-
-using namespace OCLRT;
+using namespace NEO;
 
 typedef api_tests clCreateProgramWithBuiltInKernelsTests;
 
 namespace ULT {
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, invalidArgs) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenInvalidContextWhenCreatingProgramWithBuiltInKernelsThenInvalidContextErrorIsReturned) {
     cl_int retVal = CL_SUCCESS;
     auto program = clCreateProgramWithBuiltInKernels(
         nullptr, // context
-        0,       // num_devices
+        1,       // num_devices
         nullptr, // device_list
         nullptr, // kernel_names
         &retVal);
     EXPECT_EQ(nullptr, program);
-    EXPECT_NE(CL_SUCCESS, retVal);
+    EXPECT_EQ(CL_INVALID_CONTEXT, retVal);
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, noKernels) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenNoKernelsWhenCreatingProgramWithBuiltInKernelsThenInvalidValueErrorIsReturned) {
     cl_int retVal = CL_SUCCESS;
     auto program = clCreateProgramWithBuiltInKernels(
         pContext, // context
@@ -57,10 +42,10 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, noKernels) {
         "",       // kernel_names
         &retVal);
     EXPECT_EQ(nullptr, program);
-    EXPECT_NE(CL_SUCCESS, retVal);
+    EXPECT_EQ(CL_INVALID_VALUE, retVal);
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, noDevice) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenNoDeviceWhenCreatingProgramWithBuiltInKernelsThenInvalidValueErrorIsReturned) {
     cl_int retVal = CL_SUCCESS;
     auto program = clCreateProgramWithBuiltInKernels(
         pContext, // context
@@ -72,7 +57,7 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, noDevice) {
     EXPECT_EQ(CL_INVALID_VALUE, retVal);
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, noRet) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenNoKernelsAndNoReturnWhenCreatingProgramWithBuiltInKernelsThenProgramIsNotCreated) {
     auto program = clCreateProgramWithBuiltInKernels(
         pContext, // context
         1,        // num_devices
@@ -82,7 +67,7 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, noRet) {
     EXPECT_EQ(nullptr, program);
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, mediaKernels) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenValidMediaKernelsWhenCreatingProgramWithBuiltInKernelsThenProgramIsSuccessfullyCreated) {
     cl_int retVal = CL_SUCCESS;
 
     auto pDev = castToObject<Device>(*devices);
@@ -124,11 +109,9 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, mediaKernels) {
 
     retVal = clReleaseProgram(program);
     EXPECT_EQ(CL_SUCCESS, retVal);
-
-    CompilerInterface::shutdown();
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, mediaKernelsOptions) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenValidMediaKernelsWithOptionsWhenCreatingProgramWithBuiltInKernelsThenProgramIsSuccessfullyCreatedWithThoseOptions) {
     cl_int retVal = CL_SUCCESS;
 
     auto pDev = castToObject<Device>(*devices);
@@ -152,17 +135,15 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, mediaKernelsOptions) {
     EXPECT_EQ(std::string::npos, it);
 
     clReleaseProgram(program);
-
-    CompilerInterface::shutdown();
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, vmeBlockMotionEstimateKernelHasCorrectDispatchBuilderAndFrontendKernel) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenVmeBlockMotionEstimateKernelWhenCreatingProgramWithBuiltInKernelsThenCorrectDispatchBuilderAndFrontendKernelIsCreated) {
     cl_int retVal = CL_SUCCESS;
 
     auto pDev = castToObject<Device>(*devices);
 
     overwriteBuiltInBinaryName(pDev, "media_kernels_backend");
-    BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockMotionEstimateIntel, *pContext, *pDev);
+    pDev->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockMotionEstimateIntel, *pContext, *pDev);
     restoreBuiltInBinaryName(pDev);
 
     overwriteBuiltInBinaryName(pDev, "media_kernels_frontend");
@@ -188,23 +169,20 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, vmeBlockMotionEstimateKernelHasCo
     EXPECT_EQ(6U, kernNeo->getKernelArgsNumber());
 
     auto ctxNeo = castToObject<Context>(pContext);
-    auto &vmeBuilder = OCLRT::BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(OCLRT::EBuiltInOps::VmeBlockMotionEstimateIntel, *ctxNeo, *ctxNeo->getDevice(0));
+    auto &vmeBuilder = pDev->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(NEO::EBuiltInOps::VmeBlockMotionEstimateIntel, *ctxNeo, *ctxNeo->getDevice(0));
     EXPECT_EQ(&vmeBuilder, kernNeo->getKernelInfo().builtinDispatchBuilder);
 
-    OCLRT::BuiltIns::shutDown();
     clReleaseKernel(kernel);
     clReleaseProgram(program);
-
-    CompilerInterface::shutdown();
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, vmeBlockAdvancedMotionEstimateCheckKernelHasCorrectDispatchBuilderAndFrontendKernel) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenVmeBlockAdvancedMotionEstimateKernelWhenCreatingProgramWithBuiltInKernelsThenCorrectDispatchBuilderAndFrontendKernelIsCreated) {
     cl_int retVal = CL_SUCCESS;
 
     auto pDev = castToObject<Device>(*devices);
 
     overwriteBuiltInBinaryName(pDev, "media_kernels_backend");
-    BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, *pContext, *pDev);
+    pDev->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, *pContext, *pDev);
     restoreBuiltInBinaryName(pDev);
 
     overwriteBuiltInBinaryName(pDev, "media_kernels_frontend");
@@ -230,23 +208,20 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, vmeBlockAdvancedMotionEstimateChe
     EXPECT_EQ(15U, kernNeo->getKernelArgsNumber());
 
     auto ctxNeo = castToObject<Context>(pContext);
-    auto &vmeBuilder = OCLRT::BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(OCLRT::EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, *ctxNeo, *ctxNeo->getDevice(0));
+    auto &vmeBuilder = pDev->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(NEO::EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, *ctxNeo, *ctxNeo->getDevice(0));
     EXPECT_EQ(&vmeBuilder, kernNeo->getKernelInfo().builtinDispatchBuilder);
 
-    OCLRT::BuiltIns::shutDown();
     clReleaseKernel(kernel);
     clReleaseProgram(program);
-
-    CompilerInterface::shutdown();
 }
 
-TEST_F(clCreateProgramWithBuiltInKernelsTests, vmeBlockAdvancedMotionEstimateBidirectionalCheckKernelHasCorrectDispatchBuilderAndFrontendKernel) {
+TEST_F(clCreateProgramWithBuiltInKernelsTests, GivenVmeBlockAdvancedMotionEstimateBidirectionalCheckKernelWhenCreatingProgramWithBuiltInKernelsThenCorrectDispatchBuilderAndFrontendKernelIsCreated) {
     cl_int retVal = CL_SUCCESS;
 
     auto pDev = castToObject<Device>(*devices);
 
     overwriteBuiltInBinaryName(pDev, "media_kernels_backend");
-    BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel, *pContext, *pDev);
+    pDev->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel, *pContext, *pDev);
     restoreBuiltInBinaryName(pDev);
 
     overwriteBuiltInBinaryName(pDev, "media_kernels_frontend");
@@ -272,13 +247,10 @@ TEST_F(clCreateProgramWithBuiltInKernelsTests, vmeBlockAdvancedMotionEstimateBid
     EXPECT_EQ(20U, kernNeo->getKernelArgsNumber());
 
     auto ctxNeo = castToObject<Context>(pContext);
-    auto &vmeBuilder = OCLRT::BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(OCLRT::EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel, *ctxNeo, *ctxNeo->getDevice(0));
+    auto &vmeBuilder = pDev->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(NEO::EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel, *ctxNeo, *ctxNeo->getDevice(0));
     EXPECT_EQ(&vmeBuilder, kernNeo->getKernelInfo().builtinDispatchBuilder);
 
-    OCLRT::BuiltIns::shutDown();
     clReleaseKernel(kernel);
     clReleaseProgram(program);
-
-    CompilerInterface::shutdown();
 }
 } // namespace ULT

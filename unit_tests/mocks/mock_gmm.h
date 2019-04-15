@@ -1,34 +1,19 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_helper.h"
-#include "unit_tests/mocks/mock_device.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/surface_formats.h"
+#include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_gmm_resource_info.h"
 
-namespace OCLRT {
+namespace NEO {
 namespace MockGmmParams {
 static SurfaceFormatInfo mockSurfaceFormat;
 }
@@ -44,6 +29,7 @@ class MockGmm : public Gmm {
         imgInfo.baseMipLevel = baseMipLevel;
         imgInfo.imgDesc = &imgDesc;
         if (!surfaceFormat) {
+            ArrayRef<const SurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
             MockGmmParams::mockSurfaceFormat = readWriteSurfaceFormats[0]; // any valid format
             imgInfo.surfaceFormat = &MockGmmParams::mockSurfaceFormat;
         } else {
@@ -51,5 +37,14 @@ class MockGmm : public Gmm {
         }
         return imgInfo;
     }
+
+    static GraphicsAllocation *allocateImage2d(MemoryManager &memoryManager) {
+        cl_image_desc imgDesc{};
+        imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+        imgDesc.image_width = 5;
+        imgDesc.image_height = 5;
+        auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
+        return memoryManager.allocateGraphicsMemoryWithProperties({true, imgInfo, GraphicsAllocation::AllocationType::IMAGE});
+    }
 };
-} // namespace OCLRT
+} // namespace NEO

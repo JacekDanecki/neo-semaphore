@@ -1,31 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/event/user_event.h"
 #include "runtime/memory_manager/svm_memory_manager.h"
-#include "driver_diagnostics_tests.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/context/driver_diagnostics_tests.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 TEST_F(PerformanceHintEnqueueBufferTest, GivenBlockingReadWhenEnqueueReadBufferIsCallingWithCPUCopyThenContextProvidesProperHint) {
 
@@ -37,6 +23,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenBlockingReadWhenEnqueueReadBufferI
         0,
         MemoryConstants::cacheLineSize,
         ptr,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -60,6 +47,7 @@ TEST_P(PerformanceHintEnqueueReadBufferTest, GivenHostPtrAndSizeAlignmentsWhenEn
                              0,
                              sizeForReadBuffer,
                              (void *)addressForReadBuffer,
+                             nullptr,
                              0,
                              nullptr,
                              nullptr);
@@ -168,6 +156,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenNonBlockingWriteAndBufferDoesntSha
         0,
         MemoryConstants::cacheLineSize,
         ptr,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -185,6 +174,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenNonBlockingWriteAndBufferSharesMem
         0,
         MemoryConstants::cacheLineSize,
         address,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -202,6 +192,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenBlockingWriteAndBufferDoesntShareM
         0,
         MemoryConstants::cacheLineSize,
         ptr,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -219,6 +210,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenBlockingWriteAndBufferSharesMemWit
         0,
         MemoryConstants::cacheLineSize,
         address,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -236,6 +228,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenNonBlockingReadAndBufferDoesntShar
         0,
         MemoryConstants::cacheLineSize,
         ptr,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -253,6 +246,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenNonBlockingReadAndBufferSharesMemW
         0,
         MemoryConstants::cacheLineSize,
         address,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -270,6 +264,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenBlockingReadAndBufferDoesntShareMe
         0,
         MemoryConstants::cacheLineSize,
         ptr,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -287,6 +282,7 @@ TEST_F(PerformanceHintEnqueueBufferTest, GivenBlockingReadAndBufferSharesMemWith
         0,
         MemoryConstants::cacheLineSize,
         address,
+        nullptr,
         0,
         nullptr,
         nullptr);
@@ -662,7 +658,7 @@ TEST_P(PerformanceHintEnqueueMapTest, GivenZeroCopyFlagWhenEnqueueUnmapIsCalling
 
 TEST_F(PerformanceHintEnqueueTest, GivenSVMPointerWhenEnqueueSVMMapIsCallingThenContextProvidesProperHint) {
 
-    void *svmPtr = context->getSVMAllocsManager()->createSVMAlloc(256);
+    void *svmPtr = context->getSVMAllocsManager()->createSVMAlloc(256, 0);
 
     pCmdQ->enqueueSVMMap(CL_FALSE, 0, svmPtr, 256, 0, nullptr, nullptr);
 
@@ -745,23 +741,17 @@ TEST_F(PerformanceHintEnqueueKernelTest, GivenNullLocalSizeAndEnableComputeWorkS
 }
 
 TEST_P(PerformanceHintEnqueueKernelBadSizeTest, GivenBadLocalWorkGroupSizeWhenEnqueueKernelIsCallingThenContextProvidesProperHint) {
-
-    size_t preferredWorkGroupSize[3];
     size_t localWorkGroupSize[3];
     int badSizeDimension;
     uint32_t workDim = globalWorkGroupSize[1] == 1 ? 1 : globalWorkGroupSize[2] == 1 ? 2 : 3;
-    auto maxWorkGroupSize = static_cast<uint32_t>(pPlatform->getDevice(0)->getDeviceInfo().maxWorkGroupSize);
-    uint32_t simdSize = 32;
-    if (DebugManager.flags.EnableComputeWorkSizeND.get()) {
-        WorkSizeInfo wsInfo(maxWorkGroupSize, 0u, simdSize, 0u, IGFX_GEN9_CORE, 32u, 0u, false, false);
-        computeWorkgroupSizeND(wsInfo, preferredWorkGroupSize, globalWorkGroupSize, workDim);
-    } else if (DebugManager.flags.EnableComputeWorkSizeSquared.get() && workDim == 2) {
-        computeWorkgroupSizeSquared(maxWorkGroupSize, preferredWorkGroupSize, globalWorkGroupSize, simdSize, workDim);
-    } else
-        computeWorkgroupSize2D(maxWorkGroupSize, preferredWorkGroupSize, globalWorkGroupSize, simdSize);
-    for (auto i = 0; i < 3; i++) {
-        localWorkGroupSize[i] = preferredWorkGroupSize[i];
-    }
+
+    DispatchInfo dispatchInfo(kernel, workDim, Vec3<size_t>(globalWorkGroupSize), Vec3<size_t>(0u, 0u, 0u), Vec3<size_t>(0u, 0u, 0u));
+
+    auto computedLocalWorkgroupSize = computeWorkgroupSize(dispatchInfo);
+
+    localWorkGroupSize[0] = computedLocalWorkgroupSize.x;
+    localWorkGroupSize[1] = computedLocalWorkgroupSize.y;
+    localWorkGroupSize[2] = computedLocalWorkgroupSize.z;
 
     badSizeDimension = GetParam();
     if (localWorkGroupSize[badSizeDimension] > 1) {
@@ -775,7 +765,7 @@ TEST_P(PerformanceHintEnqueueKernelBadSizeTest, GivenBadLocalWorkGroupSizeWhenEn
 
     snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[BAD_LOCAL_WORKGROUP_SIZE],
              localWorkGroupSize[0], localWorkGroupSize[1], localWorkGroupSize[2], kernel->getKernelInfo().name.c_str(),
-             preferredWorkGroupSize[0], preferredWorkGroupSize[1], preferredWorkGroupSize[2]);
+             computedLocalWorkgroupSize.x, computedLocalWorkgroupSize.y, computedLocalWorkgroupSize.z);
     EXPECT_TRUE(containsHint(expectedHint, userData));
 }
 

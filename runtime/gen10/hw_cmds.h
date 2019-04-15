@@ -1,42 +1,35 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include <cstddef>
 #include "runtime/commands/bxml_generator_glue.h"
 #include "runtime/helpers/debug_helpers.h"
+
 #include "hw_info.h"
 #include "igfxfmid.h"
+
+#include <cstddef>
 #define TILERESOURCE_CHICKENBIT_VECTOR_ADDRESS 0x4DFC
 #define TILERESOURCE_CHICKENBIT_VECTOR_BITMASK (1UL << 8)
-struct CnlParse;
-namespace OCLRT {
+template <class T>
+struct CmdParse;
+namespace NEO {
+
 struct GEN10 {
-#include "runtime/gen10/hw_cmds_generated_patched.h"
 #include "runtime/gen10/hw_cmds_generated.h"
+#include "runtime/gen10/hw_cmds_generated_patched.h"
 };
+
 struct CNLFamily : public GEN10 {
-    typedef CnlParse PARSE;
-    typedef CNLFamily GfxFamily;
+    using PARSE = CmdParse<CNLFamily>;
+    using GfxFamily = CNLFamily;
+    using WALKER_TYPE = GPGPU_WALKER;
+    using XY_COPY_BLT = typename GfxFamily::XY_SRC_COPY_BLT;
+    using MI_STORE_REGISTER_MEM_CMD = typename GfxFamily::MI_STORE_REGISTER_MEM;
     static const GPGPU_WALKER cmdInitGpgpuWalker;
     static const INTERFACE_DESCRIPTOR_DATA cmdInitInterfaceDescriptorData;
     static const MEDIA_INTERFACE_DESCRIPTOR_LOAD cmdInitMediaInterfaceDescriptorLoad;
@@ -44,6 +37,28 @@ struct CNLFamily : public GEN10 {
     static const MI_BATCH_BUFFER_END cmdInitBatchBufferEnd;
     static const MI_BATCH_BUFFER_START cmdInitBatchBufferStart;
     static const PIPE_CONTROL cmdInitPipeControl;
+    static const MI_SEMAPHORE_WAIT cmdInitMiSemaphoreWait;
+    static const RENDER_SURFACE_STATE cmdInitRenderSurfaceState;
+    static const MI_LOAD_REGISTER_IMM cmdInitLoadRegisterImm;
+    static const MI_LOAD_REGISTER_REG cmdInitLoadRegisterReg;
+    static const MI_LOAD_REGISTER_MEM cmdInitLoadRegisterMem;
+    static const MI_STORE_DATA_IMM cmdInitStoreDataImm;
+    static const MI_STORE_REGISTER_MEM cmdInitStoreRegisterMem;
+    static const MI_NOOP cmdInitNoop;
+    static const MI_REPORT_PERF_COUNT cmdInitReportPerfCount;
+    static const MI_ATOMIC cmdInitAtomic;
+    static const PIPELINE_SELECT cmdInitPipelineSelect;
+    static const MI_ARB_CHECK cmdInitArbCheck;
+    static const MEDIA_VFE_STATE cmdInitMediaVfeState;
+    static const STATE_BASE_ADDRESS cmdInitStateBaseAddress;
+    static const MEDIA_SURFACE_STATE cmdInitMediaSurfaceState;
+    static const SAMPLER_STATE cmdInitSamplerState;
+    static const GPGPU_CSR_BASE_ADDRESS cmdInitGpgpuCsrBaseAddress;
+    static const STATE_SIP cmdInitStateSip;
+    static const BINDING_TABLE_STATE cmdInitBindingTableState;
+    static const MI_USER_INTERRUPT cmdInitUserInterrupt;
+    static const XY_SRC_COPY_BLT cmdInitXyCopyBlt;
+    static const MI_FLUSH_DW cmdInitMiFlushDw;
 
     static constexpr bool supportsCmdSet(GFXCORE_FAMILY cmdSetBaseFamily) {
         return cmdSetBaseFamily == IGFX_GEN8_CORE;
@@ -58,11 +73,11 @@ struct CNL : public CNLFamily {
     static const uint32_t maxSlicesSupported = 4;
     static const uint32_t maxSubslicesSupported = 9;
     static const RuntimeCapabilityTable capabilityTable;
-    static void (*setupGtSystemInfo)(GT_SYSTEM_INFO *gtSysInfo);
+    static void (*setupHardwareInfo)(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable, const std::string &hwInfoConfig);
 };
 class CNL_2x5x8 : public CNL {
   public:
-    static void setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo);
+    static void setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable);
     static const HardwareInfo hwInfo;
 
   private:
@@ -70,7 +85,7 @@ class CNL_2x5x8 : public CNL {
 };
 class CNL_2x4x8 : public CNL {
   public:
-    static void setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo);
+    static void setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable);
     static const HardwareInfo hwInfo;
 
   private:
@@ -78,7 +93,7 @@ class CNL_2x4x8 : public CNL {
 };
 class CNL_1x3x8 : public CNL {
   public:
-    static void setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo);
+    static void setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable);
     static const HardwareInfo hwInfo;
 
   private:
@@ -86,7 +101,7 @@ class CNL_1x3x8 : public CNL {
 };
 class CNL_1x2x8 : public CNL {
   public:
-    static void setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo);
+    static void setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable);
     static const HardwareInfo hwInfo;
 
   private:
@@ -94,10 +109,10 @@ class CNL_1x2x8 : public CNL {
 };
 class CNL_4x9x8 : public CNL {
   public:
-    static void setupGtSystemInfo(GT_SYSTEM_INFO *gtSysInfo);
+    static void setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable);
     static const HardwareInfo hwInfo;
 
   private:
     static GT_SYSTEM_INFO gtSystemInfo;
 };
-} // namespace OCLRT
+} // namespace NEO

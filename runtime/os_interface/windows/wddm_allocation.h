@@ -1,34 +1,19 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #define UMDF_USING_NTSTATUS
+#include "runtime/helpers/aligned_memory.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/os_interface/windows/windows_wrapper.h"
+
 #include <d3dkmthk.h>
 
-namespace OCLRT {
-
-class Gmm;
+namespace NEO {
 
 struct OsHandle {
     D3DKMT_HANDLE handle;
@@ -36,78 +21,72 @@ struct OsHandle {
     Gmm *gmm;
 };
 
-const size_t trimListUnusedPosition = (size_t)-1;
+constexpr size_t trimListUnusedPosition = std::numeric_limits<size_t>::max();
 
 class WddmAllocation : public GraphicsAllocation {
   public:
-    // OS assigned fields
-    D3DKMT_HANDLE handle;              // set by createAllocation
-    D3DKMT_HANDLE resourceHandle = 0u; // used by shared resources
-
-    D3DGPU_VIRTUAL_ADDRESS gpuPtr; // set by mapGpuVA
-    WddmAllocation(void *cpuPtrIn, size_t sizeIn, void *alignedCpuPtr, size_t alignedSize, void *reservedAddr, MemoryPool::Type pool)
-        : GraphicsAllocation(cpuPtrIn, sizeIn),
-          handle(0),
-          gpuPtr(0),
-          alignedCpuPtr(alignedCpuPtr),
-          alignedSize(alignedSize) {
-        trimListPosition = trimListUnusedPosition;
-        reservedAddressSpace = reservedAddr;
-        this->memoryPool = pool;
+    WddmAllocation(AllocationType allocationType, void *cpuPtrIn, size_t sizeIn, void *reservedAddr, MemoryPool::Type pool, bool multiOsContextCapable)
+        : GraphicsAllocation(allocationType, cpuPtrIn, castToUint64(cpuPtrIn), 0llu, sizeIn, pool, multiOsContextCapable) {
+        trimCandidateListPositions.fill(trimListUnusedPosition);
+        reservedAddressRangeInfo.addressPtr = reservedAddr;
+        reservedAddressRangeInfo.rangeSize = sizeIn;
     }
 
-    WddmAllocation(void *cpuPtrIn, size_t sizeIn, osHandle sharedHandle, MemoryPool::Type pool) : GraphicsAllocation(cpuPtrIn, sizeIn, sharedHandle),
-                                                                                                  handle(0),
-                                                                                                  gpuPtr(0),
-                                                                                                  alignedCpuPtr(nullptr),
-                                                                                                  alignedSize(sizeIn) {
-        trimListPosition = trimListUnusedPosition;
-        reservedAddressSpace = nullptr;
-        this->memoryPool = pool;
-    }
-
-    WddmAllocation(void *alignedCpuPtr, size_t sizeIn, void *reservedAddress, MemoryPool::Type pool)
-        : WddmAllocation(alignedCpuPtr, sizeIn, alignedCpuPtr, sizeIn, reservedAddress, pool) {
+    WddmAllocation(AllocationType allocationType, void *cpuPtrIn, size_t sizeIn, osHandle sharedHandle, MemoryPool::Type pool, bool multiOsContextCapable)
+        : GraphicsAllocation(allocationType, cpuPtrIn, sizeIn, sharedHandle, pool, multiOsContextCapable) {
+        trimCandidateListPositions.fill(trimListUnusedPosition);
     }
 
     void *getAlignedCpuPtr() const {
-        return this->alignedCpuPtr;
-    }
-
-    void setAlignedCpuPtr(void *ptr) {
-        this->alignedCpuPtr = ptr;
-        this->cpuPtr = ptr;
+        return alignDown(this->cpuPtr, MemoryConstants::pageSize);
     }
 
     size_t getAlignedSize() const {
-        return this->alignedSize;
+        return alignSizeWholePage(this->cpuPtr, this->size);
     }
 
     ResidencyData &getResidencyData() {
         return residency;
     }
-
-    void setTrimCandidateListPosition(size_t position) {
-        trimListPosition = position;
+    const std::array<D3DKMT_HANDLE, maxHandleCount> &getHandles() const { return handles; }
+    D3DKMT_HANDLE &getHandleToModify(uint32_t handleIndex) { return handles[handleIndex]; }
+    D3DKMT_HANDLE getDefaultHandle() const { return handles[0]; }
+    void setDefaultHandle(D3DKMT_HANDLE handle) {
+        handles[0] = handle;
     }
 
-    size_t getTrimCandidateListPosition() {
-        return trimListPosition;
+    void setTrimCandidateListPosition(uint32_t osContextId, size_t position) {
+        trimCandidateListPositions[osContextId] = position;
     }
 
-    void *getReservedAddress() const {
-        return this->reservedAddressSpace;
+    size_t getTrimCandidateListPosition(uint32_t osContextId) const {
+        if (osContextId < trimCandidateListPositions.size()) {
+            return trimCandidateListPositions[osContextId];
+        }
+        return trimListUnusedPosition;
     }
 
-    void setReservedAddress(void *reserveMem) {
-        this->reservedAddressSpace = reserveMem;
-    }
+    void setGpuAddress(uint64_t graphicsAddress) { this->gpuAddress = graphicsAddress; }
+    void setCpuAddress(void *cpuPtr) { this->cpuPtr = cpuPtr; }
+
+    std::string getAllocationInfoString() const override;
+    uint64_t &getGpuAddressToModify() { return gpuAddress; }
+
+    // OS assigned fields
+    D3DKMT_HANDLE resourceHandle = 0u; // used by shared resources
+    bool needsMakeResidentBeforeLock = false;
+    D3DGPU_VIRTUAL_ADDRESS preferredGpuAddress = 0u;
 
   protected:
-    void *alignedCpuPtr;
-    size_t alignedSize;
+    std::string getHandleInfoString() const {
+        std::stringstream ss;
+        for (auto &handle : handles) {
+            ss << " Handle: " << handle;
+        }
+        return ss.str();
+    }
+    std::array<D3DKMT_HANDLE, maxHandleCount> handles{};
     ResidencyData residency;
-    size_t trimListPosition;
-    void *reservedAddressSpace;
+    std::array<size_t, maxOsContextCount> trimCandidateListPositions;
 };
-} // namespace OCLRT
+} // namespace NEO

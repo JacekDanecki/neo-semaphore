@@ -1,33 +1,20 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+#include "runtime/os_interface/windows/os_time_win.h"
+
+#include "runtime/os_interface/windows/os_interface.h"
+#include "runtime/os_interface/windows/wddm/wddm.h"
 
 #include <memory>
-#include "runtime/os_interface/windows/wddm/wddm.h"
-#include "runtime/os_interface/windows/os_interface.h"
-#include "runtime/os_interface/windows/os_time_win.h"
 
 #undef WIN32_NO_STATUS
 
-namespace OCLRT {
+namespace NEO {
 
 bool runEscape(Wddm *wddm, TimeStampDataHeader &escapeInfo) {
     if (wddm) {
@@ -42,8 +29,8 @@ bool runEscape(Wddm *wddm, TimeStampDataHeader &escapeInfo) {
 
         escapeCommand.Flags.Value = 0;
         escapeCommand.hAdapter = (D3DKMT_HANDLE)0;
-        escapeCommand.hContext = (D3DKMT_HANDLE)0; // escape is not context specific
-        escapeCommand.hDevice = (D3DKMT_HANDLE)0;  // escape not device specific
+        escapeCommand.hContext = (D3DKMT_HANDLE)0;                // escape is not context specific
+        escapeCommand.hDevice = (D3DKMT_HANDLE)wddm->getDevice(); // escape not device specific, passing only for instrumentation
         escapeCommand.pPrivateDriverData = &escapeInfo;
         escapeCommand.PrivateDriverDataSize = sizeof(escapeInfo);
         escapeCommand.Type = D3DKMT_ESCAPE_DRIVERPRIVATE;
@@ -122,4 +109,4 @@ uint64_t OSTimeWin::getCpuRawTimestamp() {
     this->QueryPerfomanceCounterFnc(&cpuRawTimestamp);
     return cpuRawTimestamp.QuadPart;
 }
-} // namespace OCLRT
+} // namespace NEO

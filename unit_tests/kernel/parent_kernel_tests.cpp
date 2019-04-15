@@ -1,34 +1,19 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "test.h"
 #include "unit_tests/fixtures/execution_model_kernel_fixture.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
-#include "test.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef ExecutionModelKernelFixture ParentKernelFromBinaryTest;
 
@@ -52,9 +37,9 @@ class MockKernelWithArgumentAccess : public Kernel {
 TEST(ParentKernelTest, GetObjectCounts) {
     KernelInfo info;
     MockDevice *device = new MockDevice(*platformDevices[0]);
-    MockProgram program;
+    MockProgram program(*device->getExecutionEnvironment());
 
-    SPatchExecutionEnvironment environment;
+    SPatchExecutionEnvironment environment = {};
     environment.HasDeviceEnqueue = 1;
 
     info.patchInfo.executionEnvironment = &environment;
@@ -80,8 +65,9 @@ TEST(ParentKernelTest, GetObjectCounts) {
 }
 
 TEST(ParentKernelTest, patchBlocksSimdSize) {
-    MockDevice *device = new MockDevice(*platformDevices[0]);
-    MockParentKernel *parentKernel = MockParentKernel::create(*device, true);
+    MockDevice device(*platformDevices[0]);
+    MockContext context(&device);
+    std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(context, true));
     MockProgram *program = (MockProgram *)parentKernel->mockProgram;
 
     parentKernel->patchBlocksSimdSize();
@@ -90,13 +76,12 @@ TEST(ParentKernelTest, patchBlocksSimdSize) {
     uint32_t *simdSize = reinterpret_cast<uint32_t *>(blockSimdSize);
 
     EXPECT_EQ(program->getBlockKernelInfo(0)->getMaxSimdSize(), *simdSize);
-    delete parentKernel;
-    delete device;
 }
 
 TEST(ParentKernelTest, hasDeviceEnqueue) {
     MockDevice device(*platformDevices[0]);
-    std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(device));
+    MockContext context(&device);
+    std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(context));
 
     EXPECT_TRUE(parentKernel->getKernelInfo().hasDeviceEnqueue());
 }
@@ -109,8 +94,9 @@ TEST(ParentKernelTest, doesnthaveDeviceEnqueue) {
 }
 
 TEST(ParentKernelTest, initializeOnParentKernelPatchesBlocksSimdSize) {
-    MockDevice *device = new MockDevice(*platformDevices[0]);
-    MockParentKernel *parentKernel = MockParentKernel::create(*device, true);
+    MockDevice device(*platformDevices[0]);
+    MockContext context(&device);
+    std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(context, true));
     MockProgram *program = (MockProgram *)parentKernel->mockProgram;
 
     parentKernel->initialize();
@@ -119,18 +105,17 @@ TEST(ParentKernelTest, initializeOnParentKernelPatchesBlocksSimdSize) {
     uint32_t *simdSize = reinterpret_cast<uint32_t *>(blockSimdSize);
 
     EXPECT_EQ(program->getBlockKernelInfo(0)->getMaxSimdSize(), *simdSize);
-    delete parentKernel;
-    delete device;
 }
 
 TEST(ParentKernelTest, initializeOnParentKernelAllocatesPrivateMemoryForBlocks) {
-    MockDevice *device = new MockDevice(*platformDevices[0]);
-    MockParentKernel *parentKernel = MockParentKernel::create(*device, true);
+    MockDevice device(*platformDevices[0]);
+    MockContext context(&device);
+    std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(context, true));
     MockProgram *program = (MockProgram *)parentKernel->mockProgram;
 
     uint32_t crossThreadOffsetBlock = 0;
 
-    KernelInfo *infoBlock = new KernelInfo();
+    auto infoBlock = new KernelInfo();
     SPatchAllocateStatelessDefaultDeviceQueueSurface *allocateDeviceQueueBlock = new SPatchAllocateStatelessDefaultDeviceQueueSurface;
     allocateDeviceQueueBlock->DataParamOffset = crossThreadOffsetBlock;
     allocateDeviceQueueBlock->DataParamSize = 8;
@@ -149,14 +134,14 @@ TEST(ParentKernelTest, initializeOnParentKernelAllocatesPrivateMemoryForBlocks) 
 
     crossThreadOffsetBlock += 8;
 
-    SPatchAllocateStatelessPrivateSurface *privateSurfaceBlock = new SPatchAllocateStatelessPrivateSurface;
+    auto privateSurfaceBlock = std::make_unique<SPatchAllocateStatelessPrivateSurface>();
     privateSurfaceBlock->DataParamOffset = crossThreadOffsetBlock;
     privateSurfaceBlock->DataParamSize = 8;
     privateSurfaceBlock->Size = 8;
     privateSurfaceBlock->SurfaceStateHeapOffset = 0;
     privateSurfaceBlock->Token = 0;
     privateSurfaceBlock->PerThreadPrivateMemorySize = 1000;
-    infoBlock->patchInfo.pAllocateStatelessPrivateSurface = privateSurfaceBlock;
+    infoBlock->patchInfo.pAllocateStatelessPrivateSurface = privateSurfaceBlock.get();
 
     crossThreadOffsetBlock += 8;
 
@@ -179,6 +164,7 @@ TEST(ParentKernelTest, initializeOnParentKernelAllocatesPrivateMemoryForBlocks) 
     infoBlock->patchInfo.threadPayload = threadPayloadBlock;
 
     SPatchExecutionEnvironment *executionEnvironmentBlock = new SPatchExecutionEnvironment;
+    *executionEnvironmentBlock = {};
     executionEnvironmentBlock->HasDeviceEnqueue = 1;
     infoBlock->patchInfo.executionEnvironment = executionEnvironmentBlock;
 
@@ -213,10 +199,6 @@ TEST(ParentKernelTest, initializeOnParentKernelAllocatesPrivateMemoryForBlocks) 
     parentKernel->initialize();
 
     EXPECT_NE(nullptr, program->getBlockKernelManager()->getPrivateSurface(program->getBlockKernelManager()->getCount() - 1));
-
-    delete privateSurfaceBlock;
-    delete parentKernel;
-    delete device;
 }
 
 TEST_P(ParentKernelFromBinaryTest, getInstructionHeapSizeForExecutionModelReturnsNonZeroForParentKernel) {

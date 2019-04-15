@@ -1,35 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
-#include "reg_configs_common.h"
+#include "runtime/event/event.h"
 #include "runtime/helpers/dispatch_info.h"
+#include "test.h"
 #include "unit_tests/command_queue/enqueue_write_buffer_rect_fixture.h"
+#include "unit_tests/fixtures/buffer_enqueue_fixture.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/gen_common/gen_commands_common_validation.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include "reg_configs_common.h"
+
+using namespace NEO;
 
 HWTEST_F(EnqueueWriteBufferRectTest, nullBufferReturnsError) {
     auto retVal = CL_SUCCESS;
@@ -81,7 +69,7 @@ HWTEST_F(EnqueueWriteBufferRectTest, returnSuccess) {
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, alignsToCSR_Blocking) {
+HWTEST_F(EnqueueWriteBufferRectTest, alignsToCSR_Blocking) {
     //this test case assumes IOQ
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.taskCount = pCmdQ->taskCount + 100;
@@ -93,7 +81,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, alignsToCSR_Blocking) {
     EXPECT_EQ(oldCsrTaskLevel, pCmdQ->taskLevel);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, alignsToCSR_NonBlocking) {
+HWTEST_F(EnqueueWriteBufferRectTest, alignsToCSR_NonBlocking) {
     //this test case assumes IOQ
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.taskCount = pCmdQ->taskCount + 100;
@@ -135,14 +123,14 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_GPGPUWalker) {
     }
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_bumpsTaskLevel) {
+HWTEST_F(EnqueueWriteBufferRectTest, 2D_bumpsTaskLevel) {
     auto taskLevelBefore = pCmdQ->taskLevel;
 
     enqueueWriteBufferRect2D<FamilyType>();
     EXPECT_GT(pCmdQ->taskLevel, taskLevelBefore);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_addsCommands) {
+HWTEST_F(EnqueueWriteBufferRectTest, 2D_addsCommands) {
     auto usedCmdBufferBefore = pCS->getUsed();
 
     enqueueWriteBufferRect2D<FamilyType>();
@@ -157,8 +145,8 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_addsIndirectData) {
     enqueueWriteBufferRect2D<FamilyType>();
 
     MultiDispatchInfo multiDispatchInfo;
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRect,
-                                                                          pCmdQ->getContext(), pCmdQ->getDevice());
+    auto &builder = pCmdQ->getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRect,
+                                                                                                               pCmdQ->getContext(), pCmdQ->getDevice());
     ASSERT_NE(nullptr, &builder);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
@@ -184,14 +172,14 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_addsIndirectData) {
     }
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_LoadRegisterImmediateL3CNTLREG) {
+HWTEST_F(EnqueueWriteBufferRectTest, 2D_LoadRegisterImmediateL3CNTLREG) {
     enqueueWriteBufferRect2D<FamilyType>();
     validateL3Programming<FamilyType>(cmdList, itorWalker);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, When2DEnqueueIsDoneThenStateBaseAddressIsProperlyProgrammed) {
     enqueueWriteBufferRect2D<FamilyType>();
-    validateStateBaseAddress<FamilyType>(this->pDevice->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
+    validateStateBaseAddress<FamilyType>(this->pCmdQ->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
                                          pDSH, pIOH, pSSH, itorPipelineSelect, itorWalker, cmdList, 0llu);
 }
 
@@ -249,8 +237,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_InterfaceDescriptorDa
     auto IDDEnd = iddStart + cmdMIDL->getInterfaceDescriptorTotalLength();
     ASSERT_LE(IDDEnd, cmdSBA->getDynamicStateBufferSize() * MemoryConstants::pageSize);
 
-    // Extract the IDD
-    auto &IDD = *(INTERFACE_DESCRIPTOR_DATA *)(DSH + iddStart);
+    auto &IDD = *(INTERFACE_DESCRIPTOR_DATA *)cmdInterfaceDescriptorData;
 
     // Validate the kernel start pointer.  Technically, a kernel can start at address 0 but let's force a value.
     auto kernelStartPointer = ((uint64_t)IDD.getKernelStartPointerHigh() << 32) + IDD.getKernelStartPointer();
@@ -261,7 +248,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_InterfaceDescriptorDa
     EXPECT_NE(0u, IDD.getConstantIndirectUrbEntryReadLength());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueWriteBufferRectTest, 2D_PipelineSelect) {
+HWTEST_F(EnqueueWriteBufferRectTest, 2D_PipelineSelect) {
     enqueueWriteBufferRect2D<FamilyType>();
     int numCommands = getNumberOfPipelineSelectsThatEnablePipelineSelect<FamilyType>();
     EXPECT_EQ(1, numCommands);
@@ -540,6 +527,53 @@ HWTEST_F(EnqueueWriteBufferRectTest, givenInOrderQueueAndDstPtrEqualSrcPtrAndNon
 
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(pCmdQ->taskLevel, 1u);
+}
+
+HWTEST_F(EnqueueReadWriteBufferRectDispatch, givenOffsetResultingInMisalignedPtrWhenEnqueueWriteBufferRectForNon3DCaseIsCalledThenAddressInStateBaseAddressIsAlignedAndMatchesKernelDispatchInfoParams) {
+    initializeFixture<FamilyType>();
+    auto cmdQ = std::make_unique<MockCommandQueueHw<FamilyType>>(context.get(), device.get(), &properties);
+
+    buffer->forceDisallowCPUCopy = true;
+    Vec3<size_t> hostOffset(hostOrigin);
+    auto misalignedHostPtr = ptrOffset(reinterpret_cast<void *>(memory), hostOffset.z * hostSlicePitch);
+
+    auto retVal = cmdQ->enqueueWriteBufferRect(buffer.get(), CL_FALSE,
+                                               bufferOrigin, hostOrigin, region,
+                                               bufferRowPitch, bufferSlicePitch, hostRowPitch, hostSlicePitch,
+                                               memory, 0, nullptr, nullptr);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    ASSERT_NE(0u, cmdQ->lastEnqueuedKernels.size());
+    Kernel *kernel = cmdQ->lastEnqueuedKernels[0];
+
+    cmdQ->finish(true);
+
+    parseCommands<FamilyType>(*cmdQ);
+
+    if (hwInfo->capabilityTable.gpuAddressSpace == MemoryConstants::max48BitAddress) {
+        const auto &surfaceState = getSurfaceState<FamilyType>(&cmdQ->getIndirectHeap(IndirectHeap::SURFACE_STATE, 0), 0);
+
+        if (kernel->getKernelInfo().kernelArgInfo[0].kernelArgPatchInfoVector[0].size == sizeof(uint64_t)) {
+            auto pKernelArg = (uint64_t *)(kernel->getCrossThreadData() +
+                                           kernel->getKernelInfo().kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset);
+            EXPECT_EQ(reinterpret_cast<uint64_t>(alignDown(misalignedHostPtr, 4)), *pKernelArg);
+            EXPECT_EQ(*pKernelArg, surfaceState.getSurfaceBaseAddress());
+
+        } else if (kernel->getKernelInfo().kernelArgInfo[0].kernelArgPatchInfoVector[0].size == sizeof(uint32_t)) {
+            auto pKernelArg = (uint32_t *)(kernel->getCrossThreadData() +
+                                           kernel->getKernelInfo().kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset);
+            EXPECT_EQ(reinterpret_cast<uint64_t>(alignDown(misalignedHostPtr, 4)), static_cast<uint64_t>(*pKernelArg));
+            EXPECT_EQ(static_cast<uint64_t>(*pKernelArg), surfaceState.getSurfaceBaseAddress());
+        }
+    }
+
+    if (kernel->getKernelInfo().kernelArgInfo[2].kernelArgPatchInfoVector[0].size == 4 * sizeof(uint32_t)) { // size of  uint4 SrcOrigin
+        auto dstOffset = (uint32_t *)(kernel->getCrossThreadData() +
+                                      kernel->getKernelInfo().kernelArgInfo[2].kernelArgPatchInfoVector[0].crossthreadOffset);
+        EXPECT_EQ(hostOffset.x + ptrDiff(misalignedHostPtr, alignDown(misalignedHostPtr, 4)), *dstOffset);
+    } else {
+        // SrcOrigin arg should be 16 bytes in size, if that changes, above if path should be modified
+        EXPECT_TRUE(false);
+    }
 }
 
 using NegativeFailAllocationTest = Test<NegativeFailAllocationCommandEnqueueBaseFixture>;

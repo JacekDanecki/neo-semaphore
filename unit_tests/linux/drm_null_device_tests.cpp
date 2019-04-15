@@ -1,51 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "mock_os_layer.h"
 #include "runtime/os_interface/linux/drm_null_device.h"
 #include "test.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/linux/drm_wrap.h"
+#include "unit_tests/linux/mock_os_layer.h"
 
-using namespace OCLRT;
+#include <memory>
 
-class DrmWrap : public Drm {
-  public:
-    static Drm *createDrm(int32_t deviceOrdinal) {
-        return Drm::create(deviceOrdinal);
-    }
-
-    static void closeDevice(int32_t deviceOrdinal) {
-        Drm::closeDevice(deviceOrdinal);
-    };
-};
+using namespace NEO;
 
 class DrmNullDeviceTestsFixture {
   public:
     void SetUp() {
-        oldFlag = DebugManager.flags.EnableNullHardware.get();
-
-        // Make global staff into init state
-        DrmWrap::closeDevice(0);
-        resetOSMockGlobalState();
-
         // Create nullDevice drm
         DebugManager.flags.EnableNullHardware.set(true);
         DrmWrap::createDrm(0);
@@ -58,22 +30,21 @@ class DrmNullDeviceTestsFixture {
     void TearDown() {
         // Close drm
         DrmWrap::closeDevice(0);
-        DebugManager.flags.EnableNullHardware.set(oldFlag);
     }
 
     Drm *drmNullDevice;
 
   protected:
-    bool oldFlag;
+    DebugManagerStateRestore dbgRestorer;
 };
 
 typedef Test<DrmNullDeviceTestsFixture> DrmNullDeviceTests;
 
 TEST_F(DrmNullDeviceTests, GIVENdrmNullDeviceWHENcallGetDeviceIdTHENreturnProperDeviceId) {
-    int deviceId = 0;
-    int ret = drmNullDevice->getDeviceID(deviceId);
+    int deviceIdQueried = 0;
+    int ret = drmNullDevice->getDeviceID(deviceIdQueried);
     EXPECT_EQ(0, ret);
-    EXPECT_EQ(deviceDescriptorTable[0].deviceId, deviceId);
+    EXPECT_EQ(deviceId, deviceIdQueried);
 }
 
 TEST_F(DrmNullDeviceTests, GIVENdrmNullDeviceWHENcallIoctlTHENalwaysSuccess) {

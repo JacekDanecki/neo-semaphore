@@ -1,34 +1,20 @@
-# Copyright (c) 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2018-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 add_custom_target(scheduler)
 set(SCHEDULER_OUTDIR_WITH_ARCH "${TargetDir}/scheduler/${NEO_ARCH}")
 set_target_properties(scheduler PROPERTIES FOLDER "scheduler")
 
 set (SCHEDULER_KERNEL scheduler.cl)
-set (SCHEDULER_INCLUDE_OPTIONS "-I$<JOIN:${IGDRCL__IGC_INCLUDE_DIR}, -I>")
+if(DEFINED IGDRCL__IGC_INCLUDE_DIR)
+  list(APPEND __cloc__options__ "-I$<JOIN:${IGDRCL__IGC_INCLUDE_DIR}, -I>")
+endif()
 
-if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug" )
-  set(SCHEDULER_DEBUG_OPTION "-D DEBUG")
-else()
-  set(SCHEDULER_DEBUG_OPTION "")
+if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+  list(APPEND __cloc__options__ "-D DEBUG")
 endif()
 
 set(SCHEDULER_INCLUDE_DIR ${TargetDir})
@@ -38,7 +24,7 @@ function(compile_kernel target gen_type platform_type kernel)
   string(TOLOWER ${gen_type} gen_type_lower)
   # get filename
   set(OUTPUTDIR "${SCHEDULER_OUTDIR_WITH_ARCH}/${gen_type_lower}")
-  set(SCHEDULER_INCLUDE_OPTIONS "${SCHEDULER_INCLUDE_OPTIONS} -I ../${gen_type_lower}")
+  list(APPEND __cloc__options__ "-I ../${gen_type_lower}")
 
   get_filename_component(BASENAME ${kernel} NAME_WE)
 
@@ -46,19 +32,21 @@ function(compile_kernel target gen_type platform_type kernel)
 
   set(SCHEDULER_CPP "${OUTPUTDIR}/${BASENAME}_${family_name_with_type}.cpp")
   if(WIN32)
-    set(cloc_cmd_prefix cloc)
+    set(cloc_cmd_prefix ocloc)
   else()
     if(DEFINED IGDRCL__IGC_LIBRARY_PATH)
-      set(cloc_cmd_prefix LD_LIBRARY_PATH=${IGDRCL__IGC_LIBRARY_PATH} $<TARGET_FILE:cloc>)
+      set(cloc_cmd_prefix LD_LIBRARY_PATH=${IGDRCL__IGC_LIBRARY_PATH} $<TARGET_FILE:ocloc>)
     else()
-      set(cloc_cmd_prefix LD_LIBRARY_PATH=$<TARGET_FILE_DIR:cloc> $<TARGET_FILE:cloc>)
+      set(cloc_cmd_prefix LD_LIBRARY_PATH=$<TARGET_FILE_DIR:ocloc> $<TARGET_FILE:ocloc>)
     endif()
   endif()
+  list(APPEND __cloc__options__ "-cl-kernel-arg-info")
+  list(APPEND __cloc__options__ "-cl-std=CL2.0")
   add_custom_command(
     OUTPUT ${OUTPUTPATH}
-    COMMAND ${cloc_cmd_prefix} -q -file ${kernel} -device ${DEFAULT_SUPPORTED_${gen_type}_${platform_type}_PLATFORM} -cl-intel-greater-than-4GB-buffer-required -${NEO_BITS} -out_dir ${OUTPUTDIR} -cpp_file -options "-cl-kernel-arg-info ${SCHEDULER_INCLUDE_OPTIONS} ${SCHEDULER_DEBUG_OPTION} -cl-std=CL2.0"
+    COMMAND ${cloc_cmd_prefix} -q -file ${kernel} -device ${DEFAULT_SUPPORTED_${gen_type}_${platform_type}_PLATFORM} -cl-intel-greater-than-4GB-buffer-required -${NEO_BITS} -out_dir ${OUTPUTDIR} -cpp_file -options "$<JOIN:${__cloc__options__}, >"
     WORKING_DIRECTORY  ${CMAKE_CURRENT_SOURCE_DIR}
-    DEPENDS ${kernel} cloc copy_compiler_files
+    DEPENDS ${kernel} ocloc copy_compiler_files
   )
   set(SCHEDULER_CPP ${SCHEDULER_CPP} PARENT_SCOPE)
 
@@ -101,6 +89,7 @@ set_target_properties(${SCHEDULER_BINARY_LIB_NAME} PROPERTIES FOLDER "scheduler"
 add_dependencies(${SCHEDULER_BINARY_LIB_NAME} scheduler)
 
 target_include_directories(${SCHEDULER_BINARY_LIB_NAME} PRIVATE
+  ${ENGINE_NODE_DIR}
   ${KHRONOS_HEADERS_DIR}
   ${UMKM_SHAREDDATA_INCLUDE_PATHS}
   ${IGDRCL__IGC_INCLUDE_DIR}

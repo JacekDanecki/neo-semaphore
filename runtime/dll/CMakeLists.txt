@@ -1,24 +1,10 @@
-# Copyright (c) 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2018-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
-if(GTPIN_HEADERS_DIR)
+if(NOT DISABLED_GTPIN_SUPPORT)
   set(GTPIN_INIT_FILE "gtpin/gtpin_init.cpp")
 else()
   set(GTPIN_INIT_FILE "")
@@ -31,6 +17,7 @@ set(RUNTIME_SRCS_DLL_BASE
   ${CMAKE_CURRENT_SOURCE_DIR}/create_tbx_sockets.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/options.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/source_level_debugger.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/get_devices.cpp
 
   ${IGDRCL_SOURCE_DIR}/runtime/api/api.cpp
   ${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/resource_info.cpp
@@ -38,6 +25,7 @@ set(RUNTIME_SRCS_DLL_BASE
   ${IGDRCL_SOURCE_DIR}/runtime/helpers/built_ins_helper.cpp
   ${IGDRCL_SOURCE_DIR}/runtime/helpers/debug_helpers.cpp
   ${IGDRCL_SOURCE_DIR}/runtime/program/evaluate_unhandled_token.cpp
+  ${IGDRCL_SOURCE_DIR}/runtime/utilities/debug_settings_reader_creator.cpp
 
   ${GTPIN_INIT_FILE}
   ${HW_SRC_LINK}
@@ -46,12 +34,19 @@ set(RUNTIME_SRCS_DLL_BASE
 
 set(RUNTIME_SRCS_DLL_LINUX
   ${CMAKE_CURRENT_SOURCE_DIR}/linux/allocator_helper.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/linux/create_drm_memory_manager.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/linux/devices${BRANCH_DIR_SUFFIX}/devices.inl
+  ${CMAKE_CURRENT_SOURCE_DIR}/linux/devices/devices_base.inl
   ${CMAKE_CURRENT_SOURCE_DIR}/linux/drm_neo_create.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/linux/options.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/linux/os_interface.cpp
 )
 
 set(RUNTIME_SRCS_DLL_WINDOWS
+  ${CMAKE_CURRENT_SOURCE_DIR}/windows/create_wddm_memory_manager.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/windows/environment_variables.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/windows/options.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/windows/os_interface.cpp
   ${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/gmm_memory.cpp
   ${IGDRCL_SOURCE_DIR}/runtime/gmm_helper/page_table_mngr.cpp
   ${IGDRCL_SOURCE_DIR}/runtime/os_interface/windows/sys_calls.cpp

@@ -1,37 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gtest/gtest.h"
-#include "runtime/platform/platform.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_kernel.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 class PatchedKernelTest : public ::testing::Test {
   public:
     void SetUp() override {
-        constructPlatform();
         device.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
         context.reset(new MockContext(device.get()));
         program.reset(Program::create("FillBufferBytes", context.get(), *device.get(), true, &retVal));
@@ -43,7 +27,6 @@ class PatchedKernelTest : public ::testing::Test {
     }
     void TearDown() override {
         context.reset();
-        platformImpl.reset(nullptr);
     }
 
     std::unique_ptr<MockContext> context;
@@ -95,11 +78,11 @@ TEST_F(PatchedKernelTest, givenKernelWithAllArgsSetWithSvmWhenIsPatchedIsCalledT
     uint32_t size = sizeof(int);
     auto argsNum = kernel->getKernelArgsNumber();
     for (uint32_t i = 0; i < argsNum; i++) {
-        kernel->setArgSvm(0, size, nullptr, nullptr);
+        kernel->setArgSvm(0, size, nullptr, nullptr, 0u);
     }
     EXPECT_FALSE(kernel->isPatched());
     for (uint32_t i = 0; i < argsNum; i++) {
-        kernel->setArgSvm(i, size, nullptr, nullptr);
+        kernel->setArgSvm(i, size, nullptr, nullptr, 0u);
     }
     EXPECT_TRUE(kernel->isPatched());
 }
@@ -115,7 +98,7 @@ TEST_F(PatchedKernelTest, givenKernelWithOneArgumentToPatchWhichIsNonzeroIndexed
     kernel.reset(mockKernel.mockKernel);
     kernel->initialize();
     EXPECT_FALSE(kernel->Kernel::isPatched());
-    kernel->setArgSvm(1, size, nullptr, nullptr);
+    kernel->setArgSvm(1, size, nullptr, nullptr, 0u);
     EXPECT_TRUE(kernel->Kernel::isPatched());
     kernel.release();
 }

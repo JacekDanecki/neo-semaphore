@@ -1,33 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "runtime/device/device_vector.h"
-#include "runtime/event/event.h"
+#include "runtime/context/context_type.h"
 #include "runtime/context/driver_diagnostics.h"
+#include "runtime/device/device_vector.h"
+#include "runtime/helpers/base_object.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 
+class CommandQueue;
 class Device;
 class DeviceQueue;
 class MemoryManager;
@@ -123,12 +112,16 @@ class Context : public BaseObject<_cl_context> {
     bool getInteropUserSyncEnabled() { return interopUserSync; }
     void setInteropUserSyncEnabled(bool enabled) { interopUserSync = enabled; }
 
+    ContextType peekContextType() { return this->contextType; }
+
   protected:
     Context(void(CL_CALLBACK *pfnNotify)(const char *, const void *, size_t, void *) = nullptr,
             void *userData = nullptr);
 
     // OS specific implementation
     void *getOsContextInfo(cl_context_info &paramName, size_t *srcParamSize);
+
+    cl_int processExtraProperties(cl_context_properties propertyType, cl_context_properties propertyValue);
 
     const cl_context_properties *properties;
     size_t numProperties;
@@ -144,5 +137,6 @@ class Context : public BaseObject<_cl_context> {
     DriverDiagnostics *driverDiagnostics;
     bool interopUserSync = false;
     cl_bool preferD3dSharedResources = 0u;
+    ContextType contextType = ContextType::CONTEXT_TYPE_DEFAULT;
 };
-} // namespace OCLRT
+} // namespace NEO

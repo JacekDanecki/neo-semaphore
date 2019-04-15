@@ -1,45 +1,30 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "test.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "unit_tests/command_stream/command_stream_fixture.h"
+#include "test.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
-#include "unit_tests/indirect_heap/indirect_heap_fixture.h"
-#include "unit_tests/fixtures/hello_world_kernel_fixture.h"
-#include "gen_cmd_parse.h"
+#include "unit_tests/command_stream/command_stream_fixture.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
+#include "unit_tests/fixtures/hello_world_kernel_fixture.h"
+#include "unit_tests/gen_common/gen_cmd_parse.h"
+#include "unit_tests/indirect_heap/indirect_heap_fixture.h"
 
-namespace OCLRT {
+namespace NEO {
 
 // Factory used to pick various ingredients for use in aggregate tests
 struct HelloWorldFixtureFactory {
-    typedef OCLRT::IndirectHeapFixture IndirectHeapFixture;
-    typedef OCLRT::CommandStreamFixture CommandStreamFixture;
-    typedef OCLRT::CommandQueueHwFixture CommandQueueFixture;
-    typedef OCLRT::HelloWorldKernelFixture KernelFixture;
+    typedef NEO::IndirectHeapFixture IndirectHeapFixture;
+    typedef NEO::CommandStreamFixture CommandStreamFixture;
+    typedef NEO::CommandQueueHwFixture CommandQueueFixture;
+    typedef NEO::HelloWorldKernelFixture KernelFixture;
 };
 
 //  Instantiates a fixture based on the supplied fixture factory.
@@ -73,7 +58,6 @@ struct HelloWorldFixture : public FixtureFactory::IndirectHeapFixture,
 
   public:
     virtual void SetUp() {
-        constructPlatform();
         DeviceFixture::SetUp();
         ASSERT_NE(nullptr, pDevice);
         CommandQueueFixture::SetUp(pDevice, 0);
@@ -84,37 +68,55 @@ struct HelloWorldFixture : public FixtureFactory::IndirectHeapFixture,
         KernelFixture::SetUp(pDevice, kernelFilename, kernelName);
         ASSERT_NE(nullptr, pKernel);
 
-        pDestMemory = alignedMalloc(sizeUserMemory, 4096);
-        ASSERT_NE(nullptr, pDestMemory);
-        pSrcMemory = alignedMalloc(sizeUserMemory, 4096);
-        ASSERT_NE(nullptr, pSrcMemory);
-
-        pKernel->setArgSvm(0, sizeUserMemory, pSrcMemory);
-        pKernel->setArgSvm(1, sizeUserMemory, pDestMemory);
-
+        auto retVal = CL_INVALID_VALUE;
         BufferDefaults::context = new MockContext(pDevice);
+
+        destBuffer = Buffer::create(
+            BufferDefaults::context,
+            CL_MEM_READ_WRITE,
+            sizeUserMemory,
+            nullptr,
+            retVal);
+
+        srcBuffer = Buffer::create(
+            BufferDefaults::context,
+            CL_MEM_READ_WRITE,
+            sizeUserMemory,
+            nullptr,
+            retVal);
+
+        pDestMemory = destBuffer->getCpuAddressForMapping();
+        pSrcMemory = srcBuffer->getCpuAddressForMapping();
+
+        memset(pDestMemory, destPattern, sizeUserMemory);
+        memset(pSrcMemory, srcPattern, sizeUserMemory);
+
+        pKernel->setArg(0, srcBuffer);
+        pKernel->setArg(1, destBuffer);
     }
 
     virtual void TearDown() {
         pCmdQ->flush();
 
-        alignedFree(pSrcMemory);
-        alignedFree(pDestMemory);
+        srcBuffer->release();
+        destBuffer->release();
 
         KernelFixture::TearDown();
         IndirectHeapFixture::TearDown();
         CommandStreamFixture::TearDown();
         CommandQueueFixture::TearDown();
-        delete BufferDefaults::context;
+        BufferDefaults::context->release();
         DeviceFixture::TearDown();
-        platformImpl.reset(nullptr);
     }
-
+    Buffer *srcBuffer;
+    Buffer *destBuffer;
     void *pSrcMemory;
     void *pDestMemory;
     size_t sizeUserMemory;
     const char *kernelFilename;
     const char *kernelName;
+    const int srcPattern = 85;
+    const int destPattern = 170;
 
     cl_int callOneWorkItemNDRKernel(cl_event *eventWaitList = nullptr, cl_int waitListSize = 0, cl_event *returnEvent = nullptr) {
 
@@ -142,4 +144,4 @@ struct HelloWorldTest : Test<HelloWorldFixture<FixtureFactory>> {
 template <typename FixtureFactory>
 struct HelloWorldTestWithParam : HelloWorldFixture<FixtureFactory> {
 };
-} // namespace OCLRT
+} // namespace NEO

@@ -1,31 +1,17 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #pragma once
 #include "runtime/gmm_helper/gmm_lib.h"
-#include <memory>
-#include <functional>
 
-namespace OCLRT {
+#include <functional>
+#include <memory>
+
+namespace NEO {
 class GmmResourceInfo {
   public:
     static GmmResourceInfo *create(GMM_RESCREATE_PARAMS *resourceCreateParams);
@@ -56,7 +42,9 @@ class GmmResourceInfo {
 
     MOCKABLE_VIRTUAL uint32_t getVAlign() { return resourceInfo->GetVAlign(); }
 
-    MOCKABLE_VIRTUAL GMM_TILE_TYPE getTileType() { return resourceInfo->GetTileType(); }
+    MOCKABLE_VIRTUAL uint32_t getMaxLod() { return resourceInfo->GetMaxLod(); }
+
+    MOCKABLE_VIRTUAL uint32_t getTileModeSurfaceState() { return resourceInfo->GetTileModeSurfaceState(); }
 
     MOCKABLE_VIRTUAL GMM_RESOURCE_FORMAT getResourceFormat() { return resourceInfo->GetResourceFormat(); }
 
@@ -78,6 +66,8 @@ class GmmResourceInfo {
 
     MOCKABLE_VIRTUAL uint64_t getUnifiedAuxSurfaceOffset(GMM_UNIFIED_AUX_TYPE auxType) { return resourceInfo->GetUnifiedAuxSurfaceOffset(auxType); }
 
+    MOCKABLE_VIRTUAL bool is64KBPageSuitable() const { return resourceInfo->Is64KBPageSuitable(); }
+
     MOCKABLE_VIRTUAL GMM_RESOURCE_INFO *peekHandle() const { return resourceInfo.get(); }
 
   protected:
@@ -92,4 +82,4 @@ class GmmResourceInfo {
 
     UniquePtrType resourceInfo;
 };
-} // namespace OCLRT
+} // namespace NEO

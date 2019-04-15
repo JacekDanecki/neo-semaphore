@@ -1,44 +1,44 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
-#include "unit_tests/fixtures/memory_management_fixture.h"
+#include "runtime/command_stream/preemption.h"
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
+#include "unit_tests/fixtures/memory_management_fixture.h"
+#include "unit_tests/libult/create_command_stream.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 class MemoryAllocatorFixture : public MemoryManagementFixture {
-  protected:
-    MemoryManager *memoryManager;
-
   public:
     void SetUp() override {
         MemoryManagementFixture::SetUp();
-        memoryManager = new OsAgnosticMemoryManager;
+        executionEnvironment = std::make_unique<ExecutionEnvironment>();
+        executionEnvironment->setHwInfo(*platformDevices);
+        executionEnvironment->initializeCommandStreamReceiver(0, 0);
+        memoryManager = new MockMemoryManager(false, false, *executionEnvironment);
+        executionEnvironment->memoryManager.reset(memoryManager);
+        csr = memoryManager->getDefaultCommandStreamReceiver(0);
+        auto engineType = HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0];
+        auto osContext = memoryManager->createAndRegisterOsContext(csr, engineType, 1, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
+        csr->setupContext(*osContext);
     }
 
     void TearDown() override {
-        delete memoryManager;
+        executionEnvironment.reset();
         MemoryManagementFixture::TearDown();
     }
+
+  protected:
+    std::unique_ptr<ExecutionEnvironment> executionEnvironment;
+    MockMemoryManager *memoryManager;
+    CommandStreamReceiver *csr;
 };

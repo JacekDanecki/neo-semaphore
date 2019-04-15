@@ -1,36 +1,24 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #include "runtime/sharings/d3d/d3d_surface.h"
+
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
-#include "runtime/mem_obj/image.h"
-#include "runtime/helpers/get_info.h"
-#include "runtime/memory_manager/memory_manager.h"
-#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/gmm.h"
+#include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/helpers/get_info.h"
+#include "runtime/mem_obj/image.h"
+#include "runtime/mem_obj/mem_obj_helper.h"
+#include "runtime/memory_manager/memory_manager.h"
+
 #include "mmsystem.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 D3DSurface::D3DSurface(Context *context, cl_dx9_surface_info_khr *surfaceInfo, D3D9Surface *surfaceStaging, cl_uint plane,
                        OCLPlane oclPlane, cl_dx9_media_adapter_type_khr adapterType, bool sharedResource, bool lockable)
@@ -91,8 +79,10 @@ Image *D3DSurface::create(Context *context, cl_dx9_surface_info_khr *surfaceInfo
     GraphicsAllocation *alloc = nullptr;
     if (surfaceInfo->shared_handle) {
         isSharedResource = true;
-        alloc = context->getMemoryManager()->createGraphicsAllocationFromSharedHandle((osHandle)((UINT_PTR)surfaceInfo->shared_handle), false, false);
-        updateImgInfo(alloc->gmm, imgInfo, imgDesc, oclPlane, 0u);
+        AllocationProperties allocProperties(false, 0u, GraphicsAllocation::AllocationType::SHARED_IMAGE);
+        alloc = context->getMemoryManager()->createGraphicsAllocationFromSharedHandle((osHandle)((UINT_PTR)surfaceInfo->shared_handle), allocProperties,
+                                                                                      false);
+        updateImgInfo(alloc->getDefaultGmm(), imgInfo, imgDesc, oclPlane, 0u);
     } else {
         lockable = !(surfaceDesc.Usage & D3DResourceFlags::USAGE_RENDERTARGET) || oclPlane != OCLPlane::NO_PLANE;
         if (!lockable) {
@@ -102,11 +92,14 @@ Image *D3DSurface::create(Context *context, cl_dx9_surface_info_khr *surfaceInfo
             imgDesc.image_width /= 2;
             imgDesc.image_height /= 2;
         }
-        Gmm *gmm = new Gmm(imgInfo);
+
+        AllocationProperties allocProperties = MemObjHelper::getAllocationProperties(imgInfo, true, flags);
+        allocProperties.allocationType = GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY;
+
+        alloc = context->getMemoryManager()->allocateGraphicsMemoryInPreferredPool(allocProperties, nullptr);
+
         imgDesc.image_row_pitch = imgInfo.rowPitch;
         imgDesc.image_slice_pitch = imgInfo.slicePitch;
-
-        alloc = context->getMemoryManager()->allocateGraphicsMemoryForImage(imgInfo, gmm);
     }
     DEBUG_BREAK_IF(!alloc);
 
@@ -115,7 +108,7 @@ Image *D3DSurface::create(Context *context, cl_dx9_surface_info_khr *surfaceInfo
     return Image::createSharedImage(context, surface, mcsSurfaceInfo, alloc, nullptr, flags, imgInfo, __GMM_NO_CUBE_MAP, 0, 0);
 }
 
-void D3DSurface::synchronizeObject(UpdateData *updateData) {
+void D3DSurface::synchronizeObject(UpdateData &updateData) {
     D3DLOCKED_RECT lockedRect = {};
     sharingFunctions->setDevice(resourceDevice);
     if (sharedResource && !context->getInteropUserSyncEnabled()) {
@@ -128,15 +121,15 @@ void D3DSurface::synchronizeObject(UpdateData *updateData) {
             sharingFunctions->lockRect(d3d9SurfaceStaging, &lockedRect, D3DLOCK_READONLY);
         }
 
-        auto image = castToObjectOrAbort<Image>(updateData->memObject);
+        auto image = castToObjectOrAbort<Image>(updateData.memObject);
         auto sys = lockedRect.pBits;
         auto gpu = context->getMemoryManager()->lockResource(image->getGraphicsAllocation());
         auto pitch = static_cast<ULONG>(lockedRect.Pitch);
         auto height = static_cast<ULONG>(image->getImageDesc().image_height);
 
-        image->getGraphicsAllocation()->gmm->resourceCopyBlt(sys, gpu, pitch, height, 1u, oclPlane);
+        image->getGraphicsAllocation()->getDefaultGmm()->resourceCopyBlt(sys, gpu, pitch, height, 1u, oclPlane);
 
-        context->getMemoryManager()->unlockResource(updateData->memObject->getGraphicsAllocation());
+        context->getMemoryManager()->unlockResource(updateData.memObject->getGraphicsAllocation());
 
         if (lockable) {
             sharingFunctions->unlockRect(d3d9Surface);
@@ -146,7 +139,7 @@ void D3DSurface::synchronizeObject(UpdateData *updateData) {
 
         sharingFunctions->flushAndWait(d3dQuery);
     }
-    updateData->synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
+    updateData.synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
 }
 
 void D3DSurface::releaseResource(MemObj *memObject) {
@@ -169,7 +162,7 @@ void D3DSurface::releaseResource(MemObj *memObject) {
         auto pitch = static_cast<ULONG>(lockedRect.Pitch);
         auto height = static_cast<ULONG>(image->getImageDesc().image_height);
 
-        image->getGraphicsAllocation()->gmm->resourceCopyBlt(sys, gpu, pitch, height, 0u, oclPlane);
+        image->getGraphicsAllocation()->getDefaultGmm()->resourceCopyBlt(sys, gpu, pitch, height, 0u, oclPlane);
 
         context->getMemoryManager()->unlockResource(memObject->getGraphicsAllocation());
 
@@ -182,141 +175,87 @@ void D3DSurface::releaseResource(MemObj *memObject) {
     }
 }
 
+const std::map<const D3DFORMAT, const cl_image_format> D3DSurface::D3DtoClFormatConversions = {
+    {D3DFMT_R32F, {CL_R, CL_FLOAT}},
+    {D3DFMT_R16F, {CL_R, CL_HALF_FLOAT}},
+    {D3DFMT_L16, {CL_R, CL_UNORM_INT16}},
+    {D3DFMT_A8, {CL_A, CL_UNORM_INT8}},
+    {D3DFMT_L8, {CL_R, CL_UNORM_INT8}},
+    {D3DFMT_G32R32F, {CL_RG, CL_FLOAT}},
+    {D3DFMT_G16R16F, {CL_RG, CL_HALF_FLOAT}},
+    {D3DFMT_G16R16, {CL_RG, CL_UNORM_INT16}},
+    {D3DFMT_A8L8, {CL_RG, CL_UNORM_INT8}},
+    {D3DFMT_A32B32G32R32F, {CL_RGBA, CL_FLOAT}},
+    {D3DFMT_A16B16G16R16F, {CL_RGBA, CL_HALF_FLOAT}},
+    {D3DFMT_A16B16G16R16, {CL_RGBA, CL_UNORM_INT16}},
+    {D3DFMT_X8B8G8R8, {CL_RGBA, CL_UNORM_INT8}},
+    {D3DFMT_A8B8G8R8, {CL_RGBA, CL_UNORM_INT8}},
+    {D3DFMT_A8R8G8B8, {CL_BGRA, CL_UNORM_INT8}},
+    {D3DFMT_X8R8G8B8, {CL_BGRA, CL_UNORM_INT8}},
+    {D3DFMT_YUY2, {CL_YUYV_INTEL, CL_UNORM_INT8}},
+    {D3DFMT_UYVY, {CL_UYVY_INTEL, CL_UNORM_INT8}},
+
+    // The specific channel_order for NV12 is selected in findImgFormat
+    {static_cast<D3DFORMAT>(MAKEFOURCC('N', 'V', '1', '2')), {CL_R | CL_RG, CL_UNORM_INT8}},
+    {static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', '1', '2')), {CL_R, CL_UNORM_INT8}},
+    {static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', 'Y', 'U')), {CL_YVYU_INTEL, CL_UNORM_INT8}},
+    {static_cast<D3DFORMAT>(MAKEFOURCC('V', 'Y', 'U', 'Y')), {CL_VYUY_INTEL, CL_UNORM_INT8}}};
+
 cl_int D3DSurface::findImgFormat(D3DFORMAT d3dFormat, cl_image_format &imgFormat, cl_uint plane, OCLPlane &oclPlane) {
     oclPlane = OCLPlane::NO_PLANE;
-    bool noPlaneRequired = true;
-    switch (d3dFormat) {
-    case D3DFMT_R32F:
-        imgFormat.image_channel_order = CL_R;
-        imgFormat.image_channel_data_type = CL_FLOAT;
-        break;
-    case D3DFMT_R16F:
-        imgFormat.image_channel_order = CL_R;
-        imgFormat.image_channel_data_type = CL_HALF_FLOAT;
-        break;
-    case D3DFMT_L16:
-        imgFormat.image_channel_order = CL_R;
-        imgFormat.image_channel_data_type = CL_UNORM_INT16;
-        break;
-    case D3DFMT_A8:
-        imgFormat.image_channel_order = CL_A;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case D3DFMT_L8:
-        imgFormat.image_channel_order = CL_R;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case D3DFMT_G32R32F:
-        imgFormat.image_channel_order = CL_RG;
-        imgFormat.image_channel_data_type = CL_FLOAT;
-        break;
-    case D3DFMT_G16R16F:
-        imgFormat.image_channel_order = CL_RG;
-        imgFormat.image_channel_data_type = CL_HALF_FLOAT;
-        break;
-    case D3DFMT_G16R16:
-        imgFormat.image_channel_order = CL_RG;
-        imgFormat.image_channel_data_type = CL_UNORM_INT16;
-        break;
-    case D3DFMT_A8L8:
-        imgFormat.image_channel_order = CL_RG;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case D3DFMT_A32B32G32R32F:
-        imgFormat.image_channel_order = CL_RGBA;
-        imgFormat.image_channel_data_type = CL_FLOAT;
-        break;
-    case D3DFMT_A16B16G16R16F:
-        imgFormat.image_channel_order = CL_RGBA;
-        imgFormat.image_channel_data_type = CL_HALF_FLOAT;
-        break;
-    case D3DFMT_A16B16G16R16:
-        imgFormat.image_channel_order = CL_RGBA;
-        imgFormat.image_channel_data_type = CL_UNORM_INT16;
-        break;
-    case D3DFMT_A8B8G8R8:
-    case D3DFMT_X8B8G8R8:
-        imgFormat.image_channel_order = CL_RGBA;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case D3DFMT_A8R8G8B8:
-    case D3DFMT_X8R8G8B8:
-        imgFormat.image_channel_order = CL_BGRA;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case (D3DFORMAT)MAKEFOURCC('N', 'V', '1', '2'):
-        switch (plane) {
-        case 0:
-            imgFormat.image_channel_order = CL_R;
-            imgFormat.image_channel_data_type = CL_UNORM_INT8;
-            oclPlane = OCLPlane::PLANE_Y;
-            break;
-        case 1:
-            imgFormat.image_channel_order = CL_RG;
-            imgFormat.image_channel_data_type = CL_UNORM_INT8;
-            oclPlane = OCLPlane::PLANE_UV;
-            break;
-        default:
-            imgFormat.image_channel_order = 0;
-            imgFormat.image_channel_data_type = 0;
-            return CL_INVALID_VALUE;
-        }
-        noPlaneRequired = false;
-        break;
-    case (D3DFORMAT)MAKEFOURCC('Y', 'V', '1', '2'):
-        switch (plane) {
-        case 0:
-            imgFormat.image_channel_order = CL_R;
-            imgFormat.image_channel_data_type = CL_UNORM_INT8;
-            oclPlane = OCLPlane::PLANE_Y;
-            break;
-        case 1:
-            imgFormat.image_channel_order = CL_R;
-            imgFormat.image_channel_data_type = CL_UNORM_INT8;
-            oclPlane = OCLPlane::PLANE_V;
-            break;
-        case 2:
-            imgFormat.image_channel_order = CL_R;
-            imgFormat.image_channel_data_type = CL_UNORM_INT8;
-            oclPlane = OCLPlane::PLANE_U;
-            break;
-        default:
-            imgFormat.image_channel_order = 0;
-            imgFormat.image_channel_data_type = 0;
-            return CL_INVALID_VALUE;
-        }
-        noPlaneRequired = false;
-        break;
-    case D3DFMT_YUY2:
-        imgFormat.image_channel_order = CL_YUYV_INTEL;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case D3DFMT_UYVY:
-        imgFormat.image_channel_order = CL_UYVY_INTEL;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case (D3DFORMAT)MAKEFOURCC('Y', 'V', 'Y', 'U'):
-        imgFormat.image_channel_order = CL_YVYU_INTEL;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    case (D3DFORMAT)MAKEFOURCC('V', 'Y', 'U', 'Y'):
-        imgFormat.image_channel_order = CL_VYUY_INTEL;
-        imgFormat.image_channel_data_type = CL_UNORM_INT8;
-        break;
-    default:
-        imgFormat.image_channel_order = 0;
-        imgFormat.image_channel_data_type = 0;
+    static const cl_image_format unknown_format = {0, 0};
+
+    auto element = D3DtoClFormatConversions.find(d3dFormat);
+    if (element == D3DtoClFormatConversions.end()) {
+        imgFormat = unknown_format;
         return CL_INVALID_IMAGE_FORMAT_DESCRIPTOR;
     }
-    if (noPlaneRequired && plane > 0) {
+
+    imgFormat = element->second;
+    switch (d3dFormat) {
+    case static_cast<D3DFORMAT>(MAKEFOURCC('N', 'V', '1', '2')):
+        switch (plane) {
+        case 0:
+            imgFormat.image_channel_order = CL_R;
+            oclPlane = OCLPlane::PLANE_Y;
+            return CL_SUCCESS;
+        case 1:
+            imgFormat.image_channel_order = CL_RG;
+            oclPlane = OCLPlane::PLANE_UV;
+            return CL_SUCCESS;
+        default:
+            imgFormat = unknown_format;
+            return CL_INVALID_VALUE;
+        }
+
+    case static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', '1', '2')):
+        switch (plane) {
+        case 0:
+            oclPlane = OCLPlane::PLANE_Y;
+            return CL_SUCCESS;
+
+        case 1:
+            oclPlane = OCLPlane::PLANE_V;
+            return CL_SUCCESS;
+
+        case 2:
+            oclPlane = OCLPlane::PLANE_U;
+            return CL_SUCCESS;
+
+        default:
+            imgFormat = unknown_format;
+            return CL_INVALID_VALUE;
+        }
+    }
+
+    if (plane > 0) {
         return CL_INVALID_VALUE;
     }
     return CL_SUCCESS;
 }
 
-int D3DSurface::validateUpdateData(UpdateData *updateData) {
-    UNRECOVERABLE_IF(updateData == nullptr);
-    auto image = castToObject<Image>(updateData->memObject);
+int D3DSurface::validateUpdateData(UpdateData &updateData) {
+    auto image = castToObject<Image>(updateData.memObject);
     if (!image) {
         return CL_INVALID_MEM_OBJECT;
     }

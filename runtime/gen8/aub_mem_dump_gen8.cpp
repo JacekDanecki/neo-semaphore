@@ -1,27 +1,15 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "aub_mapper.h"
+#include "runtime/aub_mem_dump/aub_alloc_dump.inl"
 #include "runtime/aub_mem_dump/aub_mem_dump.inl"
+#include "runtime/helpers/hw_helper.h"
+
+#include "aub_mapper.h"
 
 namespace AubMemDump {
 
@@ -37,15 +25,15 @@ template struct AubPageTableHelper32<Traits<device, 32>>;
 template struct AubPageTableHelper64<Traits<device, 48>>;
 } // namespace AubMemDump
 
-namespace OCLRT {
+namespace NEO {
 using Family = BDWFamily;
 
-static AubMemDump::LrcaHelperRcs rcs(0x000000);
-static AubMemDump::LrcaHelperBcs bcs(0x020000);
-static AubMemDump::LrcaHelperVcs vcs(0x010000);
-static AubMemDump::LrcaHelperVecs vecs(0x018000);
+static const AubMemDump::LrcaHelperRcs rcs(0x002000);
+static const AubMemDump::LrcaHelperBcs bcs(0x022000);
+static const AubMemDump::LrcaHelperVcs vcs(0x012000);
+static const AubMemDump::LrcaHelperVecs vecs(0x01a000);
 
-const AubMemDump::LrcaHelper *AUBFamilyMapper<Family>::csTraits[EngineType::NUM_ENGINES] = {
+const AubMemDump::LrcaHelper *const AUBFamilyMapper<Family>::csTraits[aub_stream::NUM_ENGINES] = {
     &rcs,
     &bcs,
     &vcs,
@@ -55,24 +43,42 @@ const MMIOList AUBFamilyMapper<Family>::globalMMIO;
 
 static const MMIOList mmioListRCS = {
     MMIOPair(0x000020d8, 0x00020000),
-    MMIOPair(rcs.mmioBase + 0x229c, 0xffff8280),
+    MMIOPair(AubMemDump::computeRegisterOffset(rcs.mmioBase, 0x229c), 0xffff8280),
 };
 
 static const MMIOList mmioListBCS = {
-    MMIOPair(bcs.mmioBase + 0x229c, 0xffff8280),
+    MMIOPair(AubMemDump::computeRegisterOffset(bcs.mmioBase, 0x229c), 0xffff8280),
 };
 
 static const MMIOList mmioListVCS = {
-    MMIOPair(vcs.mmioBase + 0x229c, 0xffff8280),
+    MMIOPair(AubMemDump::computeRegisterOffset(vcs.mmioBase, 0x229c), 0xffff8280),
 };
 
 static const MMIOList mmioListVECS = {
-    MMIOPair(vecs.mmioBase + 0x229c, 0xffff8280),
+    MMIOPair(AubMemDump::computeRegisterOffset(vecs.mmioBase, 0x229c), 0xffff8280),
 };
 
-const MMIOList *AUBFamilyMapper<Family>::perEngineMMIO[EngineType::NUM_ENGINES] = {
+const MMIOList *AUBFamilyMapper<Family>::perEngineMMIO[aub_stream::NUM_ENGINES] = {
     &mmioListRCS,
     &mmioListBCS,
     &mmioListVCS,
     &mmioListVECS};
-} // namespace OCLRT
+} // namespace NEO
+
+namespace AubAllocDump {
+using namespace NEO;
+
+template SurfaceInfo *getDumpSurfaceInfo<Family>(GraphicsAllocation &gfxAllocation, DumpFormat dumpFormat);
+
+template uint32_t getImageSurfaceTypeFromGmmResourceType<Family>(GMM_RESOURCE_TYPE gmmResourceType);
+
+template void dumpBufferInBinFormat<Family>(GraphicsAllocation &gfxAllocation, AubMemDump::AubFileStream *stream, uint32_t context);
+
+template void dumpImageInBmpFormat<Family>(GraphicsAllocation &gfxAllocation, AubMemDump::AubFileStream *stream, uint32_t context);
+
+template void dumpBufferInTreFormat<Family>(GraphicsAllocation &gfxAllocation, AubMemDump::AubFileStream *stream, uint32_t context);
+
+template void dumpImageInTreFormat<Family>(GraphicsAllocation &gfxAllocation, AubMemDump::AubFileStream *stream, uint32_t context);
+
+template void dumpAllocation<Family>(DumpFormat dumpFormat, GraphicsAllocation &gfxAllocation, AubMemDump::AubFileStream *stream, uint32_t context);
+} // namespace AubAllocDump

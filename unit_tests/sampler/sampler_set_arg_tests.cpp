@@ -1,40 +1,27 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
 #include "runtime/helpers/ptr_math.h"
+#include "runtime/helpers/sampler_helpers.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/sampler/sampler.h"
-#include "runtime/helpers/sampler_helpers.h"
 #include "runtime/utilities/numeric.h"
-#include "unit_tests/fixtures/device_fixture.h"
 #include "test.h"
+#include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
 
-using namespace OCLRT;
+#include "hw_cmds.h"
 
-namespace OCLRT {
+using namespace NEO;
+
+namespace NEO {
 class Surface;
 };
 
@@ -49,7 +36,7 @@ class SamplerSetArgFixture : public DeviceFixture {
   protected:
     void SetUp() {
         DeviceFixture::SetUp();
-        pKernelInfo = KernelInfo::create();
+        pKernelInfo = std::make_unique<KernelInfo>();
 
         // define kernel info
         kernelHeader.DynamicStateHeapSize = sizeof(samplerStateHeap);
@@ -69,7 +56,8 @@ class SamplerSetArgFixture : public DeviceFixture {
         pKernelInfo->kernelArgInfo[1].offsetHeap = 0x40;
         pKernelInfo->kernelArgInfo[1].isSampler = true;
 
-        pKernel = new MockKernel(&program, *pKernelInfo, *pDevice);
+        program = std::make_unique<MockProgram>(*pDevice->getExecutionEnvironment());
+        pKernel = new MockKernel(program.get(), *pKernelInfo, *pDevice);
         ASSERT_NE(nullptr, pKernel);
         ASSERT_EQ(CL_SUCCESS, pKernel->initialize());
 
@@ -83,9 +71,9 @@ class SamplerSetArgFixture : public DeviceFixture {
     }
 
     void TearDown() {
-        delete pKernelInfo;
-        delete sampler;
         delete pKernel;
+
+        delete sampler;
         delete context;
         DeviceFixture::TearDown();
     }
@@ -111,16 +99,14 @@ class SamplerSetArgFixture : public DeviceFixture {
 
     static const uint32_t crossThreadDataSize = 0x40;
 
-    // clang-format off
-    cl_int                    retVal = CL_SUCCESS;
-    MockProgram               program;
-    MockKernel                *pKernel = nullptr;
+    cl_int retVal = CL_SUCCESS;
+    std::unique_ptr<MockProgram> program;
+    MockKernel *pKernel = nullptr;
     SKernelBinaryHeaderCommon kernelHeader;
-    KernelInfo                *pKernelInfo = nullptr;
-    char                      samplerStateHeap[0x80];
-    MockContext               *context;
-    Sampler                   *sampler = nullptr;
-    // clang-format on
+    std::unique_ptr<KernelInfo> pKernelInfo;
+    char samplerStateHeap[0x80];
+    MockContext *context;
+    Sampler *sampler = nullptr;
 };
 
 typedef Test<SamplerSetArgFixture> SamplerSetArgTest;
@@ -164,6 +150,147 @@ HWTEST_F(SamplerSetArgTest, getKernelArgShouldReturnSampler) {
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     EXPECT_EQ(samplerObj, pKernel->getKernelArg(0));
+}
+
+HWTEST_F(SamplerSetArgTest, GivenSamplerObjectWhenSetKernelArgIsCalledThenIncreaseSamplerRefcount) {
+    cl_sampler samplerObj = Sampler::create(
+        context,
+        CL_TRUE,
+        CL_ADDRESS_MIRRORED_REPEAT,
+        CL_FILTER_NEAREST,
+        retVal);
+
+    auto pSampler = castToObject<Sampler>(samplerObj);
+    auto refCountBefore = pSampler->getRefInternalCount();
+
+    retVal = pKernel->setArg(
+        0,
+        sizeof(samplerObj),
+        &samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+    auto refCountAfter = pSampler->getRefInternalCount();
+
+    EXPECT_EQ(refCountBefore + 1, refCountAfter);
+
+    retVal = clReleaseSampler(samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+}
+
+HWTEST_F(SamplerSetArgTest, GivenSamplerObjectWhenSetKernelArgIsCalledThenSamplerObjectSurvivesClReleaseSampler) {
+    cl_sampler samplerObj = Sampler::create(
+        context,
+        CL_TRUE,
+        CL_ADDRESS_MIRRORED_REPEAT,
+        CL_FILTER_NEAREST,
+        retVal);
+
+    auto pSampler = castToObject<Sampler>(samplerObj);
+    auto refCountBefore = pSampler->getRefInternalCount();
+
+    retVal = pKernel->setArg(
+        0,
+        sizeof(samplerObj),
+        &samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    retVal = clReleaseSampler(samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    auto refCountAfter = pSampler->getRefInternalCount();
+
+    EXPECT_EQ(refCountBefore, refCountAfter);
+}
+
+HWTEST_F(SamplerSetArgTest, GivenSamplerObjectWhenSetKernelArgIsCalledAndKernelIsDeletedThenRefCountIsUnchanged) {
+    auto myKernel = std::make_unique<MockKernel>(program.get(), *pKernelInfo, *pDevice);
+    ASSERT_NE(nullptr, myKernel.get());
+    ASSERT_EQ(CL_SUCCESS, myKernel->initialize());
+
+    myKernel->setKernelArgHandler(0, &Kernel::setArgSampler);
+    myKernel->setKernelArgHandler(1, &Kernel::setArgSampler);
+
+    uint32_t crossThreadData[crossThreadDataSize] = {};
+    myKernel->setCrossThreadData(crossThreadData, sizeof(crossThreadData));
+    cl_sampler samplerObj = Sampler::create(
+        context,
+        CL_TRUE,
+        CL_ADDRESS_MIRRORED_REPEAT,
+        CL_FILTER_NEAREST,
+        retVal);
+
+    auto pSampler = castToObject<Sampler>(samplerObj);
+    auto refCountBefore = pSampler->getRefInternalCount();
+
+    retVal = myKernel->setArg(
+        0,
+        sizeof(samplerObj),
+        &samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    myKernel.reset();
+
+    auto refCountAfter = pSampler->getRefInternalCount();
+
+    EXPECT_EQ(refCountBefore, refCountAfter);
+
+    retVal = clReleaseSampler(samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+}
+
+HWTEST_F(SamplerSetArgTest, GivenNewSamplerObjectWhensSetKernelArgIsCalledThenDecreaseOldSamplerRefcount) {
+    cl_sampler samplerObj = Sampler::create(
+        context,
+        CL_TRUE,
+        CL_ADDRESS_MIRRORED_REPEAT,
+        CL_FILTER_NEAREST,
+        retVal);
+
+    auto pSampler = castToObject<Sampler>(samplerObj);
+
+    retVal = pKernel->setArg(
+        0,
+        sizeof(samplerObj),
+        &samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    auto refCountBefore = pSampler->getRefInternalCount();
+
+    cl_sampler samplerObj2 = Sampler::create(
+        context,
+        CL_TRUE,
+        CL_ADDRESS_MIRRORED_REPEAT,
+        CL_FILTER_NEAREST,
+        retVal);
+
+    retVal = pKernel->setArg(
+        0,
+        sizeof(samplerObj2),
+        &samplerObj2);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    auto refCountAfter = pSampler->getRefInternalCount();
+
+    EXPECT_EQ(refCountBefore - 1, refCountAfter);
+
+    retVal = clReleaseSampler(samplerObj);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+    retVal = clReleaseSampler(samplerObj2);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+}
+
+HWTEST_F(SamplerSetArgTest, GivenIncorrentSamplerObjectWhenSetKernelArgSamplerIsCalledThenLeaveRefcountAsIs) {
+    auto notSamplerObj = std::unique_ptr<Image>(ImageHelper<Image2dDefaults>::create(context));
+
+    auto pNotSampler = castToObject<Image>(notSamplerObj.get());
+    auto refCountBefore = pNotSampler->getRefInternalCount();
+
+    retVal = pKernel->setArgSampler(
+        0,
+        sizeof(notSamplerObj.get()),
+        notSamplerObj.get());
+    auto refCountAfter = pNotSampler->getRefInternalCount();
+
+    EXPECT_EQ(refCountBefore, refCountAfter);
 }
 
 HWTEST_F(SamplerSetArgTest, WithFilteringNearestAndAddressingClClampSetAsKernelArgumentSetsConstantBuffer) {

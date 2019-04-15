@@ -1,42 +1,47 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/options.h"
 #include "runtime/device/device.h"
+#include "runtime/helpers/hw_info.h"
+#include "runtime/helpers/options.h"
 #include "runtime/platform/extensions.h"
 #include "runtime/sharings/sharing_factory.h"
+#include "unit_tests/fixtures/mock_aub_center_fixture.h"
 #include "unit_tests/fixtures/platform_fixture.h"
-#include "unit_tests/mocks/mock_async_event_handler.h"
-#include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/variable_backup.h"
 #include "unit_tests/libult/create_command_stream.h"
-#include "gtest/gtest.h"
-#include "gmock/gmock.h"
+#include "unit_tests/mocks/mock_async_event_handler.h"
+#include "unit_tests/mocks/mock_builtins.h"
+#include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/mocks/mock_source_level_debugger.h"
 
-using namespace OCLRT;
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 struct PlatformTest : public ::testing::Test {
     void SetUp() override { pPlatform.reset(new Platform()); }
     cl_int retVal = CL_SUCCESS;
     std::unique_ptr<Platform> pPlatform;
+};
+
+struct MockPlatformWithMockExecutionEnvironment : public Platform {
+    MockExecutionEnvironment *mockExecutionEnvironment = nullptr;
+
+    MockPlatformWithMockExecutionEnvironment() {
+        this->executionEnvironment->decRefInternal();
+        mockExecutionEnvironment = new MockExecutionEnvironment(nullptr, false);
+        executionEnvironment = mockExecutionEnvironment;
+        MockAubCenterFixture::setMockAubCenter(executionEnvironment);
+        executionEnvironment->incRefInternal();
+    }
 };
 
 TEST_F(PlatformTest, getDevices) {
@@ -81,6 +86,82 @@ TEST_F(PlatformTest, hasAsyncEventsHandler) {
     EXPECT_NE(nullptr, pPlatform->getAsyncEventsHandler());
 }
 
+TEST_F(PlatformTest, givenMidThreadPreemptionWhenInitializingPlatformThenCallGetSipKernel) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.ForcePreemptionMode.set(static_cast<int32_t>(PreemptionMode::MidThread));
+
+    auto builtIns = new MockBuiltins();
+    pPlatform->peekExecutionEnvironment()->builtins.reset(builtIns);
+
+    ASSERT_FALSE(builtIns->getSipKernelCalled);
+    pPlatform->initialize();
+    EXPECT_TRUE(builtIns->getSipKernelCalled);
+    EXPECT_EQ(SipKernelType::Csr, builtIns->getSipKernelType);
+}
+
+TEST_F(PlatformTest, givenDisabledPreemptionAndNoSourceLevelDebuggerWhenInitializingPlatformThenDoNotCallGetSipKernel) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.ForcePreemptionMode.set(static_cast<int32_t>(PreemptionMode::Disabled));
+
+    auto builtIns = new MockBuiltins();
+    pPlatform->peekExecutionEnvironment()->builtins.reset(builtIns);
+
+    ASSERT_FALSE(builtIns->getSipKernelCalled);
+    pPlatform->initialize();
+    EXPECT_FALSE(builtIns->getSipKernelCalled);
+    EXPECT_EQ(SipKernelType::COUNT, builtIns->getSipKernelType);
+}
+
+TEST_F(PlatformTest, givenDisabledPreemptionInactiveSourceLevelDebuggerWhenInitializingPlatformThenDoNotCallGetSipKernel) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.ForcePreemptionMode.set(static_cast<int32_t>(PreemptionMode::Disabled));
+
+    auto builtIns = new MockBuiltins();
+    pPlatform->peekExecutionEnvironment()->builtins.reset(builtIns);
+    auto sourceLevelDebugger = new MockSourceLevelDebugger();
+    sourceLevelDebugger->setActive(false);
+    pPlatform->peekExecutionEnvironment()->sourceLevelDebugger.reset(sourceLevelDebugger);
+
+    ASSERT_FALSE(builtIns->getSipKernelCalled);
+    pPlatform->initialize();
+    EXPECT_FALSE(builtIns->getSipKernelCalled);
+    EXPECT_EQ(SipKernelType::COUNT, builtIns->getSipKernelType);
+}
+
+TEST_F(PlatformTest, givenDisabledPreemptionActiveSourceLevelDebuggerWhenInitializingPlatformThenCallGetSipKernel) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.ForcePreemptionMode.set(static_cast<int32_t>(PreemptionMode::Disabled));
+
+    auto builtIns = new MockBuiltins();
+    pPlatform->peekExecutionEnvironment()->builtins.reset(builtIns);
+    pPlatform->peekExecutionEnvironment()->sourceLevelDebugger.reset(new MockActiveSourceLevelDebugger());
+
+    ASSERT_FALSE(builtIns->getSipKernelCalled);
+    pPlatform->initialize();
+    EXPECT_TRUE(builtIns->getSipKernelCalled);
+    EXPECT_LE(SipKernelType::DbgCsr, builtIns->getSipKernelType);
+    EXPECT_GE(SipKernelType::DbgCsrLocal, builtIns->getSipKernelType);
+}
+
+TEST(PlatformTestSimple, givenCsrHwTypeWhenPlatformIsInitializedThenInitAubCenterIsNotCalled) {
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.SetCommandStreamReceiver.set(0);
+    MockPlatformWithMockExecutionEnvironment platform;
+    bool ret = platform.initialize();
+    EXPECT_TRUE(ret);
+    EXPECT_FALSE(platform.mockExecutionEnvironment->initAubCenterCalled);
+}
+
+TEST(PlatformTestSimple, givenNotCsrHwTypeWhenPlatformIsInitializedThenInitAubCenterIsCalled) {
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.SetCommandStreamReceiver.set(1);
+    VariableBackup<bool> backup(&overrideCommandStreamReceiverCreation, true);
+    MockPlatformWithMockExecutionEnvironment platform;
+    bool ret = platform.initialize();
+    EXPECT_TRUE(ret);
+    EXPECT_TRUE(platform.mockExecutionEnvironment->initAubCenterCalled);
+}
+
 TEST(PlatformTestSimple, shutdownClosesAsyncEventHandlerThread) {
     Platform *platform = new Platform;
 
@@ -94,11 +175,11 @@ TEST(PlatformTestSimple, shutdownClosesAsyncEventHandlerThread) {
     EXPECT_TRUE(MockAsyncEventHandlerGlobals::destructorCalled);
 }
 
-namespace OCLRT {
+namespace NEO {
 extern CommandStreamReceiverCreateFunc commandStreamReceiverFactory[2 * IGFX_MAX_CORE];
 }
 
-CommandStreamReceiver *createMockCommandStreamReceiver(const HardwareInfo &hwInfoIn, bool withAubDump) {
+CommandStreamReceiver *createMockCommandStreamReceiver(bool withAubDump, ExecutionEnvironment &executionEnvironment) {
     return nullptr;
 };
 
@@ -109,7 +190,6 @@ class PlatformFailingTest : public PlatformTest {
         hwInfo = platformDevices[0];
         commandStreamReceiverCreateFunc = commandStreamReceiverFactory[hwInfo->pPlatform->eRenderCoreFamily];
         commandStreamReceiverFactory[hwInfo->pPlatform->eRenderCoreFamily] = createMockCommandStreamReceiver;
-        overrideCommandStreamReceiverCreation = true;
     }
 
     void TearDown() override {
@@ -117,6 +197,7 @@ class PlatformFailingTest : public PlatformTest {
         PlatformTest::TearDown();
     }
 
+    VariableBackup<bool> backup{&overrideCommandStreamReceiverCreation, true};
     CommandStreamReceiverCreateFunc commandStreamReceiverCreateFunc;
     const HardwareInfo *hwInfo;
 };
@@ -141,6 +222,10 @@ TEST_F(PlatformTest, givenSupportingCl21WhenPlatformSupportsFp64ThenFillMatching
     if (hwInfo->capabilityTable.clVersionSupport > 20) {
         EXPECT_THAT(compilerExtensions, ::testing::HasSubstr(std::string("cl_khr_subgroups")));
         EXPECT_THAT(compilerExtensions, ::testing::HasSubstr(std::string("cl_khr_il_program")));
+        EXPECT_THAT(compilerExtensions, ::testing::HasSubstr(std::string("cl_intel_spirv_device_side_avc_motion_estimation")));
+        EXPECT_THAT(compilerExtensions, ::testing::HasSubstr(std::string("cl_intel_spirv_media_block_io")));
+        EXPECT_THAT(compilerExtensions, ::testing::HasSubstr(std::string("cl_intel_spirv_subgroups")));
+        EXPECT_THAT(compilerExtensions, ::testing::HasSubstr(std::string("cl_khr_spirv_no_integer_wrap_decoration")));
     }
 
     if (hwInfo->capabilityTable.ftrSupportsFP64) {
@@ -181,16 +266,17 @@ TEST_F(PlatformTest, testRemoveLastSpace) {
     EXPECT_EQ(std::string("x"), xSpaceString);
 }
 TEST(PlatformConstructionTest, givenPlatformConstructorWhenItIsCalledTwiceThenTheSamePlatformIsReturned) {
+    platformImpl.reset();
     ASSERT_EQ(nullptr, platformImpl);
     auto platform = constructPlatform();
     EXPECT_EQ(platform, platformImpl.get());
     auto platform2 = constructPlatform();
     EXPECT_EQ(platform2, platform);
     EXPECT_NE(platform, nullptr);
-    platformImpl.reset(nullptr);
 }
 
 TEST(PlatformConstructionTest, givenPlatformConstructorWhenItIsCalledAfterResetThenNewPlatformIsConstructed) {
+    platformImpl.reset();
     ASSERT_EQ(nullptr, platformImpl);
     auto platform = constructPlatform();
     std::unique_ptr<Platform> temporaryOwnership(std::move(platformImpl));
@@ -206,4 +292,29 @@ TEST(PlatformConstructionTest, givenPlatformThatIsNotInitializedWhenGetDevicesIs
     Platform platform;
     auto devices = platform.getDevices();
     EXPECT_EQ(nullptr, devices);
+}
+
+TEST(PlatformInitLoopTests, givenPlatformWhenInitLoopHelperIsCalledThenItDoesNothing) {
+    struct mockPlatform : public Platform {
+        using Platform::initializationLoopHelper;
+    };
+    mockPlatform platform;
+    platform.initializationLoopHelper();
+}
+
+TEST(PlatformInitLoopTests, givenPlatformWithDebugSettingWhenInitIsCalledThenItEntersEndlessLoop) {
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.LoopAtPlatformInitialize.set(true);
+    bool called = false;
+    struct mockPlatform : public Platform {
+        mockPlatform(bool &called) : called(called){};
+        void initializationLoopHelper() override {
+            DebugManager.flags.LoopAtPlatformInitialize.set(false);
+            called = true;
+        }
+        bool &called;
+    };
+    mockPlatform platform(called);
+    platform.initialize();
+    EXPECT_TRUE(called);
 }

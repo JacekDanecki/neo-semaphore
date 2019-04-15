@@ -1,32 +1,101 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#ifdef TESTS_GEN8
-#include "unit_tests/gen8/gen_cmd_parse.h"
-#endif
-#ifdef TESTS_GEN9
-#include "unit_tests/gen9/gen_cmd_parse.h"
-#endif
-#ifdef TESTS_GEN10
-#include "unit_tests/gen10/gen_cmd_parse.h"
-#endif
+#include "runtime/gen_common/hw_cmds.h"
+
+#include <list>
+#include <vector>
+
+typedef std::list<void *> GenCmdList;
+
+template <typename Type>
+Type genCmdCast(void *cmd);
+
+template <typename Type>
+static inline GenCmdList::iterator find(GenCmdList::iterator itorStart, GenCmdList::const_iterator itorEnd) {
+    GenCmdList::iterator itor = itorStart;
+    while (itor != itorEnd) {
+        if (genCmdCast<Type>(*itor))
+            break;
+        ++itor;
+    }
+    return itor;
+}
+
+template <typename CommandToFind>
+static inline std::vector<GenCmdList::iterator> findAll(GenCmdList::iterator commandListStart, GenCmdList::const_iterator commandListEnd) {
+    std::vector<GenCmdList::iterator> matchedCommands;
+    GenCmdList::iterator currentCommand = commandListStart;
+    while (currentCommand != commandListEnd) {
+        if (genCmdCast<CommandToFind>(*currentCommand)) {
+            matchedCommands.push_back(currentCommand);
+        }
+        ++currentCommand;
+    }
+    return matchedCommands;
+}
+
+template <typename FamilyType>
+static inline GenCmdList::iterator findMmio(GenCmdList::iterator itorStart, GenCmdList::const_iterator itorEnd, uint32_t regOffset) {
+    GenCmdList::iterator itor = itorStart;
+    while (itor != itorEnd) {
+        auto cmd = genCmdCast<typename FamilyType::MI_LOAD_REGISTER_IMM *>(*itor);
+        if (cmd && cmd->getRegisterOffset() == regOffset)
+            break;
+        ++itor;
+    }
+    return itor;
+}
+
+template <typename FamilyType>
+static inline size_t countMmio(GenCmdList::iterator itorStart, GenCmdList::const_iterator itorEnd, uint32_t regOffset) {
+    size_t count = 0;
+    GenCmdList::iterator itor = itorStart;
+    while (itor != itorEnd) {
+        auto cmd = genCmdCast<typename FamilyType::MI_LOAD_REGISTER_IMM *>(*itor);
+        if (cmd && cmd->getRegisterOffset() == regOffset) {
+            ++count;
+        }
+        ++itor;
+    }
+    return count;
+}
+
+template <typename FamilyType>
+static inline typename FamilyType::MI_LOAD_REGISTER_IMM *findMmioCmd(GenCmdList::iterator itorStart, GenCmdList::const_iterator itorEnd, uint32_t regOffset) {
+    auto itor = findMmio<FamilyType>(itorStart, itorEnd, regOffset);
+    if (itor == itorEnd) {
+        return nullptr;
+    }
+    return reinterpret_cast<typename FamilyType::MI_LOAD_REGISTER_IMM *>(*itor);
+}
+
+template <typename Type>
+static inline GenCmdList::reverse_iterator reverse_find(GenCmdList::reverse_iterator itorStart, GenCmdList::const_reverse_iterator itorEnd) {
+    GenCmdList::reverse_iterator itor = itorStart;
+    while (itor != itorEnd) {
+        if (genCmdCast<Type>(*itor))
+            break;
+        ++itor;
+    }
+    return itor;
+}
+
+template <class T>
+struct CmdParse : public T {
+    static size_t getCommandLength(void *cmd);
+    static size_t getCommandLengthHwSpecific(void *cmd);
+
+    static bool parseCommandBuffer(GenCmdList &_cmds, void *_buffer, size_t _length);
+
+    template <typename CmdType>
+    static void validateCommand(GenCmdList::iterator itorBegin, GenCmdList::iterator itorEnd);
+
+    static const char *getCommandName(void *cmd);
+    static const char *getCommandNameHwSpecific(void *cmd);
+};

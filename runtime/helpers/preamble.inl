@@ -1,36 +1,23 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/preamble.h"
 #include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
+#include "runtime/device/device.h"
+#include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/preamble.h"
+#include "runtime/kernel/kernel.h"
+
 #include "hw_cmds.h"
 #include "reg_configs_common.h"
-#include "runtime/device/device.h"
-#include "runtime/kernel/kernel.h"
-#include "runtime/helpers/aligned_memory.h"
+
 #include <cstddef>
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
 void PreambleHelper<GfxFamily>::programThreadArbitration(LinearStream *pCommandStream, uint32_t requiredThreadArbitrationPolicy) {
@@ -52,7 +39,8 @@ void PreambleHelper<GfxFamily>::programGenSpecificPreambleWorkArounds(LinearStre
 
 template <typename GfxFamily>
 size_t PreambleHelper<GfxFamily>::getAdditionalCommandsSize(const Device &device) {
-    size_t totalSize = getKernelDebuggingCommandsSize(device.isSourceLevelDebuggerActive());
+    size_t totalSize = PreemptionHelper::getRequiredPreambleSize<GfxFamily>(device);
+    totalSize += getKernelDebuggingCommandsSize(device.isSourceLevelDebuggerActive());
     return totalSize;
 }
 
@@ -63,7 +51,7 @@ void PreambleHelper<GfxFamily>::programVFEState(LinearStream *pCommandStream, co
     addPipeControlBeforeVfeCmd(pCommandStream, &hwInfo);
 
     auto pMediaVfeState = (MEDIA_VFE_STATE *)pCommandStream->getSpace(sizeof(MEDIA_VFE_STATE));
-    *pMediaVfeState = MEDIA_VFE_STATE::sInit();
+    *pMediaVfeState = GfxFamily::cmdInitMediaVfeState;
     pMediaVfeState->setMaximumNumberOfThreads(PreambleHelper<GfxFamily>::getMaxThreadsForVfe(hwInfo));
     pMediaVfeState->setNumberOfUrbEntries(1);
     pMediaVfeState->setUrbEntryAllocationSize(PreambleHelper<GfxFamily>::getUrbEntryAllocationSize());
@@ -78,7 +66,7 @@ void PreambleHelper<GfxFamily>::programVFEState(LinearStream *pCommandStream, co
 template <typename GfxFamily>
 void PreambleHelper<GfxFamily>::programL3(LinearStream *pCommandStream, uint32_t l3Config) {
     auto pCmd = (MI_LOAD_REGISTER_IMM *)pCommandStream->getSpace(sizeof(MI_LOAD_REGISTER_IMM));
-    *pCmd = MI_LOAD_REGISTER_IMM::sInit();
+    *pCmd = GfxFamily::cmdInitLoadRegisterImm;
 
     pCmd->setRegisterOffset(L3CNTLRegisterOffset<GfxFamily>::registerOffset);
     pCmd->setDataDword(l3Config);
@@ -98,7 +86,7 @@ void PreambleHelper<GfxFamily>::programPreamble(LinearStream *pCommandStream, De
 
 template <typename GfxFamily>
 void PreambleHelper<GfxFamily>::programPreemption(LinearStream *pCommandStream, Device &device, GraphicsAllocation *preemptionCsr) {
-    PreemptionHelper::programPreamble<GfxFamily>(*pCommandStream, device, preemptionCsr);
+    PreemptionHelper::programCsrBaseAddress<GfxFamily>(*pCommandStream, device, preemptionCsr);
 }
 
 template <typename GfxFamily>
@@ -109,12 +97,12 @@ uint32_t PreambleHelper<GfxFamily>::getUrbEntryAllocationSize() {
 template <typename GfxFamily>
 void PreambleHelper<GfxFamily>::programKernelDebugging(LinearStream *pCommandStream) {
     auto pCmd = reinterpret_cast<MI_LOAD_REGISTER_IMM *>(pCommandStream->getSpace(sizeof(MI_LOAD_REGISTER_IMM)));
-    *pCmd = MI_LOAD_REGISTER_IMM::sInit();
+    *pCmd = GfxFamily::cmdInitLoadRegisterImm;
     pCmd->setRegisterOffset(DebugModeRegisterOffset::registerOffset);
     pCmd->setDataDword(DebugModeRegisterOffset::debugEnabledValue);
 
     auto pCmd2 = reinterpret_cast<MI_LOAD_REGISTER_IMM *>(pCommandStream->getSpace(sizeof(MI_LOAD_REGISTER_IMM)));
-    *pCmd2 = MI_LOAD_REGISTER_IMM::sInit();
+    *pCmd2 = GfxFamily::cmdInitLoadRegisterImm;
     pCmd2->setRegisterOffset(TdDebugControlRegisterOffset::registerOffset);
     pCmd2->setDataDword(TdDebugControlRegisterOffset::debugEnabledValue);
 }
@@ -133,4 +121,4 @@ uint32_t PreambleHelper<GfxFamily>::getMaxThreadsForVfe(const HardwareInfo &hwIn
     return hwInfo.pSysInfo->EUCount * threadsPerEU;
 }
 
-} // namespace OCLRT
+} // namespace NEO

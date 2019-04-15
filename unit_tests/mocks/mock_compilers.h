@@ -1,28 +1,14 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
 #include "runtime/compiler_interface/compiler_interface.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "unit_tests/mocks/mock_cif.h"
 
 #include "ocl_igc_interface/fcl_ocl_device_ctx.h"
@@ -32,7 +18,7 @@
 #include <map>
 #include <string>
 
-namespace OCLRT {
+namespace NEO {
 
 struct MockCompilerDebugVars {
     bool forceBuildFailure = false;
@@ -42,6 +28,8 @@ struct MockCompilerDebugVars {
     bool appendOptionsToFileName = true;
     void *debugDataToReturn = nullptr;
     size_t debugDataToReturnSize = 0;
+    void *binaryToReturn = nullptr;
+    size_t binaryToReturnSize = 0;
     bool failCreatePlatformInterface = false;
     bool failCreateGtSystemInfoInterface = false;
     bool failCreateIgcFeWaInterface = false;
@@ -139,6 +127,15 @@ struct MockIgcOclTranslationCtx : MockCIF<IGC::IgcOclTranslationCtxTagOCL> {
         CIF::Builtins::BufferSimple *internalOptions,
         CIF::Builtins::BufferSimple *tracingOptions,
         uint32_t tracingOptionsCount) override;
+
+    IGC::OclTranslationOutputBase *TranslateImpl(
+        CIF::Version_t outVersion,
+        CIF::Builtins::BufferSimple *src,
+        CIF::Builtins::BufferSimple *options,
+        CIF::Builtins::BufferSimple *internalOptions,
+        CIF::Builtins::BufferSimple *tracingOptions,
+        uint32_t tracingOptionsCount,
+        void *gtpinInput) override;
 };
 
 struct MockOclTranslationOutput : MockCIF<IGC::OclTranslationOutputTagOCL> {
@@ -204,6 +201,9 @@ struct MockIgcOclDeviceCtx : MockCIF<IGC::IgcOclDeviceCtxTagOCL> {
     MockGTSystemInfo *gtSystemInfo = nullptr;
     MockIgcFeaturesAndWorkarounds *igcFeWa = nullptr;
     MockCompilerDebugVars debugVars;
+
+    using TranslationOpT = std::pair<IGC::CodeType::CodeType_t, IGC::CodeType::CodeType_t>;
+    std::vector<TranslationOpT> requestedTranslationCtxs;
 };
 
 struct MockFclOclTranslationCtx : MockCIF<IGC::FclOclTranslationCtxTagOCL> {
@@ -237,10 +237,6 @@ struct MockFclOclDeviceCtx : MockCIF<IGC::FclOclDeviceCtxTagOCL> {
 
 class MockCompilerInterface : public CompilerInterface {
   public:
-    ~MockCompilerInterface() {
-        CompilerInterface::pInstance = originalGlobalCompilerInterface;
-    }
-
     bool isCompilerAvailable() const {
         return CompilerInterface::isCompilerAvailable();
     }
@@ -305,6 +301,7 @@ class MockCompilerInterface : public CompilerInterface {
     CIF::RAII::UPtr_t<IGC::FclOclTranslationCtxTagOCL> createFclTranslationCtx(const Device &device,
                                                                                IGC::CodeType::CodeType_t inType,
                                                                                IGC::CodeType::CodeType_t outType) override {
+        requestedTranslationCtxs.emplace_back(inType, outType);
         if (failCreateFclTranslationCtx) {
             return nullptr;
         }
@@ -315,6 +312,7 @@ class MockCompilerInterface : public CompilerInterface {
     CIF::RAII::UPtr_t<IGC::IgcOclTranslationCtxTagOCL> createIgcTranslationCtx(const Device &device,
                                                                                IGC::CodeType::CodeType_t inType,
                                                                                IGC::CodeType::CodeType_t outType) override {
+        requestedTranslationCtxs.emplace_back(inType, outType);
         if (failCreateIgcTranslationCtx) {
             return nullptr;
         }
@@ -324,11 +322,6 @@ class MockCompilerInterface : public CompilerInterface {
 
     IGC::FclOclTranslationCtxTagOCL *getFclBaseTranslationCtx() {
         return this->fclBaseTranslationCtx.get();
-    }
-
-    void overrideGlobalCompilerInterface() {
-        originalGlobalCompilerInterface = CompilerInterface::pInstance;
-        CompilerInterface::pInstance = this;
     }
 
     cl_int getSipKernelBinary(SipKernelType type, const Device &device, std::vector<char> &retBinary) override {
@@ -343,12 +336,13 @@ class MockCompilerInterface : public CompilerInterface {
 
     static std::vector<char> getDummyGenBinary();
 
-    CompilerInterface *originalGlobalCompilerInterface = nullptr;
-
     void (*lockListener)(MockCompilerInterface &compInt) = nullptr;
     void *lockListenerData = nullptr;
     bool failCreateFclTranslationCtx = false;
     bool failCreateIgcTranslationCtx = false;
+
+    using TranslationOpT = std::pair<IGC::CodeType::CodeType_t, IGC::CodeType::CodeType_t>;
+    std::vector<TranslationOpT> requestedTranslationCtxs;
 
     std::vector<char> sipKernelBinaryOverride;
     SipKernelType requestedSipKernel = SipKernelType::COUNT;
@@ -366,4 +360,4 @@ template <>
 inline std::map<const Device *, MockCompilerInterface::fclDevCtxUptr> &MockCompilerInterface::getDeviceContexts<IGC::FclOclDeviceCtxTagOCL>() {
     return getFclDeviceContexts();
 }
-} // namespace OCLRT
+} // namespace NEO

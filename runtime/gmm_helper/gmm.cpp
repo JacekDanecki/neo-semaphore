@@ -1,41 +1,28 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #include "runtime/gmm_helper/gmm.h"
+
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/debug_helpers.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/surface_formats.h"
 
-namespace OCLRT {
-Gmm::Gmm(const void *alignedPtr, size_t alignedSize, bool uncacheable) : Gmm(alignedPtr, alignedSize, uncacheable, false) {}
+namespace NEO {
+Gmm::Gmm(const void *alignedPtr, size_t alignedSize, bool uncacheable) : Gmm(alignedPtr, alignedSize, uncacheable, false, true, {}) {}
 
-Gmm::Gmm(const void *alignedPtr, size_t alignedSize, bool uncacheable, bool preferRenderCompressed) {
+Gmm::Gmm(const void *alignedPtr, size_t alignedSize, bool uncacheable, bool preferRenderCompressed, bool systemMemoryPool, StorageInfo storageInfo) {
     resourceParams.Type = RESOURCE_BUFFER;
     resourceParams.Format = GMM_FORMAT_GENERIC_8BIT;
-    resourceParams.BaseWidth = static_cast<uint32_t>(alignedSize);
+    resourceParams.BaseWidth64 = static_cast<uint64_t>(alignedSize);
     resourceParams.BaseHeight = 1;
     resourceParams.Depth = 1;
     if (!uncacheable) {
@@ -51,13 +38,16 @@ Gmm::Gmm(const void *alignedPtr, size_t alignedSize, bool uncacheable, bool pref
         resourceParams.Flags.Info.ExistingSysMem = 1;
         resourceParams.pExistingSysMem = reinterpret_cast<GMM_VOIDPTR64>(alignedPtr);
         resourceParams.ExistingSysMemSize = alignedSize;
+    } else {
+        resourceParams.NoGfxMemory = 1u;
     }
 
-    if (resourceParams.BaseWidth >= GmmHelper::maxPossiblePitch) {
+    if (resourceParams.BaseWidth64 >= GmmHelper::maxPossiblePitch) {
         resourceParams.Flags.Gpu.NoRestriction = 1;
     }
 
     applyAuxFlagsForBuffer(preferRenderCompressed);
+    applyMemoryFlags(systemMemoryPool, storageInfo);
 
     gmmResourceInfo.reset(GmmResourceInfo::create(&resourceParams));
 }
@@ -67,12 +57,16 @@ Gmm::Gmm(GMM_RESOURCE_INFO *inputGmm) {
 }
 
 Gmm::Gmm(ImageInfo &inputOutputImgInfo) {
+    this->resourceParams = {};
+    setupImageResourceParams(inputOutputImgInfo);
+    this->gmmResourceInfo.reset(GmmResourceInfo::create(&this->resourceParams));
+    UNRECOVERABLE_IF(this->gmmResourceInfo == nullptr);
+
     queryImageParams(inputOutputImgInfo);
 }
 
-void Gmm::queryImageParams(ImageInfo &imgInfo) {
-    this->resourceParams = {};
-    uint32_t imageWidth = static_cast<uint32_t>(imgInfo.imgDesc->image_width);
+void Gmm::setupImageResourceParams(ImageInfo &imgInfo) {
+    uint64_t imageWidth = static_cast<uint64_t>(imgInfo.imgDesc->image_width);
     uint32_t imageHeight = 1;
     uint32_t imageDepth = 1;
     uint32_t imageCount = 1;
@@ -81,15 +75,15 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
     case CL_MEM_OBJECT_IMAGE1D:
     case CL_MEM_OBJECT_IMAGE1D_ARRAY:
     case CL_MEM_OBJECT_IMAGE1D_BUFFER:
-        this->resourceParams.Type = GMM_RESOURCE_TYPE::RESOURCE_1D;
+        resourceParams.Type = GMM_RESOURCE_TYPE::RESOURCE_1D;
         break;
     case CL_MEM_OBJECT_IMAGE2D:
     case CL_MEM_OBJECT_IMAGE2D_ARRAY:
-        this->resourceParams.Type = GMM_RESOURCE_TYPE::RESOURCE_2D;
+        resourceParams.Type = GMM_RESOURCE_TYPE::RESOURCE_2D;
         imageHeight = static_cast<uint32_t>(imgInfo.imgDesc->image_height);
         break;
     case CL_MEM_OBJECT_IMAGE3D:
-        this->resourceParams.Type = GMM_RESOURCE_TYPE::RESOURCE_3D;
+        resourceParams.Type = GMM_RESOURCE_TYPE::RESOURCE_3D;
         imageHeight = static_cast<uint32_t>(imgInfo.imgDesc->image_height);
         imageDepth = static_cast<uint32_t>(imgInfo.imgDesc->image_depth);
         break;
@@ -102,31 +96,50 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
         imageCount = static_cast<uint32_t>(imgInfo.imgDesc->image_array_size);
     }
 
-    this->resourceParams.Flags.Info.Linear = 1;
-    if (GmmHelper::allowTiling(*imgInfo.imgDesc)) {
-        this->resourceParams.Flags.Info.TiledY = 1;
+    resourceParams.Flags.Info.Linear = 1;
+
+    switch (imgInfo.tilingMode) {
+    case TilingMode::DEFAULT:
+        if (GmmHelper::allowTiling(*imgInfo.imgDesc)) {
+            resourceParams.Flags.Info.TiledY = 1;
+        }
+        break;
+    case TilingMode::TILE_Y:
+        resourceParams.Flags.Info.TiledY = 1;
+        break;
+    case TilingMode::NON_TILED:
+        break;
+    default:
+        UNRECOVERABLE_IF(true);
+        break;
     }
 
-    this->resourceParams.NoGfxMemory = 1; // dont allocate, only query for params
+    resourceParams.NoGfxMemory = 1; // dont allocate, only query for params
 
-    this->resourceParams.Usage = GMM_RESOURCE_USAGE_TYPE::GMM_RESOURCE_USAGE_OCL_IMAGE;
-    this->resourceParams.Format = imgInfo.surfaceFormat->GMMSurfaceFormat;
-    this->resourceParams.Flags.Gpu.Texture = 1;
-    this->resourceParams.BaseWidth = imageWidth;
-    this->resourceParams.BaseHeight = imageHeight;
-    this->resourceParams.Depth = imageDepth;
-    this->resourceParams.ArraySize = imageCount;
-    this->resourceParams.Flags.Wa.__ForceOtherHVALIGN4 = 1;
-    this->resourceParams.MaxLod = imgInfo.baseMipLevel + imgInfo.mipCount;
+    resourceParams.Usage = GMM_RESOURCE_USAGE_TYPE::GMM_RESOURCE_USAGE_OCL_IMAGE;
+    resourceParams.Format = imgInfo.surfaceFormat->GMMSurfaceFormat;
+    resourceParams.Flags.Gpu.Texture = 1;
+    resourceParams.BaseWidth64 = imageWidth;
+    resourceParams.BaseHeight = imageHeight;
+    resourceParams.Depth = imageDepth;
+    resourceParams.ArraySize = imageCount;
+    resourceParams.Flags.Wa.__ForceOtherHVALIGN4 = 1;
+    resourceParams.MaxLod = imgInfo.baseMipLevel + imgInfo.mipCount;
     if (imgInfo.imgDesc->image_row_pitch && imgInfo.imgDesc->mem_object) {
-        this->resourceParams.OverridePitch = (uint32_t)imgInfo.imgDesc->image_row_pitch;
-        this->resourceParams.Flags.Info.AllowVirtualPadding = true;
+        resourceParams.OverridePitch = (uint32_t)imgInfo.imgDesc->image_row_pitch;
+        resourceParams.Flags.Info.AllowVirtualPadding = true;
     }
 
     applyAuxFlagsForImage(imgInfo);
+    auto &hwHelper = HwHelper::get(GmmHelper::getInstance()->getHardwareInfo()->pPlatform->eRenderCoreFamily);
+    if (!hwHelper.supportsYTiling() && resourceParams.Flags.Info.TiledY == 1) {
+        resourceParams.Flags.Info.Linear = 0;
+        resourceParams.Flags.Info.TiledY = 0;
+    }
+}
 
-    this->gmmResourceInfo.reset(GmmResourceInfo::create(&this->resourceParams));
-
+void Gmm::queryImageParams(ImageInfo &imgInfo) {
+    auto imageCount = this->gmmResourceInfo->getArraySize();
     imgInfo.size = this->gmmResourceInfo->getSizeAllocation();
 
     imgInfo.rowPitch = this->gmmResourceInfo->getRenderPitch();
@@ -173,6 +186,7 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
         reqOffsetInfo.ArrayIndex = 0;
         reqOffsetInfo.Plane = GMM_PLANE_U;
         this->gmmResourceInfo->getOffset(reqOffsetInfo);
+        UNRECOVERABLE_IF(reqOffsetInfo.Lock.Pitch == 0);
         imgInfo.yOffsetForUVPlane = reqOffsetInfo.Lock.Offset / reqOffsetInfo.Lock.Pitch;
     }
 
@@ -180,7 +194,7 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
 }
 
 uint32_t Gmm::queryQPitch(GMM_RESOURCE_TYPE resType) {
-    if (GmmHelper::hwInfo->pPlatform->eRenderCoreFamily == IGFX_GEN8_CORE && resType == GMM_RESOURCE_TYPE::RESOURCE_3D) {
+    if (GmmHelper::getInstance()->getHardwareInfo()->pPlatform->eRenderCoreFamily == IGFX_GEN8_CORE && resType == GMM_RESOURCE_TYPE::RESOURCE_3D) {
         return 0;
     }
     return gmmResourceInfo->getQPitch();
@@ -254,4 +268,14 @@ bool Gmm::unifiedAuxTranslationCapable() const {
     return gmmFlags->Gpu.CCS && gmmFlags->Gpu.UnifiedAuxSurface && gmmFlags->Info.RenderCompressed;
 }
 
-} // namespace OCLRT
+bool Gmm::hasMultisampleControlSurface() const {
+    return this->gmmResourceInfo->getResourceFlags()->Gpu.MCS;
+}
+
+uint32_t Gmm::getUnifiedAuxPitchTiles() {
+    return this->gmmResourceInfo->getRenderAuxPitchTiles();
+}
+uint32_t Gmm::getAuxQPitch() {
+    return this->gmmResourceInfo->getAuxQPitch();
+}
+} // namespace NEO

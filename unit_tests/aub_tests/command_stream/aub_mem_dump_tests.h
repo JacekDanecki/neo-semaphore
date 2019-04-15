@@ -1,49 +1,36 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
 #pragma once
 #include "runtime/aub_mem_dump/aub_mem_dump.h"
-#include "runtime/device/device.h"
 #include "runtime/command_stream/aub_command_stream_receiver_hw.h"
+#include "runtime/device/device.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/ptr_math.h"
-#include "aub_mapper.h"
 #include "test.h"
+
+#include "aub_mapper.h"
 
 namespace Os {
 extern const char *fileSeparator;
 }
 
-extern std::string getAubFileName(const OCLRT::Device *pDevice, const std::string baseName);
+extern std::string getAubFileName(const NEO::Device *pDevice, const std::string baseName);
 
 template <typename FamilyType>
-void setupAUB(const OCLRT::Device *pDevice, OCLRT::EngineType engineType) {
-    typedef typename OCLRT::AUBFamilyMapper<FamilyType>::AUB AUB;
-    const auto &csTraits = OCLRT::AUBCommandStreamReceiverHw<FamilyType>::getCsTraits(engineType);
+void setupAUB(const NEO::Device *pDevice, aub_stream::EngineType engineType) {
+    typedef typename NEO::AUBFamilyMapper<FamilyType>::AUB AUB;
+    const auto &csTraits = NEO::CommandStreamReceiverSimulatedCommonHw<FamilyType>::getCsTraits(engineType);
     auto mmioBase = csTraits.mmioBase;
     uint64_t physAddress = 0x10000;
 
-    OCLRT::AUBCommandStreamReceiver::AubFileStream aubFile;
-    std::string filePath(OCLRT::folderAUB);
+    NEO::AUBCommandStreamReceiver::AubFileStream aubFile;
+    std::string filePath(NEO::folderAUB);
     filePath.append(Os::fileSeparator);
     std::string baseName("simple");
     baseName.append(csTraits.name);
@@ -59,9 +46,16 @@ void setupAUB(const OCLRT::Device *pDevice, OCLRT::EngineType engineType) {
     aubFile.writeMMIO(mmioBase + 0x229c, 0xffff8280);
 
     const size_t sizeHWSP = 0x1000;
-    const size_t alignHWSP = 0x1000;
-    auto pGlobalHWStatusPage = alignedMalloc(sizeHWSP, alignHWSP);
+    const size_t sizeRing = 0x4 * 0x1000;
 
+    const size_t sizeTotal = alignUp((sizeHWSP + sizeRing + csTraits.sizeLRCA), 0x1000);
+    const size_t alignTotal = sizeTotal;
+
+    auto totalBuffer = alignedMalloc(sizeTotal, alignTotal);
+    size_t totalBufferOffset = 0;
+
+    auto pGlobalHWStatusPage = totalBuffer;
+    totalBufferOffset += sizeHWSP;
     uint32_t ggttGlobalHardwareStatusPage = (uint32_t)((uintptr_t)pGlobalHWStatusPage);
     AubGTTData data = {true, false};
     AUB::reserveAddressGGTT(aubFile, ggttGlobalHardwareStatusPage, sizeHWSP, physAddress, data);
@@ -69,10 +63,9 @@ void setupAUB(const OCLRT::Device *pDevice, OCLRT::EngineType engineType) {
 
     aubFile.writeMMIO(mmioBase + 0x2080, ggttGlobalHardwareStatusPage);
 
-    const size_t sizeRing = 0x4 * 0x1000;
-    const size_t alignRing = 0x1000;
     size_t sizeCommands = 0;
-    auto pRing = alignedMalloc(sizeRing, alignRing);
+    auto pRing = ptrOffset<void *>(totalBuffer, totalBufferOffset);
+    totalBufferOffset += sizeRing;
 
     auto ggttRing = (uint32_t)(uintptr_t)pRing;
     auto physRing = physAddress;
@@ -85,7 +78,7 @@ void setupAUB(const OCLRT::Device *pDevice, OCLRT::EngineType engineType) {
     auto cur = (uint32_t *)pRing;
 
     using MI_NOOP = typename FamilyType::MI_NOOP;
-    auto noop = MI_NOOP::sInit();
+    auto noop = FamilyType::cmdInitNoop;
     *cur++ = noop.TheStructure.RawData[0];
     *cur++ = noop.TheStructure.RawData[0];
     *cur++ = noop.TheStructure.RawData[0];
@@ -98,7 +91,8 @@ void setupAUB(const OCLRT::Device *pDevice, OCLRT::EngineType engineType) {
     AUB::addMemoryWrite(aubFile, physRing, pRing, sizeCommands, AubMemDump::AddressSpaceValues::TraceNonlocal, csTraits.aubHintCommandBuffer);
 
     auto sizeLRCA = csTraits.sizeLRCA;
-    auto pLRCABase = alignedMalloc(csTraits.sizeLRCA, csTraits.alignLRCA);
+    auto pLRCABase = ptrOffset<void *>(totalBuffer, totalBufferOffset);
+    totalBufferOffset += csTraits.sizeLRCA;
 
     csTraits.initialize(pLRCABase);
     csTraits.setRingHead(pLRCABase, 0x0000);
@@ -131,9 +125,7 @@ void setupAUB(const OCLRT::Device *pDevice, OCLRT::EngineType engineType) {
     aubFile.writeMMIO(mmioBase + 0x2230, contextDescriptor.ulData[1]);
     aubFile.writeMMIO(mmioBase + 0x2230, contextDescriptor.ulData[0]);
 
-    alignedFree(pRing);
-    alignedFree(pLRCABase);
-    alignedFree(pGlobalHWStatusPage);
+    alignedFree(totalBuffer);
 
     aubFile.fileHandle.close();
 }

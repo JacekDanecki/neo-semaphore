@@ -1,47 +1,33 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "CL/cl.h"
-#include "runtime/kernel/kernel.h"
-#include "runtime/mem_obj/pipe.h"
 #include "runtime/accelerators/intel_accelerator.h"
 #include "runtime/accelerators/intel_motion_estimation.h"
 #include "runtime/helpers/sampler_helpers.h"
+#include "runtime/kernel/kernel.h"
+#include "runtime/mem_obj/pipe.h"
 #include "runtime/memory_manager/svm_memory_manager.h"
+#include "test.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
-#include "test.h"
-#include "unit_tests/mocks/mock_sampler.h"
-#include "unit_tests/mocks/mock_pipe.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_device_queue.h"
 #include "unit_tests/mocks/mock_kernel.h"
+#include "unit_tests/mocks/mock_pipe.h"
 #include "unit_tests/mocks/mock_program.h"
+#include "unit_tests/mocks/mock_sampler.h"
+
+#include "CL/cl.h"
 #include "gtest/gtest.h"
 
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class CloneKernelFixture : public ContextFixture, public DeviceFixture {
     using ContextFixture::SetUp;
@@ -57,7 +43,7 @@ class CloneKernelFixture : public ContextFixture, public DeviceFixture {
         ContextFixture::SetUp(1, &device);
 
         // define kernel info
-        pKernelInfo = KernelInfo::create();
+        pKernelInfo = std::make_unique<KernelInfo>();
 
         // setup kernel arg offsets
         KernelArgPatchInfo kernelArgPatchInfo;
@@ -94,7 +80,7 @@ class CloneKernelFixture : public ContextFixture, public DeviceFixture {
         pKernelInfo->kernelArgInfo[0].offsetVmeSadAdjustMode = 0x14;
         pKernelInfo->kernelArgInfo[0].offsetVmeSearchPathType = 0x1c;
 
-        pProgram = new MockProgram(pContext, false);
+        pProgram = new MockProgram(*pDevice->getExecutionEnvironment(), pContext, false);
 
         pSourceKernel = new MockKernel(pProgram, *pKernelInfo, *pDevice);
         ASSERT_EQ(CL_SUCCESS, pSourceKernel->initialize());
@@ -108,9 +94,9 @@ class CloneKernelFixture : public ContextFixture, public DeviceFixture {
     }
 
     void TearDown() override {
-        delete pKernelInfo;
         delete pSourceKernel;
         delete pClonedKernel;
+
         delete pProgram;
         ContextFixture::TearDown();
         DeviceFixture::TearDown();
@@ -120,7 +106,7 @@ class CloneKernelFixture : public ContextFixture, public DeviceFixture {
     MockProgram *pProgram = nullptr;
     MockKernel *pSourceKernel = nullptr;
     MockKernel *pClonedKernel = nullptr;
-    KernelInfo *pKernelInfo = nullptr;
+    std::unique_ptr<KernelInfo> pKernelInfo;
     SKernelBinaryHeaderCommon kernelHeader;
     char surfaceStateHeap[128];
 };
@@ -435,7 +421,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, CloneKernelTest, cloneKernelWithArgDeviceQueue) {
 TEST_F(CloneKernelTest, cloneKernelWithArgSvm) {
     char *svmPtr = new char[256];
 
-    retVal = pSourceKernel->setArgSvm(0, 256, svmPtr);
+    retVal = pSourceKernel->setArgSvm(0, 256, svmPtr, nullptr, 0u);
     ASSERT_EQ(CL_SUCCESS, retVal);
 
     EXPECT_EQ(1u, pSourceKernel->getKernelArguments().size());
@@ -464,7 +450,7 @@ TEST_F(CloneKernelTest, cloneKernelWithArgSvm) {
 
 TEST_F(CloneKernelTest, cloneKernelWithArgSvmAlloc) {
     char *svmPtr = new char[256];
-    GraphicsAllocation svmAlloc(svmPtr, 256);
+    MockGraphicsAllocation svmAlloc(svmPtr, 256);
 
     retVal = pSourceKernel->setArgSvmAlloc(0, svmPtr, &svmAlloc);
     ASSERT_EQ(CL_SUCCESS, retVal);
@@ -523,10 +509,12 @@ TEST_F(CloneKernelTest, cloneKernelWithArgImmediate) {
 }
 
 TEST_F(CloneKernelTest, cloneKernelWithExecInfo) {
-    void *ptrSVM = pContext->getSVMAllocsManager()->createSVMAlloc(256);
+    void *ptrSVM = pContext->getSVMAllocsManager()->createSVMAlloc(256, 0);
     ASSERT_NE(nullptr, ptrSVM);
 
-    GraphicsAllocation *pSvmAlloc = pContext->getSVMAllocsManager()->getSVMAlloc(ptrSVM);
+    auto svmData = pContext->getSVMAllocsManager()->getSVMAlloc(ptrSVM);
+    ASSERT_NE(nullptr, svmData);
+    GraphicsAllocation *pSvmAlloc = svmData->gpuAllocation;
     ASSERT_NE(nullptr, pSvmAlloc);
 
     pSourceKernel->setKernelExecInfo(pSvmAlloc);
@@ -540,4 +528,10 @@ TEST_F(CloneKernelTest, cloneKernelWithExecInfo) {
     EXPECT_EQ(pSourceKernel->getKernelSvmGfxAllocations().at(0), pClonedKernel->getKernelSvmGfxAllocations().at(0));
 
     pContext->getSVMAllocsManager()->freeSVMAlloc(ptrSVM);
+}
+
+TEST_F(CloneKernelTest, givenBuiltinSourceKernelWhenCloningThenSetBuiltinFlagToClonedKernel) {
+    pSourceKernel->isBuiltIn = true;
+    pClonedKernel->cloneKernel(pSourceKernel);
+    EXPECT_TRUE(pClonedKernel->isBuiltIn);
 }

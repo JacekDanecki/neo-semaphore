@@ -1,33 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/api/dispatch.h"
+#include "runtime/helpers/array_count.h"
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/sharings/sharing.h"
+
 #include "DXGI1_2.h"
+
+#include <map>
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 namespace D3DTypesHelper {
 struct D3D9 {
     typedef IDirect3DDevice9 D3DDevice;
@@ -127,6 +116,8 @@ class D3DSharingFunctions : public SharingFunctions {
     MOCKABLE_VIRTUAL void getRenderTargetData(D3DTexture2d *renderTarget, D3DTexture2d *dstSurface);
     MOCKABLE_VIRTUAL void updateSurface(D3DTexture2d *src, D3DTexture2d *dst);
     MOCKABLE_VIRTUAL void updateDevice(D3DResource *resource);
+    MOCKABLE_VIRTUAL void checkFormatSupport(DXGI_FORMAT format, UINT *pFormat);
+    MOCKABLE_VIRTUAL bool memObjectFormatSupport(cl_mem_object_type object, UINT format);
 
     GetDxgiDescFcn getDxgiDescFcn = nullptr;
 
@@ -151,11 +142,41 @@ class D3DSharingFunctions : public SharingFunctions {
     void fillCreateTexture2dDesc(D3DTexture2dDesc &desc, D3DTexture2dDesc *srcDesc, cl_uint subresource);
     void fillCreateTexture3dDesc(D3DTexture3dDesc &desc, D3DTexture3dDesc *srcDesc, cl_uint subresource);
 
+    std::vector<DXGI_FORMAT> &retrieveTextureFormats(cl_mem_object_type imageType);
+
   protected:
     D3DDevice *d3dDevice = nullptr;
     ID3D11DeviceContext *d3d11DeviceContext = nullptr;
 
+    std::vector<DXGI_FORMAT> DXGINoFormats;
     std::vector<std::pair<D3DResource *, cl_uint>> trackedResources;
+    std::map<cl_mem_object_type, std::vector<DXGI_FORMAT>> textureFormatCache;
     static void getDxgiDesc(DXGI_ADAPTER_DESC *dxgiDesc, IDXGIAdapter *adapter, D3DDevice *device);
 };
-} // namespace OCLRT
+
+template <typename D3DSharing>
+static inline cl_int getSupportedDXTextureFormats(cl_context context, cl_mem_object_type imageType,
+                                                  cl_uint numEntries, DXGI_FORMAT *formats, cl_uint *numImageFormats) {
+    Context *pContext = castToObject<Context>(context);
+    if (!pContext) {
+        return CL_INVALID_CONTEXT;
+    }
+
+    auto pSharing = pContext->getSharing<D3DSharingFunctions<D3DSharing>>();
+    if (!pSharing) {
+        return CL_INVALID_CONTEXT;
+    }
+
+    auto supported_formats = pSharing->retrieveTextureFormats(imageType);
+
+    if (formats != nullptr) {
+        memcpy_s(formats, sizeof(DXGI_FORMAT) * numEntries, supported_formats.data(), std::min(static_cast<size_t>(numEntries), supported_formats.size()));
+    }
+
+    if (numImageFormats) {
+        *numImageFormats = static_cast<cl_uint>(supported_formats.size());
+    }
+    return CL_SUCCESS;
+}
+
+} // namespace NEO

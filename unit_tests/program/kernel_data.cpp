@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2018 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/string.h"
@@ -253,6 +238,8 @@ TEST_F(KernelDataTest, ThreadPayload) {
     threadPayload.LocalIDXPresent = true;
     threadPayload.LocalIDYPresent = true;
     threadPayload.LocalIDZPresent = true;
+    threadPayload.OffsetToSkipPerThreadDataLoad = true;
+    threadPayload.PassInlineData = true;
 
     pPatchList = &threadPayload;
     patchListSize = threadPayload.Size;
@@ -263,7 +250,7 @@ TEST_F(KernelDataTest, ThreadPayload) {
 }
 
 TEST_F(KernelDataTest, ExecutionEnvironmentNoReqdWorkGroupSize) {
-    iOpenCL::SPatchExecutionEnvironment executionEnvironment;
+    iOpenCL::SPatchExecutionEnvironment executionEnvironment = {};
     executionEnvironment.Token = PATCH_TOKEN_EXECUTION_ENVIRONMENT;
     executionEnvironment.Size = sizeof(SPatchExecutionEnvironment);
     executionEnvironment.RequiredWorkGroupSizeX = 0;
@@ -298,7 +285,7 @@ TEST_F(KernelDataTest, ExecutionEnvironmentNoReqdWorkGroupSize) {
 }
 
 TEST_F(KernelDataTest, ExecutionEnvironment) {
-    iOpenCL::SPatchExecutionEnvironment executionEnvironment;
+    iOpenCL::SPatchExecutionEnvironment executionEnvironment = {};
     executionEnvironment.Token = PATCH_TOKEN_EXECUTION_ENVIRONMENT;
     executionEnvironment.Size = sizeof(SPatchExecutionEnvironment);
     executionEnvironment.RequiredWorkGroupSizeX = 32;
@@ -334,7 +321,7 @@ TEST_F(KernelDataTest, ExecutionEnvironment) {
 }
 
 TEST_F(KernelDataTest, ExecutionEnvironmentCompiledForGreaterThan4GBBuffers) {
-    iOpenCL::SPatchExecutionEnvironment executionEnvironment;
+    iOpenCL::SPatchExecutionEnvironment executionEnvironment = {};
     executionEnvironment.Token = PATCH_TOKEN_EXECUTION_ENVIRONMENT;
     executionEnvironment.Size = sizeof(SPatchExecutionEnvironment);
     executionEnvironment.RequiredWorkGroupSizeX = 32;
@@ -378,7 +365,7 @@ TEST_F(KernelDataTest, ExecutionEnvironmentDoesntHaveDeviceEnqueue) {
     buildAndDecode();
 
     EXPECT_EQ_CONST(PATCH_TOKEN_EXECUTION_ENVIRONMENT, pKernelInfo->patchInfo.executionEnvironment->Token);
-    EXPECT_EQ_VAL(0u, program.getParentKernelInfoArray().size());
+    EXPECT_EQ_VAL(0u, program->getParentKernelInfoArray().size());
 }
 
 TEST_F(KernelDataTest, ExecutionEnvironmentHasDeviceEnqueue) {
@@ -393,7 +380,7 @@ TEST_F(KernelDataTest, ExecutionEnvironmentHasDeviceEnqueue) {
     buildAndDecode();
 
     EXPECT_EQ_CONST(PATCH_TOKEN_EXECUTION_ENVIRONMENT, pKernelInfo->patchInfo.executionEnvironment->Token);
-    EXPECT_EQ_VAL(1u, program.getParentKernelInfoArray().size());
+    EXPECT_EQ_VAL(1u, program->getParentKernelInfoArray().size());
 }
 
 TEST_F(KernelDataTest, ExecutionEnvironmentDoesntRequireSubgroupIndependentForwardProgress) {
@@ -408,7 +395,7 @@ TEST_F(KernelDataTest, ExecutionEnvironmentDoesntRequireSubgroupIndependentForwa
     buildAndDecode();
 
     EXPECT_EQ_CONST(PATCH_TOKEN_EXECUTION_ENVIRONMENT, pKernelInfo->patchInfo.executionEnvironment->Token);
-    EXPECT_EQ_VAL(0u, program.getSubgroupKernelInfoArray().size());
+    EXPECT_EQ_VAL(0u, program->getSubgroupKernelInfoArray().size());
 }
 
 TEST_F(KernelDataTest, ExecutionEnvironmentRequiresSubgroupIndependentForwardProgress) {
@@ -423,7 +410,7 @@ TEST_F(KernelDataTest, ExecutionEnvironmentRequiresSubgroupIndependentForwardPro
     buildAndDecode();
 
     EXPECT_EQ_CONST(PATCH_TOKEN_EXECUTION_ENVIRONMENT, pKernelInfo->patchInfo.executionEnvironment->Token);
-    EXPECT_EQ_VAL(1u, program.getSubgroupKernelInfoArray().size());
+    EXPECT_EQ_VAL(1u, program->getSubgroupKernelInfoArray().size());
 }
 
 TEST_F(KernelDataTest, KernelAttributesInfo) {
@@ -438,6 +425,22 @@ TEST_F(KernelDataTest, KernelAttributesInfo) {
     buildAndDecode();
 
     EXPECT_EQ_CONST(PATCH_TOKEN_KERNEL_ATTRIBUTES_INFO, pKernelInfo->patchInfo.pKernelAttributesInfo->Token);
+}
+
+TEST_F(KernelDataTest, WhenDecodingExecutionEnvironmentTokenThenWalkOrderIsForcedToXMajor) {
+    iOpenCL::SPatchExecutionEnvironment executionEnvironment = {};
+    executionEnvironment.Token = PATCH_TOKEN_EXECUTION_ENVIRONMENT;
+    executionEnvironment.Size = sizeof(SPatchExecutionEnvironment);
+
+    pPatchList = &executionEnvironment;
+    patchListSize = executionEnvironment.Size;
+
+    buildAndDecode();
+
+    std::array<uint8_t, 3> expectedWalkOrder = {{0, 1, 2}};
+    std::array<uint8_t, 3> expectedDimsIds = {{0, 1, 2}};
+    EXPECT_EQ(expectedWalkOrder, pKernelInfo->workgroupWalkOrder);
+    EXPECT_EQ(expectedDimsIds, pKernelInfo->workgroupDimensionsOrder);
 }
 
 // Test all the different data parameters with the same "made up" data

@@ -1,35 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/mem_obj/buffer.h"
+#include "test.h"
+#include "unit_tests/aub_tests/aub_tests_configuration.h"
 #include "unit_tests/aub_tests/command_queue/command_enqueue_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
-#include "unit_tests/aub_tests/aub_tests_configuration.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include <memory>
+
+using namespace NEO;
 
 struct ReadBufferHw
     : public CommandEnqueueAUBFixture,
@@ -53,39 +40,45 @@ HWTEST_P(AUBReadBuffer, simple) {
     cl_float srcMemory[] = {1.0f, 2.0f, 3.0f, 4.0f};
     cl_float destMemory[] = {0.0f, 0.0f, 0.0f, 0.0f};
     auto retVal = CL_INVALID_VALUE;
-    auto srcBuffer = Buffer::create(
+    auto srcBuffer = std::unique_ptr<Buffer>(Buffer::create(
         &context,
         CL_MEM_USE_HOST_PTR,
         sizeof(srcMemory),
         srcMemory,
-        retVal);
-    ASSERT_NE(nullptr, srcBuffer);
+        retVal));
+    ASSERT_NE(nullptr, srcBuffer.get());
 
     auto pSrcMemory = &srcMemory[0];
     auto pDestMemory = &destMemory[0];
 
-    cl_bool blockingRead = CL_TRUE;
+    cl_bool blockingRead = CL_FALSE;
     size_t offset = GetParam();
     size_t sizeWritten = sizeof(cl_float);
     cl_uint numEventsInWaitList = 0;
     cl_event *eventWaitList = nullptr;
     cl_event *event = nullptr;
 
-    GraphicsAllocation *allocation = pCommandStreamReceiver->createAllocationAndHandleResidency(pDestMemory, sizeof(destMemory));
+    GraphicsAllocation *allocation = createResidentAllocationAndStoreItInCsr(pDestMemory, sizeof(destMemory));
 
     srcBuffer->forceDisallowCPUCopy = true;
     retVal = pCmdQ->enqueueReadBuffer(
-        srcBuffer,
+        srcBuffer.get(),
         blockingRead,
         offset,
         sizeWritten,
         pDestMemory,
+        nullptr,
         numEventsInWaitList,
         eventWaitList,
         event);
 
-    delete srcBuffer;
+    EXPECT_EQ(CL_SUCCESS, retVal);
 
+    allocation = pCommandStreamReceiver->getTemporaryAllocations().peekHead();
+    while (allocation && allocation->getUnderlyingBuffer() != pDestMemory) {
+        allocation = allocation->next;
+    }
+    retVal = pCmdQ->flush();
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     pSrcMemory = ptrOffset(pSrcMemory, offset);
@@ -122,7 +115,13 @@ HWTEST_F(AUBReadBuffer, reserveCanonicalGpuAddress) {
 
     cl_float srcMemory[] = {1.0f, 2.0f, 3.0f, 4.0f};
     cl_float dstMemory[] = {0.0f, 0.0f, 0.0f, 0.0f};
-    GraphicsAllocation *srcAlocation = new GraphicsAllocation(srcMemory, 0xFFFF800400001000, 0xFFFF800400001000, sizeof(srcMemory));
+    GraphicsAllocation *srcAlocation = new GraphicsAllocation(GraphicsAllocation::AllocationType::UNKNOWN,
+                                                              srcMemory,
+                                                              0xFFFF800400001000,
+                                                              0xFFFF800400001000,
+                                                              sizeof(srcMemory),
+                                                              MemoryPool::MemoryNull,
+                                                              false);
 
     std::unique_ptr<Buffer> srcBuffer(Buffer::createBufferHw(&context,
                                                              CL_MEM_USE_HOST_PTR,
@@ -141,13 +140,78 @@ HWTEST_F(AUBReadBuffer, reserveCanonicalGpuAddress) {
                                            0,
                                            sizeof(dstMemory),
                                            dstMemory,
+                                           nullptr,
                                            0,
                                            nullptr,
                                            nullptr);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
-    GraphicsAllocation *dstAllocation = pCommandStreamReceiver->createAllocationAndHandleResidency(dstMemory, sizeof(dstMemory));
+    GraphicsAllocation *dstAllocation = createResidentAllocationAndStoreItInCsr(dstMemory, sizeof(dstMemory));
     cl_float *dstGpuAddress = reinterpret_cast<cl_float *>(dstAllocation->getGpuAddress());
 
     AUBCommandStreamFixture::expectMemory<FamilyType>(dstGpuAddress, srcMemory, sizeof(dstMemory));
+}
+
+struct AUBReadBufferUnaligned
+    : public CommandEnqueueAUBFixture,
+      public ::testing::Test {
+
+    void SetUp() override {
+        CommandEnqueueAUBFixture::SetUp();
+    }
+
+    void TearDown() override {
+        CommandEnqueueAUBFixture::TearDown();
+    }
+
+    template <typename FamilyType>
+    void testReadBufferUnaligned(size_t offset, size_t size) {
+        MockContext context(&pCmdQ->getDevice());
+
+        char srcMemory[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const auto bufferSize = sizeof(srcMemory);
+        char dstMemory[bufferSize] = {0};
+
+        auto retVal = CL_INVALID_VALUE;
+
+        auto buffer = std::unique_ptr<Buffer>(Buffer::create(
+            &context,
+            CL_MEM_USE_HOST_PTR,
+            bufferSize,
+            srcMemory,
+            retVal));
+        ASSERT_NE(nullptr, buffer);
+
+        buffer->forceDisallowCPUCopy = true;
+
+        // Map destination memory to GPU
+        GraphicsAllocation *allocation = createResidentAllocationAndStoreItInCsr(dstMemory, bufferSize);
+        auto dstMemoryGPUPtr = reinterpret_cast<char *>(allocation->getGpuAddress());
+
+        // Do unaligned read
+        retVal = pCmdQ->enqueueReadBuffer(
+            buffer.get(),
+            CL_TRUE,
+            offset,
+            size,
+            ptrOffset(dstMemory, offset),
+            nullptr,
+            0,
+            nullptr,
+            nullptr);
+        EXPECT_EQ(CL_SUCCESS, retVal);
+
+        // Check the memory
+        AUBCommandStreamFixture::expectMemory<FamilyType>(ptrOffset(dstMemoryGPUPtr, offset), ptrOffset(srcMemory, offset), size);
+    }
+};
+
+HWTEST_F(AUBReadBufferUnaligned, all) {
+    const std::vector<size_t> offsets = {0, 1, 2, 3};
+    const std::vector<size_t> sizes = {4, 3, 2, 1};
+    for (auto offset : offsets) {
+        for (auto size : sizes) {
+            testReadBufferUnaligned<FamilyType>(offset, size);
+        }
+    }
 }

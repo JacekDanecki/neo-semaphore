@@ -1,43 +1,30 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/helpers/ptr_math.h"
+#include "runtime/helpers/string.h"
+#include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/kernel/kernel.h"
 #include "runtime/sampler/sampler.h"
-#include "runtime/helpers/string.h"
+
+#include "hw_cmds.h"
+
 #include <cstdint>
 #include <cstring>
 #include <map>
-#include <unordered_map>
 #include <sstream>
+#include <unordered_map>
 
-namespace OCLRT {
+namespace NEO {
 
 const uint32_t WorkloadInfo::undefinedOffset = (uint32_t)-1;
 const uint32_t WorkloadInfo::invalidParentEvent = (uint32_t)-1;
@@ -207,10 +194,6 @@ void WorkSizeInfo::checkRatio(const size_t workItems[3]) {
         targetRatio = YTilingRatioValue;
         useStrictRatio = true;
     }
-}
-
-KernelInfo *KernelInfo::create() {
-    return new KernelInfo();
 }
 
 KernelInfo::~KernelInfo() {
@@ -504,13 +487,11 @@ uint32_t KernelInfo::getConstantBufferSize() const {
 bool KernelInfo::createKernelAllocation(MemoryManager *memoryManager) {
     UNRECOVERABLE_IF(kernelAllocation);
     auto kernelIsaSize = heapInfo.pKernelHeader->KernelHeapSize;
-    kernelAllocation = memoryManager->allocate32BitGraphicsMemory(kernelIsaSize, nullptr, AllocationOrigin::INTERNAL_ALLOCATION);
-    if (kernelAllocation) {
-        memcpy_s(kernelAllocation->getUnderlyingBuffer(), kernelIsaSize, heapInfo.pKernelHeap, kernelIsaSize);
-    } else {
+    kernelAllocation = memoryManager->allocateGraphicsMemoryWithProperties({kernelIsaSize, GraphicsAllocation::AllocationType::KERNEL_ISA});
+    if (!kernelAllocation) {
         return false;
     }
-    return true;
+    return memoryManager->copyMemoryToAllocation(kernelAllocation, heapInfo.pKernelHeap, kernelIsaSize);
 }
 
-} // namespace OCLRT
+} // namespace NEO

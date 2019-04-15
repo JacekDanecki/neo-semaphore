@@ -1,32 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/event/event.h"
-#include "unit_tests/command_queue/command_enqueue_fixture.h"
-#include "gen_cmd_parse.h"
+#include "runtime/event/user_event.h"
 #include "test.h"
+#include "unit_tests/command_queue/command_enqueue_fixture.h"
+#include "unit_tests/gen_common/gen_cmd_parse.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct MarkerFixture : public CommandEnqueueFixture {
   public:
@@ -43,7 +28,7 @@ struct MarkerFixture : public CommandEnqueueFixture {
 
 typedef Test<MarkerFixture> MarkerTest;
 
-HWCMDTEST_F(IGFX_GEN8_CORE, MarkerTest, CS_EQ_CQ_ShouldntAddPipeControl) {
+HWTEST_F(MarkerTest, CS_EQ_CQ_ShouldntAddPipeControl) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
 

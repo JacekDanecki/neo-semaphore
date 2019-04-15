@@ -1,36 +1,28 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/local_id_gen.h"
 
-namespace OCLRT {
+#include <array>
+
+namespace NEO {
 
 template <typename Vec, int simd>
-inline void generateLocalIDsSimd(void *b, size_t lwsX, size_t lwsY, size_t threadsPerWorkGroup) {
+inline void generateLocalIDsSimd(void *b, const std::array<uint16_t, 3> &localWorkgroupSize, uint16_t threadsPerWorkGroup,
+                                 const std::array<uint8_t, 3> &dimensionsOrder) {
     const int passes = simd / Vec::numChannels;
     int pass = 0;
 
-    const Vec vLwsX(static_cast<uint16_t>(lwsX));
-    const Vec vLwsY(static_cast<uint16_t>(lwsY));
+    uint32_t xDimNum = dimensionsOrder[0];
+    uint32_t yDimNum = dimensionsOrder[1];
+    uint32_t zDimNum = dimensionsOrder[2];
+
+    const Vec vLwsX(localWorkgroupSize[xDimNum]);
+    const Vec vLwsY(localWorkgroupSize[yDimNum]);
 
     auto zero = Vec::zero();
     auto one = Vec::one();
@@ -113,9 +105,9 @@ inline void generateLocalIDsSimd(void *b, size_t lwsX, size_t lwsY, size_t threa
         } while (xWrap);
 
         for (size_t i = 0; i < threadsPerWorkGroup; ++i) {
-            x.store(buffer);
-            y.store(ptrOffset(buffer, threadSkipSize));
-            z.store(ptrOffset(buffer, 2 * threadSkipSize));
+            x.store(ptrOffset(buffer, xDimNum * threadSkipSize));
+            y.store(ptrOffset(buffer, yDimNum * threadSkipSize));
+            z.store(ptrOffset(buffer, zDimNum * threadSkipSize));
 
             x += vSimdX;
             y += vSimdY;
@@ -157,4 +149,4 @@ inline void generateLocalIDsSimd(void *b, size_t lwsX, size_t lwsY, size_t threa
 
     } while (++pass < passes);
 }
-} // namespace OCLRT
+} // namespace NEO

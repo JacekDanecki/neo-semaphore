@@ -1,34 +1,29 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 set(IGDRCL_SRCS_tests_memory_manager
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
   ${CMAKE_CURRENT_SOURCE_DIR}/address_mapper_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/deferrable_allocation_deletion_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/deferred_deleter_mt_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/gfx_partition_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/graphics_allocation_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/host_ptr_manager_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/internal_allocation_storage_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/local_memory_usage_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/memory_manager_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/memory_manager_allocate_in_device_pool_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/memory_manager_allocate_in_device_pool_tests.inl
-  ${CMAKE_CURRENT_SOURCE_DIR}/memory_manager_allocate_in_preferred_pool_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/memory_manager_allocate_in_preferred_pool_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/memory_manager_allocate_in_preferred_pool_tests.inl
+  ${CMAKE_CURRENT_SOURCE_DIR}/memory_pool_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/page_table_tests.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/physical_address_allocator_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/surface_tests.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/svm_memory_manager.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/svm_memory_manager_tests.cpp
 )
 target_sources(igdrcl_tests PRIVATE ${IGDRCL_SRCS_tests_memory_manager})
+add_subdirectories()

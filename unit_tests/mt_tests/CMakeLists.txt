@@ -1,35 +1,24 @@
-# Copyright (c) 2017 - 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2017-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 project(igdrcl_mt_tests)
 
 add_executable(igdrcl_mt_tests EXCLUDE_FROM_ALL
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-
+  ${IGDRCL_SOURCE_DIR}/unit_tests/libult/os_interface.cpp
   ${IGDRCL_SOURCE_DIR}/unit_tests/ult_configuration.cpp
-
+  ${IGDRCL_SOURCE_DIR}/runtime/aub/aub_stream_interface.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_mode.h
   $<TARGET_OBJECTS:igdrcl_libult>
   $<TARGET_OBJECTS:igdrcl_libult_cs>
   $<TARGET_OBJECTS:igdrcl_libult_env>
   $<TARGET_OBJECTS:${BUILTINS_SOURCES_LIB_NAME}>
 )
+
+target_include_directories(igdrcl_mt_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_subdirectories()
 
@@ -60,7 +49,7 @@ endif()
 
 add_custom_target(run_mt_unit_tests)
 
-add_dependencies(igdrcl_mt_tests test_dynamic_lib)
+add_dependencies(igdrcl_mt_tests test_dynamic_lib mock_gmm)
 
 create_project_source_tree(igdrcl_mt_tests ${IGDRCL_SOURCE_DIR}/runtime ${IGDRCL_SOURCE_DIR}/unit_tests)
 
@@ -89,7 +78,7 @@ function(run_mt_tests target slices subslices eu_per_ss)
   )
 endfunction()
 
-target_include_directories(igdrcl_mt_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common ${IGDRCL_SOURCE_DIR}/runtime/gen_common)
+target_include_directories(igdrcl_mt_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common${BRANCH_DIR_SUFFIX} ${IGDRCL_SOURCE_DIR}/runtime/gen_common)
 
 macro(macro_for_each_test_config)
   run_mt_tests(${PLATFORM_IT_LOWER} ${SLICES} ${SUBSLICES} ${EU_PER_SS})

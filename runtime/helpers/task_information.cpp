@@ -1,51 +1,39 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/helpers/task_information.h"
+
 #include "runtime/built_ins/builtins_dispatch_builder.h"
-#include "runtime/command_stream/linear_stream.h"
-#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_queue/enqueue_common.h"
+#include "runtime/command_stream/command_stream_receiver.h"
+#include "runtime/command_stream/linear_stream.h"
 #include "runtime/device/device.h"
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/csr_deps.h"
 #include "runtime/helpers/string.h"
-#include "runtime/helpers/task_information.h"
 #include "runtime/mem_obj/mem_obj.h"
-#include "runtime/memory_manager/memory_manager.h"
+#include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/surface.h"
 
-namespace OCLRT {
+namespace NEO {
 KernelOperation::~KernelOperation() {
-    memoryManager.storeAllocation(std::unique_ptr<GraphicsAllocation>(dsh->getGraphicsAllocation()), REUSABLE_ALLOCATION);
+    storageForAllocations.storeAllocation(std::unique_ptr<GraphicsAllocation>(dsh->getGraphicsAllocation()), REUSABLE_ALLOCATION);
     if (ioh.get() == dsh.get()) {
         ioh.release();
     }
     if (ioh) {
-        memoryManager.storeAllocation(std::unique_ptr<GraphicsAllocation>(ioh->getGraphicsAllocation()), REUSABLE_ALLOCATION);
+        storageForAllocations.storeAllocation(std::unique_ptr<GraphicsAllocation>(ioh->getGraphicsAllocation()), REUSABLE_ALLOCATION);
     }
-    memoryManager.storeAllocation(std::unique_ptr<GraphicsAllocation>(ssh->getGraphicsAllocation()), REUSABLE_ALLOCATION);
-    alignedFree(commandStream->getCpuBase());
+    storageForAllocations.storeAllocation(std::unique_ptr<GraphicsAllocation>(ssh->getGraphicsAllocation()), REUSABLE_ALLOCATION);
+
+    storageForAllocations.storeAllocation(std::unique_ptr<GraphicsAllocation>(commandStream->getGraphicsAllocation()), REUSABLE_ALLOCATION);
 }
 
 CommandMapUnmap::CommandMapUnmap(MapOperationType op, MemObj &memObj, MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset, bool readOnly,
@@ -64,8 +52,7 @@ CompletionStamp &CommandMapUnmap::submit(uint32_t taskLevel, bool terminated) {
     }
 
     bool blocking = true;
-    TakeOwnershipWrapper<Device> deviceOwnership(cmdQ.getDevice());
-
+    auto commandStreamReceiverOwnership = csr.obtainUniqueOwnership();
     auto &queueCommandStream = cmdQ.getCS(0);
     size_t offset = queueCommandStream.getUsed();
 
@@ -77,6 +64,7 @@ CompletionStamp &CommandMapUnmap::submit(uint32_t taskLevel, bool terminated) {
     dispatchFlags.lowPriority = cmdQ.getPriority() == QueuePriority::LOW;
     dispatchFlags.throttle = cmdQ.getThrottle();
     dispatchFlags.preemptionMode = PreemptionHelper::taskPreemptionMode(cmdQ.getDevice(), nullptr);
+    dispatchFlags.multiEngineQueue = cmdQ.isMultiEngineQueue();
 
     DEBUG_BREAK_IF(taskLevel >= Event::eventNotReady);
 
@@ -88,7 +76,8 @@ CompletionStamp &CommandMapUnmap::submit(uint32_t taskLevel, bool terminated) {
                                     cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 0u),
                                     cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 0u),
                                     taskLevel,
-                                    dispatchFlags);
+                                    dispatchFlags,
+                                    cmdQ.getDevice());
 
     cmdQ.waitUntilComplete(completionStamp.taskCount, completionStamp.flushStamp, false);
 
@@ -104,27 +93,17 @@ CompletionStamp &CommandMapUnmap::submit(uint32_t taskLevel, bool terminated) {
     return completionStamp;
 }
 
-CommandComputeKernel::CommandComputeKernel(CommandQueue &commandQueue, CommandStreamReceiver &commandStreamReceiver,
-                                           std::unique_ptr<KernelOperation> kernelOperation, std::vector<Surface *> &surfaces,
+CommandComputeKernel::CommandComputeKernel(CommandQueue &commandQueue, std::unique_ptr<KernelOperation> kernelOperation, std::vector<Surface *> &surfaces,
                                            bool flushDC, bool usesSLM, bool ndRangeKernel, std::unique_ptr<PrintfHandler> printfHandler,
                                            PreemptionMode preemptionMode, Kernel *kernel, uint32_t kernelCount)
-    : commandQueue(commandQueue),
-      commandStreamReceiver(commandStreamReceiver),
-      kernelOperation(std::move(kernelOperation)),
-      flushDC(flushDC),
-      slmUsed(usesSLM),
-      NDRangeKernel(ndRangeKernel),
-      printfHandler(std::move(printfHandler)),
-      kernel(nullptr),
-      kernelCount(0) {
+    : commandQueue(commandQueue), kernelOperation(std::move(kernelOperation)), flushDC(flushDC), slmUsed(usesSLM),
+      NDRangeKernel(ndRangeKernel), printfHandler(std::move(printfHandler)), kernel(kernel),
+      kernelCount(kernelCount), preemptionMode(preemptionMode) {
     for (auto surface : surfaces) {
         this->surfaces.push_back(surface);
     }
-    this->kernel = kernel;
     UNRECOVERABLE_IF(nullptr == this->kernel);
     kernel->incRefInternal();
-    this->kernelCount = kernelCount;
-    this->preemptionMode = preemptionMode;
 }
 
 CommandComputeKernel::~CommandComputeKernel() {
@@ -136,16 +115,25 @@ CommandComputeKernel::~CommandComputeKernel() {
         kernelOperation->doNotFreeISH = true;
     }
     kernel->decRefInternal();
+
+    auto &commandStreamReceiver = commandQueue.getCommandStreamReceiver();
+    if (commandStreamReceiver.peekTimestampPacketWriteEnabled()) {
+        for (cl_event eventFromWaitList : eventsWaitlist) {
+            auto event = castToObjectOrAbort<Event>(eventFromWaitList);
+            event->decRefInternal();
+        }
+    }
 }
 
 CompletionStamp &CommandComputeKernel::submit(uint32_t taskLevel, bool terminated) {
     if (terminated) {
         return completionStamp;
     }
+    auto &commandStreamReceiver = commandQueue.getCommandStreamReceiver();
     bool executionModelKernel = kernel->isParentKernel;
     auto devQueue = commandQueue.getContext().getDefaultDeviceQueue();
 
-    TakeOwnershipWrapper<Device> deviceOwnership(commandQueue.getDevice());
+    auto commandStreamReceiverOwnership = commandStreamReceiver.obtainUniqueOwnership();
 
     if (executionModelKernel) {
         while (!devQueue->isEMCriticalSectionFree())
@@ -154,14 +142,6 @@ CompletionStamp &CommandComputeKernel::submit(uint32_t taskLevel, bool terminate
         devQueue->resetDeviceQueue();
         devQueue->acquireEMCriticalSection();
     }
-
-    auto &commandStream = *kernelOperation->commandStream;
-    size_t commandsSize = commandStream.getUsed();
-    auto &queueCommandStream = commandQueue.getCS(commandStream.getUsed());
-    size_t offset = queueCommandStream.getUsed();
-    void *pDst = queueCommandStream.getSpace(commandsSize);
-    //transfer the memory to commandStream of the queue.
-    memcpy_s(pDst, commandsSize, commandStream.getCpuBase(), commandsSize);
 
     IndirectHeap *dsh = kernelOperation->dsh.get();
     IndirectHeap *ioh = kernelOperation->ioh.get();
@@ -177,12 +157,18 @@ CompletionStamp &CommandComputeKernel::submit(uint32_t taskLevel, bool terminate
     if (printfHandler) {
         printfHandler.get()->makeResident(commandStreamReceiver);
     }
+    if (currentTimestampPacketNodes) {
+        currentTimestampPacketNodes->makeResident(commandStreamReceiver);
+    }
+    if (previousTimestampPacketNodes) {
+        previousTimestampPacketNodes->makeResident(commandStreamReceiver);
+    }
 
     if (executionModelKernel) {
         uint32_t taskCount = commandStreamReceiver.peekTaskCount() + 1;
         devQueue->setupExecutionModelDispatch(*ssh, *dsh, kernel, kernelCount, taskCount, timestamp);
 
-        BuiltIns &builtIns = BuiltIns::getInstance();
+        BuiltIns &builtIns = *this->kernel->getDevice().getExecutionEnvironment()->getBuiltIns();
         SchedulerKernel &scheduler = builtIns.getSchedulerKernel(commandQueue.getContext());
 
         scheduler.setArgs(devQueue->getQueueBuffer(),
@@ -196,7 +182,7 @@ CompletionStamp &CommandComputeKernel::submit(uint32_t taskLevel, bool terminate
                           devQueue->getDebugQueue());
 
         devQueue->dispatchScheduler(
-            commandQueue,
+            *kernelOperation->commandStream,
             scheduler,
             preemptionMode,
             ssh,
@@ -221,21 +207,26 @@ CompletionStamp &CommandComputeKernel::submit(uint32_t taskLevel, bool terminate
     dispatchFlags.throttle = commandQueue.getThrottle();
     dispatchFlags.preemptionMode = preemptionMode;
     dispatchFlags.mediaSamplerRequired = kernel->isVmeKernel();
+    dispatchFlags.multiEngineQueue = commandQueue.isMultiEngineQueue();
+    dispatchFlags.numGrfRequired = kernel->getKernelInfo().patchInfo.executionEnvironment->NumGRFRequired;
+    if (commandStreamReceiver.peekTimestampPacketWriteEnabled()) {
+        dispatchFlags.csrDependencies.fillFromEventsRequestAndMakeResident(eventsRequest, commandStreamReceiver, CsrDependencies::DependenciesType::OutOfCsr);
+    }
+    dispatchFlags.specialPipelineSelectMode = kernel->requiresSpecialPipelineSelectMode();
 
     DEBUG_BREAK_IF(taskLevel >= Event::eventNotReady);
 
     gtpinNotifyPreFlushTask(&commandQueue);
 
-    completionStamp = commandStreamReceiver.flushTask(queueCommandStream,
-                                                      offset,
+    completionStamp = commandStreamReceiver.flushTask(*kernelOperation->commandStream,
+                                                      0,
                                                       *dsh,
                                                       *ioh,
                                                       *ssh,
                                                       taskLevel,
-                                                      dispatchFlags);
-    for (auto &surface : surfaces) {
-        surface->setCompletionStamp(completionStamp, nullptr, nullptr);
-    }
+                                                      dispatchFlags,
+                                                      commandQueue.getDevice());
+
     commandQueue.waitUntilComplete(completionStamp.taskCount, completionStamp.flushStamp, false);
     if (printfHandler) {
         printfHandler.get()->printEnqueueOutput();
@@ -244,13 +235,31 @@ CompletionStamp &CommandComputeKernel::submit(uint32_t taskLevel, bool terminate
     return completionStamp;
 }
 
+void CommandComputeKernel::setEventsRequest(EventsRequest &eventsRequest) {
+    this->eventsRequest = eventsRequest;
+    if (eventsRequest.numEventsInWaitList > 0) {
+        eventsWaitlist.resize(eventsRequest.numEventsInWaitList);
+        auto size = eventsRequest.numEventsInWaitList * sizeof(cl_event);
+        memcpy_s(&eventsWaitlist[0], size, eventsRequest.eventWaitList, size);
+        this->eventsRequest.eventWaitList = &eventsWaitlist[0];
+    }
+}
+
+void CommandComputeKernel::setTimestampPacketNode(TimestampPacketContainer &current, TimestampPacketContainer &previous) {
+    currentTimestampPacketNodes = std::make_unique<TimestampPacketContainer>();
+    currentTimestampPacketNodes->assignAndIncrementNodesRefCounts(current);
+
+    previousTimestampPacketNodes = std::make_unique<TimestampPacketContainer>();
+    previousTimestampPacketNodes->assignAndIncrementNodesRefCounts(previous);
+}
+
 CompletionStamp &CommandMarker::submit(uint32_t taskLevel, bool terminated) {
     if (terminated) {
         return completionStamp;
     }
 
     bool blocking = true;
-    TakeOwnershipWrapper<Device> deviceOwnership(cmdQ.getDevice());
+    auto lockCSR = this->csr.obtainUniqueOwnership();
 
     auto &queueCommandStream = cmdQ.getCS(this->commandSize);
     size_t offset = queueCommandStream.getUsed();
@@ -272,10 +281,11 @@ CompletionStamp &CommandMarker::submit(uint32_t taskLevel, bool terminated) {
                                     cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 0u),
                                     cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 0u),
                                     taskLevel,
-                                    dispatchFlags);
+                                    dispatchFlags,
+                                    cmdQ.getDevice());
 
     cmdQ.waitUntilComplete(completionStamp.taskCount, completionStamp.flushStamp, false);
 
     return completionStamp;
 }
-} // namespace OCLRT
+} // namespace NEO

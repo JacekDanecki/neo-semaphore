@@ -1,36 +1,31 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/command_stream_receiver.h"
+#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/helpers/options.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/os_interface/device_factory.h"
-#include "runtime/helpers/options.h"
-#include "unit_tests/libult/create_command_stream.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "runtime/os_interface/hw_info_config.h"
+#include "runtime/platform/platform.h"
 #include "test.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/libult/create_command_stream.h"
 
-using namespace OCLRT;
+namespace NEO {
+bool operator==(const HardwareInfo &hwInfoIn, const HardwareInfo &hwInfoOut) {
+    bool result = (0 == memcmp(hwInfoIn.pPlatform, hwInfoOut.pPlatform, sizeof(PLATFORM)));
+    result &= (0 == memcmp(hwInfoIn.pSkuTable, hwInfoOut.pSkuTable, sizeof(FeatureTable)));
+    result &= (0 == memcmp(hwInfoIn.pWaTable, hwInfoOut.pWaTable, sizeof(WorkaroundTable)));
+    result &= (0 == memcmp(&hwInfoIn.capabilityTable, &hwInfoOut.capabilityTable, sizeof(RuntimeCapabilityTable)));
+    return result;
+}
 
-struct GetDevicesTest : ::testing::TestWithParam<std::tuple<CommandStreamReceiverType, const char *>> {
+struct GetDevicesTest : ::testing::Test {
     void SetUp() override {
         overrideDeviceWithDefaultHardwareInfo = false;
         gtSystemInfo = *platformDevices[0]->pSysInfo;
@@ -40,75 +35,137 @@ struct GetDevicesTest : ::testing::TestWithParam<std::tuple<CommandStreamReceive
         memcpy(const_cast<GT_SYSTEM_INFO *>(platformDevices[0]->pSysInfo), &gtSystemInfo, sizeof(GT_SYSTEM_INFO));
     }
     GT_SYSTEM_INFO gtSystemInfo;
-};
-
-HWTEST_P(GetDevicesTest, givenGetDevicesWhenCsrIsSetToValidTypeThenTheFuntionReturnsTheExpectedValueOfHardwareInfo) {
-    DebugManagerStateRestore stateRestorer;
-    CommandStreamReceiverType csrType = std::get<0>(GetParam());
-    const char *hwPrefix = std::get<1>(GetParam());
-    std::string productFamily = "unk";
-    if (hwPrefix != nullptr) {
-        productFamily = hwPrefix;
-    }
-
-    DebugManager.flags.SetCommandStreamReceiver.set(csrType);
-    DebugManager.flags.ProductFamilyOverride.set(productFamily);
-
     int i = 0;
     size_t numDevices = 0;
     HardwareInfo *hwInfo = nullptr;
-    auto ret = getDevices(&hwInfo, numDevices);
+    FeatureTable featureTable = {};
+    GT_SYSTEM_INFO sysInfo = {};
+    DebugManagerStateRestore stateRestorer;
+};
 
-    switch (csrType) {
-    case CSR_HW:
-    case CSR_HW_WITH_AUB:
-        EXPECT_TRUE(ret);
-        EXPECT_NE(nullptr, hwInfo);
-        EXPECT_EQ(1u, numDevices);
-        DeviceFactory::releaseDevices();
-        break;
-    case CSR_AUB:
-    case CSR_TBX:
-    case CSR_TBX_WITH_AUB:
-        EXPECT_TRUE(ret);
-        EXPECT_NE(nullptr, hwInfo);
-        EXPECT_EQ(1u, numDevices);
-        for (i = 0; i < IGFX_MAX_PRODUCT; i++) {
-            auto hardwareInfo = hardwareInfoTable[i];
-            if (hardwareInfo == nullptr)
-                continue;
-            if (hardwareInfoTable[i]->pPlatform->eProductFamily == hwInfo->pPlatform->eProductFamily)
+HWTEST_F(GetDevicesTest, givenGetDevicesWhenCsrIsSetToVariousTypesThenTheFunctionReturnsTheExpectedValueOfHardwareInfo) {
+    uint32_t expectedDevices = 1;
+    DebugManager.flags.CreateMultipleDevices.set(expectedDevices);
+    for (int productFamilyIndex = 0; productFamilyIndex < IGFX_MAX_PRODUCT; productFamilyIndex++) {
+        const char *hwPrefix = hardwarePrefix[productFamilyIndex];
+        if (hwPrefix == nullptr) {
+            continue;
+        }
+        const std::string productFamily(hwPrefix);
+
+        for (int csrTypes = -1; csrTypes <= CSR_TYPES_NUM; csrTypes++) {
+            CommandStreamReceiverType csrType;
+            if (csrTypes != -1) {
+                csrType = static_cast<CommandStreamReceiverType>(csrTypes);
+                DebugManager.flags.SetCommandStreamReceiver.set(csrType);
+            } else {
+                csrType = CSR_HW;
+                DebugManager.flags.SetCommandStreamReceiver.set(-1);
+            }
+
+            DebugManager.flags.ProductFamilyOverride.set(productFamily);
+            ExecutionEnvironment *exeEnv = platformImpl->peekExecutionEnvironment();
+
+            const auto ret = getDevices(&hwInfo, numDevices, *exeEnv);
+
+            switch (csrType) {
+            case CSR_HW:
+            case CSR_HW_WITH_AUB:
+                EXPECT_TRUE(ret);
+                EXPECT_NE(nullptr, hwInfo);
+                EXPECT_EQ(expectedDevices, numDevices);
+                DeviceFactory::releaseDevices();
                 break;
+            case CSR_AUB:
+            case CSR_TBX:
+            case CSR_TBX_WITH_AUB: {
+                EXPECT_TRUE(ret);
+                EXPECT_NE(nullptr, hwInfo);
+                EXPECT_EQ(expectedDevices, numDevices);
+                for (i = 0; i < IGFX_MAX_PRODUCT; i++) {
+                    auto hardwareInfo = hardwareInfoTable[i];
+                    if (hardwareInfo == nullptr)
+                        continue;
+                    if (hardwareInfoTable[i]->pPlatform->eProductFamily == hwInfo->pPlatform->eProductFamily)
+                        break;
+                }
+                EXPECT_TRUE(i < IGFX_MAX_PRODUCT);
+                ASSERT_NE(nullptr, hardwarePrefix[i]);
+                HardwareInfo hwInfoFromTable = *hardwareInfoTable[i];
+                hwInfoFromTable.pSkuTable = &featureTable;
+                hwInfoFromTable.pSysInfo = &sysInfo;
+                hardwareInfoSetup[hwInfoFromTable.pPlatform->eProductFamily](const_cast<GT_SYSTEM_INFO *>(hwInfoFromTable.pSysInfo),
+                                                                             const_cast<FeatureTable *>(hwInfoFromTable.pSkuTable),
+                                                                             true, "default");
+                HwInfoConfig *hwConfig = HwInfoConfig::get(hwInfoFromTable.pPlatform->eProductFamily);
+                hwConfig->configureHardwareCustom(&hwInfoFromTable, nullptr);
+                EXPECT_EQ(0, memcmp(hwInfoFromTable.pPlatform, hwInfo->pPlatform, sizeof(PLATFORM)));
+                EXPECT_EQ(0, memcmp(&hwInfoFromTable.capabilityTable, &hwInfo->capabilityTable, sizeof(RuntimeCapabilityTable)));
+                EXPECT_EQ(0, memcmp(hwInfoFromTable.pWaTable, hwInfo->pWaTable, sizeof(WorkaroundTable)));
+                EXPECT_STREQ(hardwarePrefix[i], productFamily.c_str());
+                DeviceFactory::releaseDevices();
+                break;
+            }
+            default:
+                break;
+            }
         }
-        EXPECT_TRUE(i < IGFX_MAX_PRODUCT);
-        ASSERT_NE(nullptr, hardwarePrefix[i]);
-        if (hwPrefix != nullptr) {
-            EXPECT_EQ(hardwareInfoTable[i], hwInfo);
-            EXPECT_STREQ(hardwarePrefix[i], productFamily.c_str());
-        } else {
-            auto defaultHwInfo = *platformDevices;
-            EXPECT_EQ(defaultHwInfo, hwInfo);
-        }
-        break;
-    default:
-        EXPECT_FALSE(ret);
-        EXPECT_EQ(nullptr, hwInfo);
-        EXPECT_EQ(0u, numDevices);
-        break;
     }
 }
 
-static CommandStreamReceiverType commandStreamReceiverTypes[] = {
-    CSR_HW,
-    CSR_AUB,
-    CSR_TBX,
-    CSR_HW_WITH_AUB,
-    CSR_TBX_WITH_AUB,
-    CSR_TYPES_NUM};
+HWTEST_F(GetDevicesTest, givenGetDevicesAndUnknownProductFamilyWhenCsrIsSetToValidTypeThenTheFunctionReturnsTheExpectedValueOfHardwareInfo) {
+    uint32_t expectedDevices = 1;
+    DebugManager.flags.CreateMultipleDevices.set(expectedDevices);
+    for (int csrTypes = 0; csrTypes <= CSR_TYPES_NUM; csrTypes++) {
+        CommandStreamReceiverType csrType = static_cast<CommandStreamReceiverType>(csrTypes);
+        std::string productFamily("unk");
 
-INSTANTIATE_TEST_CASE_P(
-    GetDevicesTest_Create,
-    GetDevicesTest,
-    ::testing::Combine(
-        ::testing::ValuesIn(commandStreamReceiverTypes),
-        ::testing::ValuesIn(hardwarePrefix, &hardwarePrefix[IGFX_MAX_PRODUCT])));
+        DebugManager.flags.SetCommandStreamReceiver.set(csrType);
+        DebugManager.flags.ProductFamilyOverride.set(productFamily);
+        ExecutionEnvironment *exeEnv = platformImpl->peekExecutionEnvironment();
+
+        auto ret = getDevices(&hwInfo, numDevices, *exeEnv);
+
+        switch (csrType) {
+        case CSR_HW:
+        case CSR_HW_WITH_AUB:
+            EXPECT_TRUE(ret);
+            EXPECT_NE(nullptr, hwInfo);
+            EXPECT_EQ(expectedDevices, numDevices);
+            DeviceFactory::releaseDevices();
+            break;
+        case CSR_AUB:
+        case CSR_TBX:
+        case CSR_TBX_WITH_AUB: {
+            EXPECT_TRUE(ret);
+            EXPECT_NE(nullptr, hwInfo);
+            EXPECT_EQ(expectedDevices, numDevices);
+            for (i = 0; i < IGFX_MAX_PRODUCT; i++) {
+                auto hardwareInfo = hardwareInfoTable[i];
+                if (hardwareInfo == nullptr)
+                    continue;
+                if (hardwareInfoTable[i]->pPlatform->eProductFamily == hwInfo->pPlatform->eProductFamily)
+                    break;
+            }
+            EXPECT_TRUE(i < IGFX_MAX_PRODUCT);
+            ASSERT_NE(nullptr, hardwarePrefix[i]);
+            HardwareInfo defaultHwInfo = **platformDevices;
+            defaultHwInfo.pSkuTable = &featureTable;
+            defaultHwInfo.pSysInfo = &sysInfo;
+            hardwareInfoSetup[defaultHwInfo.pPlatform->eProductFamily](const_cast<GT_SYSTEM_INFO *>(defaultHwInfo.pSysInfo),
+                                                                       const_cast<FeatureTable *>(defaultHwInfo.pSkuTable),
+                                                                       true, "default");
+            HwInfoConfig *hwConfig = HwInfoConfig::get(defaultHwInfo.pPlatform->eProductFamily);
+            hwConfig->configureHardwareCustom(&defaultHwInfo, nullptr);
+            EXPECT_EQ(0, memcmp(defaultHwInfo.pPlatform, hwInfo->pPlatform, sizeof(PLATFORM)));
+            EXPECT_EQ(0, memcmp(&defaultHwInfo.capabilityTable, &hwInfo->capabilityTable, sizeof(RuntimeCapabilityTable)));
+            EXPECT_EQ(0, memcmp(defaultHwInfo.pWaTable, hwInfo->pWaTable, sizeof(WorkaroundTable)));
+            DeviceFactory::releaseDevices();
+            break;
+        }
+        default:
+            break;
+        }
+    }
+}
+} // namespace NEO

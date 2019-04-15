@@ -1,39 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "CL/cl.h"
 #include "runtime/api/dispatch.h"
-#include "runtime/utilities/reference_tracked_object.h"
 #include "runtime/helpers/abort.h"
 #include "runtime/helpers/debug_helpers.h"
+#include "runtime/utilities/reference_tracked_object.h"
+
+#include "CL/cl.h"
 
 #include <atomic>
 #include <condition_variable>
+#include <iostream>
 #include <mutex>
 #include <thread>
-#include <iostream>
 
-namespace OCLRT {
+namespace NEO {
 
 #if defined(__clang__)
 #define NO_SANITIZE __attribute__((no_sanitize("undefined")))
@@ -74,7 +60,13 @@ inline DerivedType *castToObjectOrAbort(typename DerivedType::BaseType *object) 
 
 template <typename DerivedType>
 inline const DerivedType *castToObject(const typename DerivedType::BaseType *object) {
-    return const_cast<const DerivedType *>(castToObject<DerivedType>(const_cast<typename DerivedType::BaseType *>(object)));
+    return castToObject<DerivedType>(const_cast<typename DerivedType::BaseType *>(object));
+}
+
+template <typename DerivedType>
+inline DerivedType *castToObject(const void *object) {
+    cl_mem clMem = const_cast<cl_mem>(static_cast<const _cl_mem *>(object));
+    return castToObject<DerivedType>(clMem);
 }
 
 extern std::thread::id invalidThreadID;
@@ -265,4 +257,4 @@ class BaseObject : public B, public ReferenceTrackedObject<DerivedType_t<B>> {
 template <typename Type>
 void populateFactoryTable();
 
-} // namespace OCLRT
+} // namespace NEO

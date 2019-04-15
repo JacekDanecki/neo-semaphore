@@ -1,26 +1,12 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/os_interface/hw_info_config.h"
+
 #include "runtime/command_stream/preemption.h"
 #include "runtime/gen_common/hw_cmds.h"
 #include "runtime/helpers/hw_helper.h"
@@ -33,7 +19,7 @@
 
 #include <cstring>
 
-namespace OCLRT {
+namespace NEO {
 
 HwInfoConfig *hwInfoConfigFactory[IGFX_MAX_PRODUCT] = {};
 
@@ -93,10 +79,10 @@ int HwInfoConfig::configureHwInfo(const HardwareInfo *inHwInfo, HardwareInfo *ou
     auto pWaTable = std::unique_ptr<WorkaroundTable>(new WorkaroundTable);
     *pWaTable = *(inHwInfo->pWaTable);
 
-    outHwInfo->pPlatform = const_cast<const PLATFORM *>(pPlatform.get());
-    outHwInfo->pSysInfo = const_cast<const GT_SYSTEM_INFO *>(pSysInfo.get());
-    outHwInfo->pSkuTable = const_cast<const FeatureTable *>(pSkuTable.get());
-    outHwInfo->pWaTable = const_cast<const WorkaroundTable *>(pWaTable.get());
+    outHwInfo->pPlatform = pPlatform.get();
+    outHwInfo->pSysInfo = pSysInfo.get();
+    outHwInfo->pSkuTable = pSkuTable.get();
+    outHwInfo->pWaTable = pWaTable.get();
     outHwInfo->capabilityTable = inHwInfo->capabilityTable;
 
     int val = 0;
@@ -167,15 +153,14 @@ int HwInfoConfig::configureHwInfo(const HardwareInfo *inHwInfo, HardwareInfo *ou
     outHwInfo->capabilityTable.ftrSupportsCoherency = false;
 
     hwHelper.adjustDefaultEngineType(outHwInfo);
-    outHwInfo->capabilityTable.defaultEngineType = DebugManager.flags.NodeOrdinal.get() == -1
-                                                       ? outHwInfo->capabilityTable.defaultEngineType
-                                                       : static_cast<EngineType>(DebugManager.flags.NodeOrdinal.get());
+    outHwInfo->capabilityTable.defaultEngineType = getChosenEngineType(*outHwInfo);
 
     outHwInfo->capabilityTable.instrumentationEnabled = false;
     outHwInfo->capabilityTable.ftrRenderCompressedBuffers = false;
     outHwInfo->capabilityTable.ftrRenderCompressedImages = false;
 
-    bool preemption = drm->hasPreemption();
+    drm->checkPreemptionSupport();
+    bool preemption = drm->isPreemptionSupported();
     preemption = hwHelper.setupPreemptionRegisters(outHwInfo, preemption);
     PreemptionHelper::adjustDefaultPreemptionMode(outHwInfo->capabilityTable,
                                                   static_cast<bool>(outHwInfo->pSkuTable->ftrGpGpuMidThreadLevelPreempt) && preemption,
@@ -199,4 +184,4 @@ int HwInfoConfig::configureHwInfo(const HardwareInfo *inHwInfo, HardwareInfo *ou
     return 0;
 }
 
-} // namespace OCLRT
+} // namespace NEO

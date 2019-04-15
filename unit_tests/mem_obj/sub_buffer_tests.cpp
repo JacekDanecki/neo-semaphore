@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/ptr_math.h"
@@ -26,9 +11,10 @@
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_context.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 namespace ULT {
 
@@ -99,6 +85,20 @@ TEST_F(SubBufferTest, GivenAlignmentThatIsHigherThen4BytesWhenCheckedForValidity
     EXPECT_TRUE(buffer->isValidSubBufferOffset(region2.origin));
     cl_buffer_region region3 = {8, 4};
     EXPECT_TRUE(buffer->isValidSubBufferOffset(region3.origin));
+
+    buffer->getGraphicsAllocation()->setAllocationType(GraphicsAllocation::AllocationType::BUFFER_COMPRESSED);
+    EXPECT_FALSE(buffer->isValidSubBufferOffset(region.origin));
+    EXPECT_FALSE(buffer->isValidSubBufferOffset(region2.origin));
+    cl_buffer_region region4 = {1025, 4};
+    EXPECT_FALSE(buffer->isValidSubBufferOffset(region4.origin));
+    cl_buffer_region region5 = {1024, 4};
+    EXPECT_TRUE(buffer->isValidSubBufferOffset(region5.origin));
+    cl_buffer_region region6 = {127, 4};
+    EXPECT_FALSE(buffer->isValidSubBufferOffset(region6.origin));
+    cl_buffer_region region7 = {128, 4};
+    EXPECT_TRUE(buffer->isValidSubBufferOffset(region7.origin));
+    cl_buffer_region region8 = {129, 4};
+    EXPECT_FALSE(buffer->isValidSubBufferOffset(region8.origin));
 }
 
 TEST_F(SubBufferTest, givenSharingHandlerFromParentBufferWhenCreateThenShareHandler) {
@@ -119,7 +119,7 @@ TEST_F(SubBufferTest, GivenBufferWithAlignedHostPtrAndSameMemoryStorageWhenSubBu
     cl_int retVal = 0;
 
     void *alignedPointer = alignedMalloc(MemoryConstants::pageSize, MemoryConstants::preferredAlignment);
-    Buffer *buffer = Buffer::create(&context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR,
+    Buffer *buffer = Buffer::create(&context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR | CL_MEM_FORCE_SHARED_PHYSICAL_MEMORY_INTEL,
                                     MemoryConstants::pageSize, alignedPointer, retVal);
 
     ASSERT_NE(nullptr, buffer);
@@ -157,6 +157,49 @@ TEST_F(SubBufferTest, GivenBufferWithMemoryStorageAndNullHostPtrWhenSubBufferIsC
 
     EXPECT_EQ(nullptr, subBuffer->getHostPtr());
     EXPECT_EQ(ptrOffset(buffer->getCpuAddress(), 2), subBuffer->getCpuAddress());
+
+    subBuffer->release();
+    buffer->release();
+}
+
+TEST_F(SubBufferTest, givenBufferWithHostPtrWhenSubbufferGetsMapPtrThenExpectBufferHostPtr) {
+    cl_buffer_region region = {0, 16};
+
+    auto subBuffer = buffer->createSubBuffer(CL_MEM_READ_WRITE, &region, retVal);
+    ASSERT_NE(nullptr, subBuffer);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    void *mapPtr = subBuffer->getBasePtrForMap();
+    EXPECT_EQ(pHostPtr, mapPtr);
+    mapPtr = subBuffer->getBasePtrForMap();
+    EXPECT_EQ(pHostPtr, mapPtr);
+
+    subBuffer->release();
+}
+
+TEST_F(SubBufferTest, givenBufferWithNoHostPtrWhenSubbufferGetsMapPtrThenExpectBufferMap) {
+    cl_buffer_region region = {0, 16};
+
+    Buffer *buffer = Buffer::create(&context, CL_MEM_READ_WRITE,
+                                    MemoryConstants::pageSize, nullptr, retVal);
+    ASSERT_NE(nullptr, buffer);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    auto subBuffer = buffer->createSubBuffer(CL_MEM_READ_WRITE, &region, retVal);
+    ASSERT_NE(nullptr, subBuffer);
+    ASSERT_EQ(CL_SUCCESS, retVal);
+
+    void *mapPtr = subBuffer->getBasePtrForMap();
+    void *bufferMapPtr = buffer->getBasePtrForMap();
+    EXPECT_EQ(bufferMapPtr, mapPtr);
+    auto mapAllocation = subBuffer->getMapAllocation();
+    auto bufferMapAllocation = buffer->getMapAllocation();
+    ASSERT_NE(nullptr, bufferMapAllocation);
+    EXPECT_EQ(bufferMapAllocation, mapAllocation);
+    EXPECT_EQ(bufferMapPtr, mapAllocation->getUnderlyingBuffer());
+
+    mapPtr = subBuffer->getBasePtrForMap();
+    EXPECT_EQ(bufferMapPtr, mapPtr);
 
     subBuffer->release();
     buffer->release();

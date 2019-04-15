@@ -1,81 +1,52 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/memory_manager/memory_manager.h"
+
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/event/event.h"
 #include "runtime/event/hw_timestamps.h"
 #include "runtime/event/perf_counter.h"
 #include "runtime/gmm_helper/gmm.h"
+#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/basic_math.h"
+#include "runtime/helpers/hw_helper.h"
+#include "runtime/helpers/hw_info.h"
+#include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/options.h"
+#include "runtime/mem_obj/image.h"
+#include "runtime/memory_manager/deferrable_allocation_deletion.h"
 #include "runtime/memory_manager/deferred_deleter.h"
+#include "runtime/memory_manager/host_ptr_manager.h"
+#include "runtime/memory_manager/internal_allocation_storage.h"
+#include "runtime/os_interface/os_context.h"
+#include "runtime/os_interface/os_interface.h"
 #include "runtime/utilities/stackvec.h"
-#include "runtime/utilities/tag_allocator.h"
 
 #include <algorithm>
 
-namespace OCLRT {
-constexpr size_t ProfilingTagCount = 512;
-constexpr size_t PerfCounterTagCount = 512;
-
-struct ReusableAllocationRequirements {
-    size_t requiredMinimalSize;
-    volatile uint32_t *csrTagAddress;
-    bool internalAllocationRequired;
-};
-
-std::unique_ptr<GraphicsAllocation> AllocationsList::detachAllocation(size_t requiredMinimalSize, volatile uint32_t *csrTagAddress, bool internalAllocationRequired) {
-    ReusableAllocationRequirements req;
-    req.requiredMinimalSize = requiredMinimalSize;
-    req.csrTagAddress = csrTagAddress;
-    req.internalAllocationRequired = internalAllocationRequired;
-    GraphicsAllocation *a = nullptr;
-    GraphicsAllocation *retAlloc = processLocked<AllocationsList, &AllocationsList::detachAllocationImpl>(a, static_cast<void *>(&req));
-    return std::unique_ptr<GraphicsAllocation>(retAlloc);
-}
-
-GraphicsAllocation *AllocationsList::detachAllocationImpl(GraphicsAllocation *, void *data) {
-    ReusableAllocationRequirements *req = static_cast<ReusableAllocationRequirements *>(data);
-    auto *curr = head;
-    while (curr != nullptr) {
-        auto currentTagValue = req->csrTagAddress ? *req->csrTagAddress : -1;
-        if ((req->internalAllocationRequired == curr->is32BitAllocation) &&
-            (curr->getUnderlyingBufferSize() >= req->requiredMinimalSize) &&
-            ((currentTagValue > curr->taskCount) || (curr->taskCount == 0))) {
-            return removeOneImpl(curr, nullptr);
-        }
-        curr = curr->next;
+namespace NEO {
+MemoryManager::MemoryManager(ExecutionEnvironment &executionEnvironment) : allocator32Bit(nullptr),
+                                                                           executionEnvironment(executionEnvironment), hostPtrManager(std::make_unique<HostPtrManager>()),
+                                                                           multiContextResourceDestructor(std::make_unique<DeferredDeleter>()) {
+    auto hwInfo = executionEnvironment.getHardwareInfo();
+    this->localMemorySupported = HwHelper::get(hwInfo->pPlatform->eRenderCoreFamily).getEnableLocalMemory(*hwInfo);
+    this->enable64kbpages = OSInterface::osEnabled64kbPages && hwInfo->capabilityTable.ftr64KBpages;
+    if (DebugManager.flags.Enable64kbpages.get() > -1) {
+        this->enable64kbpages = DebugManager.flags.Enable64kbpages.get() != 0;
     }
-    return nullptr;
 }
-MemoryManager::MemoryManager(bool enable64kbpages) : allocator32Bit(nullptr), enable64kbpages(enable64kbpages) {
-    residencyAllocations.reserve(20);
-};
+
 MemoryManager::~MemoryManager() {
-    freeAllocationsList(-1, graphicsAllocations);
-    freeAllocationsList(-1, allocationsForReuse);
+    for (auto &engine : registeredEngines) {
+        engine.osContext->decRefInternal();
+    }
 }
 
 void *MemoryManager::allocateSystemMemory(size_t size, size_t alignment) {
@@ -111,108 +82,45 @@ void *MemoryManager::allocateSystemMemory(size_t size, size_t alignment) {
     return ptr;
 }
 
-GraphicsAllocation *MemoryManager::allocateGraphicsMemoryForSVM(size_t size, bool coherent) {
-    GraphicsAllocation *graphicsAllocation = nullptr;
-    if (peek64kbPagesEnabled()) {
-        graphicsAllocation = allocateGraphicsMemory64kb(size, MemoryConstants::pageSize64k, false, false);
-    } else {
-        graphicsAllocation = allocateGraphicsMemory(size);
-    }
-    if (graphicsAllocation) {
-        graphicsAllocation->setCoherent(coherent);
-    }
-    return graphicsAllocation;
-}
-
-void MemoryManager::freeGmm(GraphicsAllocation *gfxAllocation) {
-    delete gfxAllocation->gmm;
-}
-
-GraphicsAllocation *MemoryManager::allocateGraphicsMemory(size_t size, const void *ptr, bool forcePin) {
-    std::lock_guard<decltype(mtx)> lock(mtx);
-    auto requirements = HostPtrManager::getAllocationRequirements(ptr, size);
-    GraphicsAllocation *graphicsAllocation = nullptr;
-
+GraphicsAllocation *MemoryManager::allocateGraphicsMemoryWithHostPtr(const AllocationData &allocationData) {
     if (deferredDeleter) {
         deferredDeleter->drain(true);
     }
-
-    //check for overlaping
-    CheckedFragments checkedFragments;
-    if (checkAllocationsForOverlapping(&requirements, &checkedFragments) == RequirementsStatus::FATAL) {
-        //abort whole application instead of silently passing.
-        abortExecution();
+    GraphicsAllocation *graphicsAllocation = nullptr;
+    auto osStorage = hostPtrManager->prepareOsStorageForAllocation(*this, allocationData.size, allocationData.hostPtr);
+    if (osStorage.fragmentCount > 0) {
+        graphicsAllocation = createGraphicsAllocation(osStorage, allocationData);
     }
-
-    auto osStorage = hostPtrManager.populateAlreadyAllocatedFragments(requirements, &checkedFragments);
-    if (osStorage.fragmentCount == 0) {
-        return nullptr;
-    }
-    auto result = populateOsHandles(osStorage);
-    if (result != AllocationStatus::Success) {
-        cleanOsHandles(osStorage);
-        return nullptr;
-    }
-
-    graphicsAllocation = createGraphicsAllocation(osStorage, size, ptr);
     return graphicsAllocation;
 }
 
+GraphicsAllocation *MemoryManager::allocateGraphicsMemoryForImageFromHostPtr(const AllocationData &allocationData) {
+    bool copyRequired = Image::isCopyRequired(*allocationData.imgInfo, allocationData.hostPtr);
+
+    if (allocationData.hostPtr && !copyRequired) {
+        return allocateGraphicsMemoryWithHostPtr(allocationData);
+    }
+    return nullptr;
+}
+
 void MemoryManager::cleanGraphicsMemoryCreatedFromHostPtr(GraphicsAllocation *graphicsAllocation) {
-    hostPtrManager.releaseHandleStorage(graphicsAllocation->fragmentsStorage);
+    hostPtrManager->releaseHandleStorage(graphicsAllocation->fragmentsStorage);
     cleanOsHandles(graphicsAllocation->fragmentsStorage);
 }
 
 GraphicsAllocation *MemoryManager::createGraphicsAllocationWithPadding(GraphicsAllocation *inputGraphicsAllocation, size_t sizeWithPadding) {
     if (!paddingAllocation) {
-        paddingAllocation = allocateGraphicsMemory(paddingBufferSize);
+        paddingAllocation = allocateGraphicsMemoryWithProperties({paddingBufferSize, GraphicsAllocation::AllocationType::UNDECIDED});
     }
     return createPaddedAllocation(inputGraphicsAllocation, sizeWithPadding);
 }
 
 GraphicsAllocation *MemoryManager::createPaddedAllocation(GraphicsAllocation *inputGraphicsAllocation, size_t sizeWithPadding) {
-    return allocateGraphicsMemory(sizeWithPadding);
+    return allocateGraphicsMemoryWithProperties({sizeWithPadding, GraphicsAllocation::AllocationType::UNDECIDED});
 }
 
 void MemoryManager::freeSystemMemory(void *ptr) {
     ::alignedFree(ptr);
-}
-
-void MemoryManager::storeAllocation(std::unique_ptr<GraphicsAllocation> gfxAllocation, uint32_t allocationUsage) {
-    std::lock_guard<decltype(mtx)> lock(mtx);
-
-    uint32_t taskCount = gfxAllocation->taskCount;
-
-    if (allocationUsage == REUSABLE_ALLOCATION) {
-        if (csr) {
-            taskCount = csr->peekTaskCount();
-        } else {
-            taskCount = 0;
-        }
-    }
-
-    storeAllocation(std::move(gfxAllocation), allocationUsage, taskCount);
-}
-
-void MemoryManager::storeAllocation(std::unique_ptr<GraphicsAllocation> gfxAllocation, uint32_t allocationUsage, uint32_t taskCount) {
-    std::lock_guard<decltype(mtx)> lock(mtx);
-
-    if (DebugManager.flags.DisableResourceRecycling.get()) {
-        if (allocationUsage == REUSABLE_ALLOCATION) {
-            freeGraphicsMemory(gfxAllocation.release());
-            return;
-        }
-    }
-
-    auto &allocationsList = (allocationUsage == TEMPORARY_ALLOCATION) ? graphicsAllocations : allocationsForReuse;
-    gfxAllocation->taskCount = taskCount;
-    allocationsList.pushTailOne(*gfxAllocation.release());
-}
-
-std::unique_ptr<GraphicsAllocation> MemoryManager::obtainReusableAllocation(size_t requiredSize, bool internalAllocation) {
-    std::lock_guard<decltype(mtx)> lock(mtx);
-    auto allocation = allocationsForReuse.detachAllocation(requiredSize, csr ? csr->getTagAddress() : nullptr, internalAllocation);
-    return allocation;
 }
 
 void MemoryManager::setForce32BitAllocations(bool newValue) {
@@ -226,82 +134,46 @@ void MemoryManager::applyCommonCleanup() {
     if (this->paddingAllocation) {
         this->freeGraphicsMemory(this->paddingAllocation);
     }
-    if (profilingTimeStampAllocator)
-        profilingTimeStampAllocator->cleanUpResources();
-
-    if (perfCounterAllocator)
-        perfCounterAllocator->cleanUpResources();
-
-    cleanAllocationList(-1, TEMPORARY_ALLOCATION);
-    cleanAllocationList(-1, REUSABLE_ALLOCATION);
-}
-
-bool MemoryManager::cleanAllocationList(uint32_t waitTaskCount, uint32_t allocationUsage) {
-    std::lock_guard<decltype(mtx)> lock(mtx);
-    freeAllocationsList(waitTaskCount, (allocationUsage == TEMPORARY_ALLOCATION) ? graphicsAllocations : allocationsForReuse);
-    return false;
-}
-
-void MemoryManager::freeAllocationsList(uint32_t waitTaskCount, AllocationsList &allocationsList) {
-    GraphicsAllocation *curr = allocationsList.detachNodes();
-
-    IDList<GraphicsAllocation, false, true> allocationsLeft;
-    while (curr != nullptr) {
-        auto *next = curr->next;
-        if (curr->taskCount <= waitTaskCount) {
-            freeGraphicsMemory(curr);
-        } else {
-            allocationsLeft.pushTailOne(*curr);
-        }
-        curr = next;
-    }
-
-    if (allocationsLeft.peekIsEmpty() == false) {
-        allocationsList.splice(*allocationsLeft.detachNodes());
-    }
-}
-
-TagAllocator<HwTimeStamps> *MemoryManager::getEventTsAllocator() {
-    if (profilingTimeStampAllocator.get() == nullptr) {
-        profilingTimeStampAllocator.reset(new TagAllocator<HwTimeStamps>(this, ProfilingTagCount, MemoryConstants::cacheLineSize));
-    }
-    return profilingTimeStampAllocator.get();
-}
-
-TagAllocator<HwPerfCounter> *MemoryManager::getEventPerfCountAllocator() {
-    if (perfCounterAllocator.get() == nullptr) {
-        perfCounterAllocator.reset(new TagAllocator<HwPerfCounter>(this, PerfCounterTagCount, MemoryConstants::cacheLineSize));
-    }
-    return perfCounterAllocator.get();
-}
-
-void MemoryManager::pushAllocationForResidency(GraphicsAllocation *gfxAllocation) {
-    residencyAllocations.push_back(gfxAllocation);
-}
-
-void MemoryManager::clearResidencyAllocations() {
-    residencyAllocations.clear();
-}
-
-void MemoryManager::pushAllocationForEviction(GraphicsAllocation *gfxAllocation) {
-    evictionAllocations.push_back(gfxAllocation);
-}
-
-void MemoryManager::clearEvictionAllocations() {
-    evictionAllocations.clear();
 }
 
 void MemoryManager::freeGraphicsMemory(GraphicsAllocation *gfxAllocation) {
+    if (!gfxAllocation) {
+        return;
+    }
+
+    const bool hasFragments = gfxAllocation->fragmentsStorage.fragmentCount != 0;
+    const bool isLocked = gfxAllocation->isLocked();
+    DEBUG_BREAK_IF(hasFragments && isLocked);
+
+    if (!hasFragments) {
+        handleFenceCompletion(gfxAllocation);
+    }
+    if (isLocked) {
+        freeAssociatedResourceImpl(*gfxAllocation);
+    }
     freeGraphicsMemoryImpl(gfxAllocation);
 }
 //if not in use destroy in place
 //if in use pass to temporary allocation list that is cleaned on blocking calls
 void MemoryManager::checkGpuUsageAndDestroyGraphicsAllocations(GraphicsAllocation *gfxAllocation) {
-    if (gfxAllocation->taskCount == ObjectNotUsed || gfxAllocation->taskCount <= *csr->getTagAddress()) {
-        freeGraphicsMemory(gfxAllocation);
-    } else {
-        storeAllocation(std::unique_ptr<GraphicsAllocation>(gfxAllocation), TEMPORARY_ALLOCATION);
+    if (gfxAllocation->isUsed()) {
+        if (gfxAllocation->isUsedByManyOsContexts()) {
+            multiContextResourceDestructor->deferDeletion(new DeferrableAllocationDeletion{*this, *gfxAllocation});
+            multiContextResourceDestructor->drain(false);
+            return;
+        }
+        for (auto &engine : getRegisteredEngines()) {
+            auto osContextId = engine.osContext->getContextId();
+            auto allocationTaskCount = gfxAllocation->getTaskCount(osContextId);
+            if (gfxAllocation->isUsedByOsContext(osContextId) &&
+                allocationTaskCount > *engine.commandStreamReceiver->getTagAddress()) {
+                engine.commandStreamReceiver->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(gfxAllocation),
+                                                                                              TEMPORARY_ALLOCATION);
+                return;
+            }
+        }
     }
+    freeGraphicsMemory(gfxAllocation);
 }
 
 void MemoryManager::waitForDeletions() {
@@ -314,67 +186,38 @@ bool MemoryManager::isAsyncDeleterEnabled() const {
     return asyncDeleterEnabled;
 }
 
+bool MemoryManager::isLocalMemorySupported() const {
+    return localMemorySupported;
+}
+
 bool MemoryManager::isMemoryBudgetExhausted() const {
     return false;
 }
 
-RequirementsStatus MemoryManager::checkAllocationsForOverlapping(AllocationRequirements *requirements, CheckedFragments *checkedFragments) {
-    DEBUG_BREAK_IF(requirements == nullptr);
-    DEBUG_BREAK_IF(checkedFragments == nullptr);
+OsContext *MemoryManager::createAndRegisterOsContext(CommandStreamReceiver *commandStreamReceiver, aub_stream::EngineType engineType,
+                                                     DeviceBitfield deviceBitfield, PreemptionMode preemptionMode, bool lowPriority) {
+    auto contextId = ++latestContextId;
+    auto osContext = OsContext::create(executionEnvironment.osInterface.get(), contextId, deviceBitfield, engineType, preemptionMode, lowPriority);
+    osContext->incRefInternal();
 
-    RequirementsStatus status = RequirementsStatus::SUCCESS;
-    checkedFragments->count = 0;
+    registeredEngines.emplace_back(commandStreamReceiver, osContext);
 
-    for (unsigned int i = 0; i < max_fragments_count; i++) {
-        checkedFragments->status[i] = OverlapStatus::FRAGMENT_NOT_CHECKED;
-        checkedFragments->fragments[i] = nullptr;
-    }
-
-    for (unsigned int i = 0; i < requirements->requiredFragmentsCount; i++) {
-        checkedFragments->count++;
-        checkedFragments->fragments[i] = hostPtrManager.getFragmentAndCheckForOverlaps(requirements->AllocationFragments[i].allocationPtr, requirements->AllocationFragments[i].allocationSize, checkedFragments->status[i]);
-        if (checkedFragments->status[i] == OverlapStatus::FRAGMENT_OVERLAPING_AND_BIGGER_THEN_STORED_FRAGMENT) {
-            // clean temporary allocations
-            if (csr != nullptr) {
-                uint32_t taskCount = *csr->getTagAddress();
-                cleanAllocationList(taskCount, TEMPORARY_ALLOCATION);
-
-                // check overlapping again
-                checkedFragments->fragments[i] = hostPtrManager.getFragmentAndCheckForOverlaps(requirements->AllocationFragments[i].allocationPtr, requirements->AllocationFragments[i].allocationSize, checkedFragments->status[i]);
-
-                if (checkedFragments->status[i] == OverlapStatus::FRAGMENT_OVERLAPING_AND_BIGGER_THEN_STORED_FRAGMENT) {
-                    // Wait for completion
-                    while (*csr->getTagAddress() < csr->peekLatestSentTaskCount()) {
-                    }
-
-                    taskCount = *csr->getTagAddress();
-                    cleanAllocationList(taskCount, TEMPORARY_ALLOCATION);
-
-                    // check overlapping last time
-                    checkedFragments->fragments[i] = hostPtrManager.getFragmentAndCheckForOverlaps(requirements->AllocationFragments[i].allocationPtr, requirements->AllocationFragments[i].allocationSize, checkedFragments->status[i]);
-                    if (checkedFragments->status[i] == OverlapStatus::FRAGMENT_OVERLAPING_AND_BIGGER_THEN_STORED_FRAGMENT) {
-                        status = RequirementsStatus::FATAL;
-                        break;
-                    }
-                }
-            } else {
-                // This path is tested in ULTs
-                status = RequirementsStatus::FATAL;
-                break;
-            }
-        }
-    }
-    return status;
+    return osContext;
 }
 
-bool MemoryManager::getAllocationData(AllocationData &allocationData, bool mustBeZeroCopy, bool allocateMemory, bool forcePin, bool uncacheable, const void *hostPtr, size_t size, GraphicsAllocation::AllocationType type) {
-    UNRECOVERABLE_IF(hostPtr == nullptr && !allocateMemory);
+bool MemoryManager::getAllocationData(AllocationData &allocationData, const AllocationProperties &properties, const StorageInfo storageInfo,
+                                      const void *hostPtr) {
+    UNRECOVERABLE_IF(hostPtr == nullptr && !properties.flags.allocateMemory);
 
     bool allow64KbPages = false;
     bool allow32Bit = false;
+    bool forcePin = properties.flags.forcePin;
+    bool mustBeZeroCopy = false;
+    bool mayRequireL3Flush = false;
 
-    switch (type) {
+    switch (properties.allocationType) {
     case GraphicsAllocation::AllocationType::BUFFER:
+    case GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY:
     case GraphicsAllocation::AllocationType::BUFFER_COMPRESSED:
     case GraphicsAllocation::AllocationType::PIPE:
     case GraphicsAllocation::AllocationType::SCRATCH_SURFACE:
@@ -384,25 +227,95 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, bool mustB
     case GraphicsAllocation::AllocationType::GLOBAL_SURFACE:
         allow64KbPages = true;
         allow32Bit = true;
-        break;
     default:
         break;
     }
 
+    switch (properties.allocationType) {
+    case GraphicsAllocation::AllocationType::SVM_ZERO_COPY:
+    case GraphicsAllocation::AllocationType::SVM_GPU:
+        allow64KbPages = true;
+    default:
+        break;
+    }
+
+    switch (properties.allocationType) {
+    case GraphicsAllocation::AllocationType::BUFFER:
+    case GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY:
+    case GraphicsAllocation::AllocationType::BUFFER_COMPRESSED:
+        forcePin = true;
+    default:
+        break;
+    }
+
+    switch (properties.allocationType) {
+    case GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY:
+    case GraphicsAllocation::AllocationType::PIPE:
+    case GraphicsAllocation::AllocationType::PRINTF_SURFACE:
+    case GraphicsAllocation::AllocationType::CONSTANT_SURFACE:
+    case GraphicsAllocation::AllocationType::GLOBAL_SURFACE:
+    case GraphicsAllocation::AllocationType::SVM_ZERO_COPY:
+    case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
+    case GraphicsAllocation::AllocationType::SVM_CPU:
+        mustBeZeroCopy = true;
+    default:
+        break;
+    }
+
+    switch (properties.allocationType) {
+    case GraphicsAllocation::AllocationType::BUFFER:
+    case GraphicsAllocation::AllocationType::BUFFER_COMPRESSED:
+    case GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY:
+    case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
+    case GraphicsAllocation::AllocationType::GLOBAL_SURFACE:
+    case GraphicsAllocation::AllocationType::IMAGE:
+    case GraphicsAllocation::AllocationType::PIPE:
+    case GraphicsAllocation::AllocationType::SHARED_IMAGE:
+    case GraphicsAllocation::AllocationType::SHARED_BUFFER:
+    case GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY:
+    case GraphicsAllocation::AllocationType::SVM_ZERO_COPY:
+    case GraphicsAllocation::AllocationType::SVM_GPU:
+    case GraphicsAllocation::AllocationType::SVM_CPU:
+    case GraphicsAllocation::AllocationType::UNDECIDED:
+        mayRequireL3Flush = true;
+    default:
+        break;
+    }
+
+    switch (properties.allocationType) {
+    case GraphicsAllocation::AllocationType::UNDECIDED:
+    case GraphicsAllocation::AllocationType::FILL_PATTERN:
+    case GraphicsAllocation::AllocationType::PROFILING_TAG_BUFFER:
+    case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
+    case GraphicsAllocation::AllocationType::SVM_ZERO_COPY:
+    case GraphicsAllocation::AllocationType::SVM_CPU:
+        allocationData.flags.useSystemMemory = true;
+    default:
+        break;
+    }
+
+    allocationData.flags.requiresCpuAccess = GraphicsAllocation::isCpuAccessRequired(properties.allocationType);
     allocationData.flags.mustBeZeroCopy = mustBeZeroCopy;
-    allocationData.flags.allocateMemory = allocateMemory;
+    allocationData.flags.allocateMemory = properties.flags.allocateMemory;
     allocationData.flags.allow32Bit = allow32Bit;
     allocationData.flags.allow64kbPages = allow64KbPages;
     allocationData.flags.forcePin = forcePin;
-    allocationData.flags.uncacheable = uncacheable;
+    allocationData.flags.uncacheable = properties.flags.uncacheable;
+    allocationData.flags.flushL3 =
+        (mayRequireL3Flush ? properties.flags.flushL3RequiredForRead | properties.flags.flushL3RequiredForWrite : 0u);
+    allocationData.flags.preferRenderCompressed = GraphicsAllocation::AllocationType::BUFFER_COMPRESSED == properties.allocationType;
+    allocationData.flags.multiOsContextCapable = properties.flags.multiOsContextCapable;
 
     if (allocationData.flags.mustBeZeroCopy) {
         allocationData.flags.useSystemMemory = true;
     }
 
     allocationData.hostPtr = hostPtr;
-    allocationData.size = size;
-    allocationData.type = type;
+    allocationData.size = properties.size;
+    allocationData.type = properties.allocationType;
+    allocationData.storageInfo = storageInfo;
+    allocationData.alignment = properties.alignment ? properties.alignment : MemoryConstants::preferredAlignment;
+    allocationData.imgInfo = properties.imgInfo;
 
     if (allocationData.flags.allocateMemory) {
         allocationData.hostPtr = nullptr;
@@ -410,33 +323,150 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, bool mustB
     return true;
 }
 
-GraphicsAllocation *MemoryManager::allocateGraphicsMemoryInPreferredPool(bool mustBeZeroCopy, bool allocateMemory, bool forcePin, bool uncacheable, const void *hostPtr, size_t size, GraphicsAllocation::AllocationType type) {
+GraphicsAllocation *MemoryManager::allocateGraphicsMemoryInPreferredPool(const AllocationProperties &properties, const void *hostPtr) {
     AllocationData allocationData;
+    auto storageInfo = GraphicsAllocation::createStorageInfoFromProperties(properties);
+    getAllocationData(allocationData, properties, storageInfo, hostPtr);
+
     AllocationStatus status = AllocationStatus::Error;
-
-    getAllocationData(allocationData, mustBeZeroCopy, allocateMemory, forcePin, uncacheable, hostPtr, size, type);
-    UNRECOVERABLE_IF(allocationData.type == GraphicsAllocation::AllocationType::IMAGE || allocationData.type == GraphicsAllocation::AllocationType::SHARED_RESOURCE);
-    GraphicsAllocation *allocation = nullptr;
-
-    allocation = allocateGraphicsMemoryInDevicePool(allocationData, status);
+    GraphicsAllocation *allocation = allocateGraphicsMemoryInDevicePool(allocationData, status);
     if (!allocation && status == AllocationStatus::RetryInNonDevicePool) {
         allocation = allocateGraphicsMemory(allocationData);
     }
+    DebugManager.logAllocation(allocation);
     return allocation;
 }
 
 GraphicsAllocation *MemoryManager::allocateGraphicsMemory(const AllocationData &allocationData) {
-    if (force32bitAllocations && allocationData.flags.allow32Bit && is64bit) {
-        return allocate32BitGraphicsMemory(allocationData.size, allocationData.hostPtr, AllocationOrigin::EXTERNAL_ALLOCATION);
+    if (allocationData.type == GraphicsAllocation::AllocationType::IMAGE || allocationData.type == GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY) {
+        UNRECOVERABLE_IF(allocationData.imgInfo == nullptr);
+        return allocateGraphicsMemoryForImage(allocationData);
+    }
+    if (allocationData.type == GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR &&
+        (!executionEnvironment.isFullRangeSvm() || !DebugManager.flags.EnableHostPtrTracking.get())) {
+        auto allocation = allocateGraphicsMemoryForNonSvmHostPtr(allocationData);
+        if (allocation) {
+            allocation->setFlushL3Required(allocationData.flags.flushL3);
+        }
+        return allocation;
+    }
+    if (useInternal32BitAllocator(allocationData.type) ||
+        (force32bitAllocations && allocationData.flags.allow32Bit && is64bit)) {
+        return allocate32BitGraphicsMemoryImpl(allocationData);
     }
     if (allocationData.hostPtr) {
-        return allocateGraphicsMemory(allocationData.size, allocationData.hostPtr, allocationData.flags.forcePin);
+        return allocateGraphicsMemoryWithHostPtr(allocationData);
     }
     if (peek64kbPagesEnabled() && allocationData.flags.allow64kbPages) {
-        bool preferRenderCompressed = (allocationData.type == GraphicsAllocation::AllocationType::BUFFER_COMPRESSED);
-        return allocateGraphicsMemory64kb(allocationData.size, MemoryConstants::pageSize64k, allocationData.flags.forcePin, preferRenderCompressed);
+        return allocateGraphicsMemory64kb(allocationData);
     }
-    return allocateGraphicsMemory(allocationData.size, MemoryConstants::pageSize, allocationData.flags.forcePin, allocationData.flags.uncacheable);
+    return allocateGraphicsMemoryWithAlignment(allocationData);
 }
 
-} // namespace OCLRT
+GraphicsAllocation *MemoryManager::allocateGraphicsMemoryForImage(const AllocationData &allocationData) {
+    auto gmm = std::make_unique<Gmm>(*allocationData.imgInfo);
+
+    // AllocationData needs to be reconfigured for System Memory paths
+    AllocationData allocationDataWithSize = allocationData;
+    allocationDataWithSize.size = allocationData.imgInfo->size;
+
+    auto hostPtrAllocation = allocateGraphicsMemoryForImageFromHostPtr(allocationDataWithSize);
+
+    if (hostPtrAllocation) {
+        hostPtrAllocation->setDefaultGmm(gmm.release());
+        return hostPtrAllocation;
+    }
+
+    return allocateGraphicsMemoryForImageImpl(allocationDataWithSize, std::move(gmm));
+}
+
+EngineControlContainer &MemoryManager::getRegisteredEngines() {
+    return registeredEngines;
+}
+
+EngineControl *MemoryManager::getRegisteredEngineForCsr(CommandStreamReceiver *commandStreamReceiver) {
+    EngineControl *engineCtrl = nullptr;
+    for (auto &engine : registeredEngines) {
+        if (engine.commandStreamReceiver == commandStreamReceiver) {
+            engineCtrl = &engine;
+            break;
+        }
+    }
+    return engineCtrl;
+}
+
+CommandStreamReceiver *MemoryManager::getDefaultCommandStreamReceiver(uint32_t deviceId) const {
+    return executionEnvironment.commandStreamReceivers[deviceId][defaultEngineIndex].get();
+}
+
+void *MemoryManager::lockResource(GraphicsAllocation *graphicsAllocation) {
+    if (!graphicsAllocation) {
+        return nullptr;
+    }
+    if (graphicsAllocation->isLocked()) {
+        return graphicsAllocation->getLockedPtr();
+    }
+    auto retVal = lockResourceImpl(*graphicsAllocation);
+    graphicsAllocation->lock(retVal);
+    return retVal;
+}
+
+void MemoryManager::unlockResource(GraphicsAllocation *graphicsAllocation) {
+    if (!graphicsAllocation) {
+        return;
+    }
+    DEBUG_BREAK_IF(!graphicsAllocation->isLocked());
+    unlockResourceImpl(*graphicsAllocation);
+    graphicsAllocation->unlock();
+}
+
+HeapIndex MemoryManager::selectHeap(const GraphicsAllocation *allocation, bool hasPointer, bool isFullRangeSVM) {
+    if (allocation) {
+        if (useInternal32BitAllocator(allocation->getAllocationType())) {
+            return internalHeapIndex;
+        } else if (allocation->is32BitAllocation()) {
+            return HeapIndex::HEAP_EXTERNAL;
+        }
+    }
+    if (isFullRangeSVM) {
+        if (hasPointer) {
+            return HeapIndex::HEAP_SVM;
+        }
+        if (allocation && allocation->getDefaultGmm()->gmmResourceInfo->is64KBPageSuitable()) {
+            return HeapIndex::HEAP_STANDARD64KB;
+        }
+        return HeapIndex::HEAP_STANDARD;
+    }
+    // Limited range allocation goes to STANDARD heap
+    return HeapIndex::HEAP_STANDARD;
+}
+bool MemoryManager::copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, uint32_t sizeToCopy) const {
+    if (!graphicsAllocation->getUnderlyingBuffer()) {
+        return false;
+    }
+    memcpy_s(graphicsAllocation->getUnderlyingBuffer(), graphicsAllocation->getUnderlyingBufferSize(), memoryToCopy, sizeToCopy);
+    return true;
+}
+
+void MemoryManager::waitForEnginesCompletion(GraphicsAllocation &graphicsAllocation) {
+    for (auto &engine : getRegisteredEngines()) {
+        auto osContextId = engine.osContext->getContextId();
+        auto allocationTaskCount = graphicsAllocation.getTaskCount(osContextId);
+        if (graphicsAllocation.isUsedByOsContext(osContextId) &&
+            allocationTaskCount > *engine.commandStreamReceiver->getTagAddress()) {
+            engine.commandStreamReceiver->waitForCompletionWithTimeout(false, TimeoutControls::maxTimeout, allocationTaskCount);
+        }
+    }
+}
+
+void MemoryManager::cleanTemporaryAllocationListOnAllEngines(bool waitForCompletion) {
+    for (auto &engine : getRegisteredEngines()) {
+        auto csr = engine.commandStreamReceiver;
+        if (waitForCompletion) {
+            csr->waitForCompletionWithTimeout(false, 0, csr->peekLatestSentTaskCount());
+        }
+        csr->getInternalAllocationStorage()->cleanAllocationList(*csr->getTagAddress(), AllocationUsage::TEMPORARY_ALLOCATION);
+    }
+}
+
+} // namespace NEO

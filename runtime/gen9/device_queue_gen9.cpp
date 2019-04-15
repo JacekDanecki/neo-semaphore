@@ -1,32 +1,16 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/device_queue/device_queue_hw.h"
 #include "runtime/device_queue/device_queue_hw.inl"
 #include "runtime/device_queue/device_queue_hw_profiling.inl"
-
 #include "runtime/gen9/hw_cmds.h"
 
-namespace OCLRT {
+namespace NEO {
 typedef SKLFamily Family;
 static auto gfxCore = IGFX_GEN9_CORE;
 
@@ -48,13 +32,13 @@ size_t DeviceQueueHw<Family>::getWaCommandsSize() {
 template <>
 void DeviceQueueHw<Family>::addArbCheckCmdWa() {
     auto arbCheck = slbCS.getSpaceForCmd<Family::MI_ARB_CHECK>();
-    *arbCheck = Family::MI_ARB_CHECK::sInit();
+    *arbCheck = Family::cmdInitArbCheck;
 }
 
 template <>
 void DeviceQueueHw<Family>::addMiAtomicCmdWa(uint64_t atomicOpPlaceholder) {
     auto miAtomic = slbCS.getSpaceForCmd<Family::MI_ATOMIC>();
-    *miAtomic = Family::MI_ATOMIC::sInit();
+    *miAtomic = Family::cmdInitAtomic;
     miAtomic->setAtomicOpcode(Family::MI_ATOMIC::ATOMIC_OPCODES::ATOMIC_8B_INCREMENT);
     miAtomic->setReturnDataControl(0x1);
     miAtomic->setCsStall(0x1);
@@ -76,4 +60,4 @@ void DeviceQueueHw<Family>::addPipeControlCmdWa(bool isNoopCmd) {
 }
 
 template class DeviceQueueHw<Family>;
-} // namespace OCLRT
+} // namespace NEO

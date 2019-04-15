@@ -1,30 +1,15 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "unit_tests/indirect_heap/indirect_heap_fixture.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
+#include "unit_tests/indirect_heap/indirect_heap_fixture.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct IndirectHeapTest : public ::testing::Test {
     uint8_t buffer[256];
@@ -103,8 +88,8 @@ TEST_F(IndirectHeapTest, givenIndirectHeapWhenGetCpuBaseIsCalledThenCpuAddressIs
 
 TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapNotSupporting4GbModeWhenAskedForHeapGpuStartOffsetThenZeroIsReturned) {
     auto cpuBaseAddress = reinterpret_cast<void *>(0x3000);
-    GraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
-    graphicsAllocation.gpuBaseAddress = 4096u;
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
     IndirectHeap indirectHeap(&graphicsAllocation, false);
 
     EXPECT_EQ(0u, indirectHeap.getHeapGpuStartOffset());
@@ -112,8 +97,8 @@ TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapNotSupporting4GbModeWhen
 
 TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapSupporting4GbModeWhenAskedForHeapGpuStartOffsetThenZeroIsReturned) {
     auto cpuBaseAddress = reinterpret_cast<void *>(0x3000);
-    GraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
-    graphicsAllocation.gpuBaseAddress = 4096u;
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
     IndirectHeap indirectHeap(&graphicsAllocation, true);
 
     EXPECT_EQ(8192u, indirectHeap.getHeapGpuStartOffset());
@@ -121,8 +106,8 @@ TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapSupporting4GbModeWhenAsk
 
 TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapSupporting4GbModeWhenAskedForHeapBaseThenGpuBaseIsReturned) {
     auto cpuBaseAddress = reinterpret_cast<void *>(0x2000);
-    GraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
-    graphicsAllocation.gpuBaseAddress = 4096u;
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
     IndirectHeap indirectHeap(&graphicsAllocation, true);
 
     EXPECT_EQ(4096u, indirectHeap.getHeapGpuBase());
@@ -130,8 +115,8 @@ TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapSupporting4GbModeWhenAsk
 
 TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapNotSupporting4GbModeWhenAskedForHeapBaseThenGpuAddressIsReturned) {
     auto cpuBaseAddress = reinterpret_cast<void *>(0x2000);
-    GraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
-    graphicsAllocation.gpuBaseAddress = 4096u;
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
     IndirectHeap indirectHeap(&graphicsAllocation, false);
 
     EXPECT_EQ(8192u, indirectHeap.getHeapGpuBase());
@@ -139,8 +124,8 @@ TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapNotSupporting4GbModeWhen
 
 TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapNotSupporting4GbModeWhenAskedForHeapSizeThenGraphicsAllocationSizeInPagesIsReturned) {
     auto cpuBaseAddress = reinterpret_cast<void *>(0x2000);
-    GraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
-    graphicsAllocation.gpuBaseAddress = 4096u;
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
     IndirectHeap indirectHeap(&graphicsAllocation, false);
 
     EXPECT_EQ(1u, indirectHeap.getHeapSizeInPages());
@@ -148,8 +133,8 @@ TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapNotSupporting4GbModeWhen
 
 TEST(IndirectHeapWith4GbAllocatorTest, givenIndirectHeapSupporting4GbModeWhenAskedForHeapSizeThen4GbSizeInPagesIsReturned) {
     auto cpuBaseAddress = reinterpret_cast<void *>(0x2000);
-    GraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
-    graphicsAllocation.gpuBaseAddress = 4096u;
+    MockGraphicsAllocation graphicsAllocation(cpuBaseAddress, 4096u);
+    graphicsAllocation.setGpuBaseAddress(4096u);
     IndirectHeap indirectHeap(&graphicsAllocation, true);
 
     EXPECT_EQ(MemoryConstants::sizeOf4GBinPageEntities, indirectHeap.getHeapSizeInPages());

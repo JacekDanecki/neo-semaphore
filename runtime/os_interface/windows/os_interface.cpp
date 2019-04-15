@@ -1,31 +1,16 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "os_interface.h"
 
-#include "runtime/os_interface/windows/wddm/wddm.h"
 #include "runtime/os_interface/windows/sys_calls.h"
+#include "runtime/os_interface/windows/wddm/wddm.h"
 
-namespace OCLRT {
+namespace NEO {
 
 bool OSInterface::osEnabled64kbPages = true;
 
@@ -45,9 +30,7 @@ uint32_t OSInterface::getDeviceHandle() const {
     return static_cast<uint32_t>(osInterfaceImpl->getDeviceHandle());
 }
 
-OSInterface::OSInterfaceImpl::OSInterfaceImpl() {
-    wddm = nullptr;
-}
+OSInterface::OSInterfaceImpl::OSInterfaceImpl() = default;
 
 D3DKMT_HANDLE OSInterface::OSInterfaceImpl::getAdapterHandle() const {
     return wddm->getAdapter();
@@ -73,11 +56,11 @@ bool OSInterface::are64kbPagesEnabled() {
 }
 
 Wddm *OSInterface::OSInterfaceImpl::getWddm() const {
-    return wddm;
+    return wddm.get();
 }
 
 void OSInterface::OSInterfaceImpl::setWddm(Wddm *wddm) {
-    this->wddm = wddm;
+    this->wddm.reset(wddm);
 }
 
 HANDLE OSInterface::OSInterfaceImpl::createEvent(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState,
@@ -88,4 +71,4 @@ HANDLE OSInterface::OSInterfaceImpl::createEvent(LPSECURITY_ATTRIBUTES lpEventAt
 BOOL OSInterface::OSInterfaceImpl::closeHandle(HANDLE hObject) {
     return SysCalls::closeHandle(hObject);
 }
-} // namespace OCLRT
+} // namespace NEO

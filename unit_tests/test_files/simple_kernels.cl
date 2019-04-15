@@ -1,24 +1,11 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
 
 __kernel void simple_kernel_0(
     const uint arg0,
@@ -48,4 +35,90 @@ __kernel void simple_kernel_2(
     uint idx = get_global_id(0);
 
     dst[idx] = arg0;
+}
+
+__kernel void simple_kernel_3(
+    __global uint *dst) {
+    dst[get_global_id(0)] = 0;
+}
+
+__kernel void simple_kernel_4() {
+}
+
+__kernel void simple_kernel_5(__global uint *dst) {
+    //first uint holds the total work item count
+    atomic_inc(dst);
+    uint groupIdX = get_group_id(0);
+    uint groupIdY = get_group_id(1);
+    uint groupIdZ = get_group_id(2);
+    
+    uint groupCountX = get_num_groups(0);
+    uint groupCountY = get_num_groups(1);
+    uint groupCountZ = get_num_groups(2);
+
+    __global uint* groupCounters = dst+1;
+    //store current group position in 3D array
+    uint destination = groupIdZ * groupCountY * groupCountX + groupIdY * groupCountX + groupIdX;
+    atomic_inc(&groupCounters[destination]);
+}
+
+#define SIMPLE_KERNEL_6_ARRAY_SIZE 256
+__kernel void simple_kernel_6(__global uint *dst, __global uint2 *src, uint scalar, uint maxIterations, uint maxIterations2) {
+    __private uint2 array[SIMPLE_KERNEL_6_ARRAY_SIZE];
+    __private uint2 sum;
+    __private size_t gid = get_global_id(0);
+    __private size_t lid = get_local_id(0);
+
+    __private uint multi = 1;
+    if(lid == 1024) {
+        multi = 4;
+    }
+    sum = (uint2)(0, 0);
+
+    for(int i = 0; i < maxIterations; ++i) {
+        array[i] = src[i] + (uint2)(i*multi, i*multi+scalar);
+    }
+
+    for(int i = 0; i < maxIterations2; ++i) {
+        sum.x = array[i].x + sum.x;
+        sum.y = array[i].y + sum.y;
+    }
+
+    vstore2(sum, gid, dst);
+}
+
+typedef long16 TYPE;
+__attribute__((reqd_work_group_size(32, 1, 1))) // force LWS to 32
+__attribute__((intel_reqd_sub_group_size(8))) // force SIMD to 8
+__kernel void simple_kernel_7(__global int *resIdx, global TYPE *src, global TYPE *dst){
+    size_t lid = get_local_id(0);
+    size_t gid = get_global_id(0);
+
+    TYPE res1 = src[gid*3];
+    TYPE res2 = src[gid*3+1];
+    TYPE res3 = src[gid*3+2];
+
+    __local TYPE locMem[32];
+    locMem[lid] = res1;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    barrier(CLK_GLOBAL_MEM_FENCE);
+    TYPE res = (locMem[resIdx[gid]]*res3)*res2 + res1;
+
+    dst[gid] = res;
+}
+
+__kernel void simple_kernel_8(__global uint *dst, uint incrementationsCount) {
+    uint groupIdX = get_group_id(0);
+    uint groupIdY = get_group_id(1);
+    uint groupIdZ = get_group_id(2);
+
+    uint groupCountX = get_num_groups(0);
+    uint groupCountY = get_num_groups(1);
+    uint groupCountZ = get_num_groups(2);
+
+    uint destination = groupIdZ * groupCountY * groupCountX + groupIdY * groupCountX + groupIdX;
+
+    for(uint i = 0; i < incrementationsCount; i++){
+        dst[destination]++;
+    }
 }

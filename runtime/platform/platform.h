@@ -1,34 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "platform_info.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/device/device_vector.h"
 #include "runtime/helpers/base_object.h"
+
+#include "platform_info.h"
+
 #include <condition_variable>
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 
 class CompilerInterface;
 class Device;
@@ -78,7 +65,7 @@ class Platform : public BaseObject<_cl_platform_id> {
     };
     cl_uint state = StateNone;
     void fillGlobalDispatchTable();
-
+    MOCKABLE_VIRTUAL void initializationLoopHelper(){};
     std::unique_ptr<PlatformInfo> platformInfo;
     DeviceVector devices;
     std::string compilerExtensions;
@@ -89,4 +76,4 @@ class Platform : public BaseObject<_cl_platform_id> {
 extern std::unique_ptr<Platform> platformImpl;
 Platform *platform();
 Platform *constructPlatform();
-} // namespace OCLRT
+} // namespace NEO

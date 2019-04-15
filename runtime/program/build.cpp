@@ -1,35 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/compiler_interface/compiler_options.h"
+#include "runtime/gtpin/gtpin_notify.h"
+#include "runtime/helpers/validators.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/platform/platform.h"
 #include "runtime/source_level_debugger/source_level_debugger.h"
-#include "runtime/helpers/validators.h"
+
 #include "program.h"
+
 #include <cstring>
 
-namespace OCLRT {
+namespace NEO {
 
 cl_int Program::build(
     cl_uint numDevices,
@@ -70,45 +58,36 @@ cl_int Program::build(
             buildStatus = CL_BUILD_IN_PROGRESS;
 
             options = (buildOptions) ? buildOptions : "";
-            std::string reraStr = "-cl-intel-gtpin-rera";
-            size_t pos = options.find(reraStr);
-            if (pos != std::string::npos) {
-                // build option "-cl-intel-gtpin-rera" is present, move it to internalOptions
-                size_t reraLen = reraStr.length();
-                options.erase(pos, reraLen);
-                internalOptions.append(reraStr);
-                internalOptions.append(" ");
-            }
+            extractInternalOptions(options);
+            applyAdditionalOptions();
 
-            CompilerInterface *pCompilerInterface = getCompilerInterface();
+            CompilerInterface *pCompilerInterface = this->executionEnvironment.getCompilerInterface();
             if (!pCompilerInterface) {
                 retVal = CL_OUT_OF_HOST_MEMORY;
                 break;
             }
 
             TranslationArgs inputArgs = {};
+
             if (strcmp(sourceCode.c_str(), "") == 0) {
                 retVal = CL_INVALID_PROGRAM;
                 break;
             }
 
             if (isKernelDebugEnabled()) {
-                internalOptions.append(CompilerOptions::debugKernelEnable);
-                options.append(" -g ");
-                if (pDevice->getSourceLevelDebugger()) {
-                    if (pDevice->getSourceLevelDebugger()->isOptimizationDisabled()) {
-                        options.append("-cl-opt-disable ");
-                    }
-                    std::string filename;
-                    pDevice->getSourceLevelDebugger()->notifySourceCode(sourceCode.c_str(), sourceCode.size(), filename);
-                    if (!filename.empty()) {
-                        // Add "-s" flag first so it will be ignored by clang in case the options already have this flag set.
-                        options = std::string("-s ") + filename + " " + options;
-                    }
+                std::string filename;
+                appendKernelDebugOptions();
+                notifyDebuggerWithSourceCode(filename);
+                if (!filename.empty()) {
+                    // Add "-s" flag first so it will be ignored by clang in case the options already have this flag set.
+                    options = std::string("-s ") + filename + " " + options;
                 }
             }
 
-            internalOptions.append(platform()->peekCompilerExtensions());
+            auto compilerExtensionsOptions = platform()->peekCompilerExtensions();
+            if (internalOptions.find(compilerExtensionsOptions) == std::string::npos) {
+                internalOptions.append(compilerExtensionsOptions);
+            }
 
             inputArgs.pInput = (char *)(sourceCode.c_str());
             inputArgs.InputSize = (uint32_t)sourceCode.size();
@@ -118,6 +97,7 @@ cl_int Program::build(
             inputArgs.InternalOptionsSize = (uint32_t)internalOptions.length();
             inputArgs.pTracingOptions = nullptr;
             inputArgs.TracingOptionsCount = 0;
+            inputArgs.GTPinInput = gtpinGetIgcInit();
             DBG_LOG(LogApiCalls,
                     "Build Options", inputArgs.pOptions,
                     "\nBuild Internal Options", inputArgs.pInternalOptions);
@@ -161,6 +141,23 @@ cl_int Program::build(
     return retVal;
 }
 
+bool Program::appendKernelDebugOptions() {
+    internalOptions.append(CompilerOptions::debugKernelEnable);
+    options.append(" -g ");
+    if (pDevice->getSourceLevelDebugger()) {
+        if (pDevice->getSourceLevelDebugger()->isOptimizationDisabled()) {
+            options.append("-cl-opt-disable ");
+        }
+    }
+    return true;
+}
+
+void Program::notifyDebuggerWithSourceCode(std::string &filename) {
+    if (pDevice->getSourceLevelDebugger()) {
+        pDevice->getSourceLevelDebugger()->notifySourceCode(sourceCode.c_str(), sourceCode.size(), filename);
+    }
+}
+
 cl_int Program::build(const cl_device_id device, const char *buildOptions, bool enableCaching,
                       std::unordered_map<std::string, BuiltinDispatchInfoBuilder *> &builtinsMap) {
     auto ret = this->build(1, &device, buildOptions, nullptr, nullptr, enableCaching);
@@ -186,4 +183,15 @@ cl_int Program::build(
 
     return retVal;
 }
-} // namespace OCLRT
+
+void Program::extractInternalOptions(std::string &options) {
+    for (auto &optionString : internalOptionsToExtract) {
+        size_t pos = options.find(optionString);
+        if (pos != std::string::npos) {
+            options.erase(pos, optionString.length());
+            internalOptions.append(optionString);
+            internalOptions.append(" ");
+        }
+    }
+}
+} // namespace NEO

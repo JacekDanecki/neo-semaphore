@@ -1,37 +1,23 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #pragma once
+#include "runtime/aub/aub_helper.h"
 #include "unit_tests/aub_tests/command_stream/aub_mem_dump_tests.h"
 
 template <typename FamilyType>
-void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType engineType, uint64_t gpuBatchBufferAddr) {
-    typedef typename OCLRT::AUBFamilyMapper<FamilyType>::AUB AUB;
-    const auto &csTraits = OCLRT::AUBCommandStreamReceiverHw<FamilyType>::getCsTraits(engineType);
+void setupAUBWithBatchBuffer(const NEO::Device *pDevice, aub_stream::EngineType engineType, uint64_t gpuBatchBufferAddr) {
+    typedef typename NEO::AUBFamilyMapper<FamilyType>::AUB AUB;
+    const auto &csTraits = NEO::CommandStreamReceiverSimulatedCommonHw<FamilyType>::getCsTraits(engineType);
     auto mmioBase = csTraits.mmioBase;
     uint64_t physAddress = 0x10000;
 
-    OCLRT::AUBCommandStreamReceiver::AubFileStream aubFile;
-    std::string filePath(OCLRT::folderAUB);
+    NEO::AUBCommandStreamReceiver::AubFileStream aubFile;
+    std::string filePath(NEO::folderAUB);
     filePath.append(Os::fileSeparator);
     std::string baseName("simple");
     baseName.append(csTraits.name);
@@ -45,7 +31,7 @@ void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType eng
     auto deviceId = pDevice->getHardwareInfo().capabilityTable.aubDeviceId;
     aubFile.init(AubMemDump::SteppingValues::A, deviceId);
 
-    aubFile.writeMMIO(mmioBase + 0x229c, 0xffff8280);
+    aubFile.writeMMIO(AubMemDump::computeRegisterOffset(mmioBase, 0x229c), 0xffff8280);
 
     const size_t sizeHWSP = 0x1000;
     const size_t alignHWSP = 0x1000;
@@ -56,7 +42,7 @@ void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType eng
     AUB::reserveAddressGGTT(aubFile, ggttGlobalHardwareStatusPage, sizeHWSP, physAddress, data);
     physAddress += sizeHWSP;
 
-    aubFile.writeMMIO(mmioBase + 0x2080, ggttGlobalHardwareStatusPage);
+    aubFile.writeMMIO(AubMemDump::computeRegisterOffset(mmioBase, 0x2080), ggttGlobalHardwareStatusPage);
 
     using MI_NOOP = typename FamilyType::MI_NOOP;
     using MI_BATCH_BUFFER_START = typename FamilyType::MI_BATCH_BUFFER_START;
@@ -67,10 +53,13 @@ void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType eng
     const auto sizeBatchBuffer = 0x1000;
     auto gpuBatchBuffer = static_cast<uintptr_t>(gpuBatchBufferAddr);
     physAddress += sizeBatchBuffer;
-    AUB::reserveAddressPPGTT(aubFile, gpuBatchBuffer, sizeBatchBuffer, physBatchBuffer, 7);
+
+    NEO::AubHelperHw<FamilyType> aubHelperHw(false);
+
+    AUB::reserveAddressPPGTT(aubFile, gpuBatchBuffer, sizeBatchBuffer, physBatchBuffer, 7, aubHelperHw);
     uint8_t batchBuffer[sizeBatchBuffer];
 
-    auto noop = MI_NOOP::sInit();
+    auto noop = FamilyType::cmdInitNoop;
     uint32_t noopId = 0xbaadd;
 
     {
@@ -85,7 +74,7 @@ void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType eng
         noop.TheStructure.Common.IdentificationNumber = noopId++;
         *(MI_NOOP *)pBatchBuffer = noop;
         pBatchBuffer = ptrOffset(pBatchBuffer, sizeof(MI_NOOP));
-        *(MI_BATCH_BUFFER_END *)pBatchBuffer = MI_BATCH_BUFFER_END::sInit();
+        *(MI_BATCH_BUFFER_END *)pBatchBuffer = FamilyType::cmdInitBatchBufferEnd;
         pBatchBuffer = ptrOffset(pBatchBuffer, sizeof(MI_BATCH_BUFFER_END));
         auto sizeBufferUsed = ptrDiff(pBatchBuffer, batchBuffer);
 
@@ -105,7 +94,7 @@ void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType eng
     EXPECT_EQ(rRing, physRing);
 
     auto cur = (uint32_t *)pRing;
-    auto bbs = MI_BATCH_BUFFER_START::sInit();
+    auto bbs = FamilyType::cmdInitBatchBufferStart;
     bbs.setBatchBufferStartAddressGraphicsaddress472(gpuBatchBuffer);
     bbs.setAddressSpaceIndicator(MI_BATCH_BUFFER_START::ADDRESS_SPACE_INDICATOR_PPGTT);
     *(MI_BATCH_BUFFER_START *)cur = bbs;
@@ -148,15 +137,15 @@ void setupAUBWithBatchBuffer(const OCLRT::Device *pDevice, OCLRT::EngineType eng
     contextDescriptor.sData.ContextID = 0;
 
     // Submit our exec-list
-    aubFile.writeMMIO(mmioBase + 0x2230, 0);
-    aubFile.writeMMIO(mmioBase + 0x2230, 0);
-    aubFile.writeMMIO(mmioBase + 0x2230, contextDescriptor.ulData[1]);
-    aubFile.writeMMIO(mmioBase + 0x2230, contextDescriptor.ulData[0]);
+    aubFile.writeMMIO(AubMemDump::computeRegisterOffset(mmioBase, 0x2230), 0);
+    aubFile.writeMMIO(AubMemDump::computeRegisterOffset(mmioBase, 0x2230), 0);
+    aubFile.writeMMIO(AubMemDump::computeRegisterOffset(mmioBase, 0x2230), contextDescriptor.ulData[1]);
+    aubFile.writeMMIO(AubMemDump::computeRegisterOffset(mmioBase, 0x2230), contextDescriptor.ulData[0]);
 
     // Poll until HW complete
     using AubMemDump::CmdServicesMemTraceRegisterPoll;
     aubFile.registerPoll(
-        mmioBase + 0x2234, //EXECLIST_STATUS
+        AubMemDump::computeRegisterOffset(mmioBase, 0x2234), //EXECLIST_STATUS
         0x100,
         0x100,
         false,

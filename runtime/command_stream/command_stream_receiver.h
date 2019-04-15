@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -31,18 +16,33 @@
 #include "runtime/helpers/flat_batch_buffer_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/indirect_heap/indirect_heap.h"
+#include "runtime/kernel/grf_config.h"
+
 #include <cstddef>
 #include <cstdint>
 
-namespace OCLRT {
+namespace NEO {
+class AllocationsList;
 class Device;
 class EventBuilder;
+class ExecutionEnvironment;
 class ExperimentalCommandBuffer;
+class GmmPageTableMngr;
 class GraphicsAllocation;
+class HostPtrSurface;
 class IndirectHeap;
+class InternalAllocationStorage;
 class LinearStream;
 class MemoryManager;
+class OsContext;
 class OSInterface;
+class ScratchSpaceController;
+class TimestampPacket;
+struct HwPerfCounter;
+struct HwTimeStamps;
+
+template <typename T1>
+class TagAllocator;
 
 enum class DispatchMode {
     DeviceDefault = 0,          //default for given device
@@ -59,37 +59,40 @@ class CommandStreamReceiver {
         samplerCacheFlushBefore, //add sampler cache flush before Walker with redescribed image
         samplerCacheFlushAfter   //add sampler cache flush after Walker with redescribed image
     };
-    CommandStreamReceiver();
+    using MutexType = std::recursive_mutex;
+    CommandStreamReceiver(ExecutionEnvironment &executionEnvironment);
     virtual ~CommandStreamReceiver();
 
-    virtual FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineType, ResidencyContainer *allocationsForResidency) = 0;
+    virtual FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) = 0;
 
     virtual CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
                                       const IndirectHeap &dsh, const IndirectHeap &ioh, const IndirectHeap &ssh,
-                                      uint32_t taskLevel, DispatchFlags &dispatchFlags) = 0;
+                                      uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) = 0;
 
     virtual void flushBatchedSubmissions() = 0;
 
     virtual void makeCoherent(GraphicsAllocation &gfxAllocation){};
     virtual void makeResident(GraphicsAllocation &gfxAllocation);
     virtual void makeNonResident(GraphicsAllocation &gfxAllocation);
-    void makeSurfacePackNonResident(ResidencyContainer *allocationsForResidency, bool blocking);
-    virtual void processResidency(ResidencyContainer *allocationsForResidency) {}
+    void makeSurfacePackNonResident(ResidencyContainer &allocationsForResidency);
+    virtual void processResidency(ResidencyContainer &allocationsForResidency) {}
     virtual void processEviction();
     void makeResidentHostPtrAllocation(GraphicsAllocation *gfxAllocation);
-    virtual void waitBeforeMakingNonResidentWhenRequired(bool blocking) {}
+    virtual void waitBeforeMakingNonResidentWhenRequired() {}
 
-    virtual void addPipeControl(LinearStream &commandStream, bool dcFlush) = 0;
+    void ensureCommandBufferAllocation(LinearStream &commandStream, size_t minimumRequiredSize, size_t additionalAllocationSize);
 
-    MemoryManager *getMemoryManager();
-    virtual MemoryManager *createMemoryManager(bool enable64kbPages) { return nullptr; }
-    void setMemoryManager(MemoryManager *mm);
+    MemoryManager *getMemoryManager() const;
 
-    GraphicsAllocation *createAllocationAndHandleResidency(const void *address, size_t size, bool addToDefferFreeList = true);
-    void waitForTaskCountAndCleanAllocationList(uint32_t requiredTaskCount, uint32_t allocationType);
+    ResidencyContainer &getResidencyAllocations();
+    ResidencyContainer &getEvictionAllocations();
+
+    virtual GmmPageTableMngr *createPageTableManager() { return nullptr; }
+
+    MOCKABLE_VIRTUAL void waitForTaskCountAndCleanAllocationList(uint32_t requiredTaskCount, uint32_t allocationUsage);
 
     LinearStream &getCS(size_t minRequiredSize = 1024u);
-    OSInterface *getOSInterface() { return osInterface.get(); };
+    OSInterface *getOSInterface() const { return osInterface; };
 
     MOCKABLE_VIRTUAL void setTagAllocation(GraphicsAllocation *allocation);
     GraphicsAllocation *getTagAllocation() const {
@@ -111,29 +114,29 @@ class CommandStreamReceiver {
     bool isNTo1SubmissionModelEnabled() const { return this->nTo1SubmissionModelEnabled; }
     void overrideDispatchPolicy(DispatchMode overrideValue) { this->dispatchMode = overrideValue; }
 
-    virtual void overrideMediaVFEStateDirty(bool dirty) { mediaVfeStateDirty = dirty; }
+    void setMediaVFEStateDirty(bool dirty) { mediaVfeStateDirty = dirty; }
 
     void setRequiredScratchSize(uint32_t newRequiredScratchSize);
-    GraphicsAllocation *getScratchAllocation() { return scratchAllocation; }
-    GraphicsAllocation *getDebugSurfaceAllocation() { return debugSurface; }
+    GraphicsAllocation *getScratchAllocation();
+    GraphicsAllocation *getDebugSurfaceAllocation() const { return debugSurface; }
     GraphicsAllocation *allocateDebugSurface(size_t size);
 
     void setPreemptionCsrAllocation(GraphicsAllocation *allocation) { preemptionCsrAllocation = allocation; }
 
-    void cleanupResources();
-
     void requestThreadArbitrationPolicy(uint32_t requiredPolicy) { this->requiredThreadArbitrationPolicy = requiredPolicy; }
+    void requestStallingPipeControlOnNextFlush() { stallingPipeControlOnNextFlushRequired = true; }
 
-    virtual void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep) = 0;
+    virtual void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool forcePowerSavingMode) = 0;
     MOCKABLE_VIRTUAL bool waitForCompletionWithTimeout(bool enableTimeout, int64_t timeoutMicroseconds, uint32_t taskCountToWait);
 
     void setSamplerCacheFlushRequired(SamplerCacheFlushState value) { this->samplerCacheFlushRequired = value; }
 
-    FlatBatchBufferHelper &getFlatBatchBufferHelper() { return *flatBatchBufferHelper.get(); }
+    FlatBatchBufferHelper &getFlatBatchBufferHelper() const { return *flatBatchBufferHelper; }
     void overwriteFlatBatchBufferHelper(FlatBatchBufferHelper *newHelper) { flatBatchBufferHelper.reset(newHelper); }
 
     MOCKABLE_VIRTUAL void initProgrammingFlags();
     virtual void activateAubSubCapture(const MultiDispatchInfo &dispatchInfo);
+    virtual void addAubComment(const char *comment);
 
     IndirectHeap &getIndirectHeap(IndirectHeap::Type heapType, size_t minRequiredSize);
     void allocateHeapMemory(IndirectHeap::Type heapType, size_t minRequiredSize, IndirectHeap *&indirectHeap);
@@ -143,59 +146,108 @@ class CommandStreamReceiver {
     void setExperimentalCmdBuffer(std::unique_ptr<ExperimentalCommandBuffer> &&cmdBuffer);
 
     bool initializeTagAllocation();
+    MOCKABLE_VIRTUAL std::unique_lock<MutexType> obtainUniqueOwnership();
 
-  protected:
+    KmdNotifyHelper *peekKmdNotifyHelper() {
+        return kmdNotifyHelper.get();
+    }
+
+    bool peekTimestampPacketWriteEnabled() const { return timestampPacketWriteEnabled; }
+
+    size_t defaultSshSize;
+
+    void setDeviceIndex(uint32_t deviceIndex) { this->deviceIndex = deviceIndex; }
+    AllocationsList &getTemporaryAllocations();
+    AllocationsList &getAllocationsForReuse();
+    InternalAllocationStorage *getInternalAllocationStorage() const { return internalAllocationStorage.get(); }
+    bool createAllocationForHostSurface(HostPtrSurface &surface, bool requiresL3Flush);
+    virtual size_t getPreferredTagPoolSize() const { return 512; }
+    virtual void setupContext(OsContext &osContext) { this->osContext = &osContext; }
+    OsContext &getOsContext() const { return *osContext; }
+
+    TagAllocator<HwTimeStamps> *getEventTsAllocator();
+    TagAllocator<HwPerfCounter> *getEventPerfCountAllocator();
+    TagAllocator<TimestampPacket> *getTimestampPacketAllocator();
+
+    virtual cl_int expectMemory(const void *gfxAddress, const void *srcAddress, size_t length, uint32_t compareOperation);
+
     void setDisableL3Cache(bool val) {
         disableL3Cache = val;
     }
+    bool isMultiOsContextCapable() const;
 
-    // taskCount - # of tasks submitted
-    uint32_t taskCount = 0;
-    // current taskLevel.  Used for determining if a PIPE_CONTROL is needed.
-    std::atomic<uint32_t> taskLevel{0};
+    void setLatestSentTaskCount(uint32_t latestSentTaskCount) {
+        this->latestSentTaskCount = latestSentTaskCount;
+    }
 
-    std::atomic<uint32_t> latestSentTaskCount{0};
-    std::atomic<uint32_t> latestFlushedTaskCount{0};
+    virtual void blitFromHostPtr(MemObj &destinationMemObj, void *sourceHostPtr, uint64_t sourceSize) = 0;
+
+  protected:
+    void cleanupResources();
 
     std::unique_ptr<FlushStampTracker> flushStamp;
+    std::unique_ptr<SubmissionAggregator> submissionAggregator;
+    std::unique_ptr<FlatBatchBufferHelper> flatBatchBufferHelper;
+    std::unique_ptr<ExperimentalCommandBuffer> experimentalCmdBuffer;
+    std::unique_ptr<InternalAllocationStorage> internalAllocationStorage;
+    std::unique_ptr<KmdNotifyHelper> kmdNotifyHelper;
+    std::unique_ptr<ScratchSpaceController> scratchSpaceController;
+    std::unique_ptr<TagAllocator<HwTimeStamps>> profilingTimeStampAllocator;
+    std::unique_ptr<TagAllocator<HwPerfCounter>> perfCounterAllocator;
+    std::unique_ptr<TagAllocator<TimestampPacket>> timestampPacketAllocator;
 
-    volatile uint32_t *tagAddress = nullptr;
-    GraphicsAllocation *tagAllocation = nullptr;
-
-    bool isPreambleSent = false;
-    bool GSBAFor32BitProgrammed = false;
-    bool mediaVfeStateDirty = true;
-    bool lastVmeSubslicesConfig = false;
-
-    uint32_t lastSentL3Config = 0;
-    int8_t lastSentCoherencyRequest = -1;
-    int8_t lastMediaSamplerConfig = -1;
-    PreemptionMode lastPreemptionMode = PreemptionMode::Initial;
-    uint32_t latestSentStatelessMocsConfig = 0;
+    ResidencyContainer residencyAllocations;
+    ResidencyContainer evictionAllocations;
+    MutexType ownershipMutex;
+    ExecutionEnvironment &executionEnvironment;
 
     LinearStream commandStream;
 
+    volatile uint32_t *tagAddress = nullptr;
+
+    GraphicsAllocation *tagAllocation = nullptr;
+    GraphicsAllocation *preemptionCsrAllocation = nullptr;
+    GraphicsAllocation *debugSurface = nullptr;
+    OSInterface *osInterface = nullptr;
+
+    IndirectHeap *indirectHeap[IndirectHeap::NUM_TYPES];
+
+    // current taskLevel.  Used for determining if a PIPE_CONTROL is needed.
+    std::atomic<uint32_t> taskLevel{0};
+    std::atomic<uint32_t> latestSentTaskCount{0};
+    std::atomic<uint32_t> latestFlushedTaskCount{0};
+
+    OsContext *osContext = nullptr;
+    DispatchMode dispatchMode = DispatchMode::ImmediateDispatch;
+    SamplerCacheFlushState samplerCacheFlushRequired = SamplerCacheFlushState::samplerCacheFlushNotRequired;
+    PreemptionMode lastPreemptionMode = PreemptionMode::Initial;
+    uint64_t totalMemoryUsed = 0u;
+
+    uint32_t deviceIndex = 0u;
+    // taskCount - # of tasks submitted
+    uint32_t taskCount = 0;
+    uint32_t lastSentL3Config = 0;
+    uint32_t latestSentStatelessMocsConfig = 0;
+    uint32_t lastSentNumGrfRequired = GrfConfig::DefaultGrfNumber;
     uint32_t requiredThreadArbitrationPolicy = ThreadArbitrationPolicy::RoundRobin;
     uint32_t lastSentThreadArbitrationPolicy = ThreadArbitrationPolicy::NotPresent;
 
-    GraphicsAllocation *scratchAllocation = nullptr;
-    GraphicsAllocation *preemptionCsrAllocation = nullptr;
-    GraphicsAllocation *debugSurface = nullptr;
-
-    MemoryManager *memoryManager = nullptr;
-    std::unique_ptr<OSInterface> osInterface;
-    std::unique_ptr<SubmissionAggregator> submissionAggregator;
-
-    bool nTo1SubmissionModelEnabled = false;
-    DispatchMode dispatchMode = DispatchMode::ImmediateDispatch;
-    bool disableL3Cache = false;
     uint32_t requiredScratchSize = 0;
-    uint64_t totalMemoryUsed = 0u;
-    SamplerCacheFlushState samplerCacheFlushRequired = SamplerCacheFlushState::samplerCacheFlushNotRequired;
-    IndirectHeap *indirectHeap[IndirectHeap::NUM_TYPES];
-    std::unique_ptr<FlatBatchBufferHelper> flatBatchBufferHelper;
-    std::unique_ptr<ExperimentalCommandBuffer> experimentalCmdBuffer;
+
+    int8_t lastSentCoherencyRequest = -1;
+    int8_t lastMediaSamplerConfig = -1;
+
+    bool isPreambleSent = false;
+    bool isStateSipSent = false;
+    bool GSBAFor32BitProgrammed = false;
+    bool mediaVfeStateDirty = true;
+    bool lastVmeSubslicesConfig = false;
+    bool disableL3Cache = false;
+    bool stallingPipeControlOnNextFlushRequired = false;
+    bool timestampPacketWriteEnabled = false;
+    bool nTo1SubmissionModelEnabled = false;
+    bool lastSpecialPipelineSelectMode = false;
 };
 
-typedef CommandStreamReceiver *(*CommandStreamReceiverCreateFunc)(const HardwareInfo &hwInfoIn, bool withAubDump);
-} // namespace OCLRT
+typedef CommandStreamReceiver *(*CommandStreamReceiverCreateFunc)(bool withAubDump, ExecutionEnvironment &executionEnvironment);
+} // namespace NEO

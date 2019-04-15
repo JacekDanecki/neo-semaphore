@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/context/context.h"
@@ -26,12 +11,13 @@
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/kernel/kernel.h"
+
 #include <algorithm>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <ctime>
 
-namespace OCLRT {
+namespace NEO {
 
 //threshold used to determine what kind of device is underneath
 //big cores like SKL have 8EU * 7 HW threads per subslice and are considered as highThreadCount devices
@@ -310,16 +296,16 @@ void computeWorkgroupSizeSquared(uint32_t maxWorkGroupSize, size_t workGroupSize
     size_t itemsPowerOfTwoDivisors[3] = {1, 1, 1};
     for (auto i = 0u; i < workDim; i++) {
         uint32_t requiredWorkItemsCount = maxWorkGroupSize;
-        while (requiredWorkItemsCount > 1 && !(Math::isDivisableByPowerOfTwoDivisor(uint32_t(workItems[i]), requiredWorkItemsCount)))
-            requiredWorkItemsCount = requiredWorkItemsCount >> 1;
+        while (requiredWorkItemsCount > 1 && !(Math::isDivisibleByPowerOfTwoDivisor(uint32_t(workItems[i]), requiredWorkItemsCount)))
+            requiredWorkItemsCount >>= 1;
         itemsPowerOfTwoDivisors[i] = requiredWorkItemsCount;
     }
     if (itemsPowerOfTwoDivisors[0] * itemsPowerOfTwoDivisors[1] >= maxWorkGroupSize) {
         while (itemsPowerOfTwoDivisors[0] * itemsPowerOfTwoDivisors[1] > maxWorkGroupSize) {
             if (itemsPowerOfTwoDivisors[0] > itemsPowerOfTwoDivisors[1])
-                itemsPowerOfTwoDivisors[0] = itemsPowerOfTwoDivisors[0] >> 1;
+                itemsPowerOfTwoDivisors[0] >>= 1;
             else
-                itemsPowerOfTwoDivisors[1] = itemsPowerOfTwoDivisors[1] >> 1;
+                itemsPowerOfTwoDivisors[1] >>= 1;
         }
         for (auto i = 0u; i < 3; i++)
             workGroupSize[i] = itemsPowerOfTwoDivisors[i];
@@ -352,8 +338,8 @@ void computeWorkgroupSizeND(WorkSizeInfo wsInfo, size_t workGroupSize[3], const 
         size_t itemsPowerOfTwoDivisors[3] = {1, 1, 1};
         for (auto i = 0u; i < workDim; i++) {
             uint32_t requiredWorkItemsCount = uint32_t(wsInfo.simdSize * optimalHardwareThreadCountGeneric[0]);
-            while (requiredWorkItemsCount > 1 && !(Math::isDivisableByPowerOfTwoDivisor(uint32_t(workItems[i]), requiredWorkItemsCount)))
-                requiredWorkItemsCount = requiredWorkItemsCount >> 1;
+            while (requiredWorkItemsCount > 1 && !(Math::isDivisibleByPowerOfTwoDivisor(uint32_t(workItems[i]), requiredWorkItemsCount)))
+                requiredWorkItemsCount >>= 1;
             itemsPowerOfTwoDivisors[i] = requiredWorkItemsCount;
         }
 
@@ -487,4 +473,4 @@ void provideLocalWorkGroupSizeHints(Context *context, uint32_t maxWorkGroupSize,
         }
     }
 }
-} // namespace OCLRT
+} // namespace NEO

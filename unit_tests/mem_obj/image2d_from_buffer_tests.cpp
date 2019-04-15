@@ -1,34 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/mem_obj/image.h"
-#include "runtime/mem_obj/buffer.h"
 #include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/hw_helper.h"
+#include "runtime/mem_obj/buffer.h"
+#include "runtime/mem_obj/image.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/helpers/raii_hw_helper.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_gmm.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
+
+namespace NEO {
+extern HwHelper *hwHelperFactory[IGFX_MAX_CORE];
+}
 
 // Tests for cl_khr_image2d_from_buffer
 class Image2dFromBufferTest : public DeviceFixture, public ::testing::Test {
@@ -235,7 +226,7 @@ TEST_F(Image2dFromBufferTest, givenUnalignedImageWidthAndNoSpaceInBufferForAlign
 }
 
 TEST_F(Image2dFromBufferTest, ExtensionString) {
-    auto device = std::unique_ptr<Device>(DeviceHelper<>::create(platformDevices[0]));
+    auto device = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     const auto &caps = device->getDeviceInfo();
     std::string extensions = caps.deviceExtensions;
     size_t found = extensions.find("cl_khr_image2d_from_buffer");
@@ -254,6 +245,15 @@ TEST_F(Image2dFromBufferTest, InterceptBuffersHostPtr) {
     EXPECT_EQ(true, imageFromBuffer->isMemObjZeroCopy());
 
     delete imageFromBuffer;
+}
+
+TEST_F(Image2dFromBufferTest, givenImageFromBufferWhenItIsRedescribedThenItReturnsProperImageFromBufferValue) {
+    std::unique_ptr<Image> imageFromBuffer(createImage());
+    EXPECT_TRUE(imageFromBuffer->isImageFromBuffer());
+    std::unique_ptr<Image> redescribedImage(imageFromBuffer->redescribe());
+    EXPECT_TRUE(redescribedImage->isImageFromBuffer());
+    std::unique_ptr<Image> redescribedfillImage(imageFromBuffer->redescribeFillImage());
+    EXPECT_TRUE(redescribedfillImage->isImageFromBuffer());
 }
 
 TEST_F(Image2dFromBufferTest, givenMemoryManagerNotSupportingVirtualPaddingWhenImageIsCreatedThenPaddingIsNotApplied) {
@@ -379,4 +379,46 @@ TEST_F(Image2dFromBufferTest, givenMemoryManagerSupporting1DImageFromBufferWhenN
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     imageDesc.mem_object = storeMem;
+}
+
+TEST_F(Image2dFromBufferTest, givenBufferWhenImageFromBufferThenIsImageFromBufferSetAndAllocationTypeIsBuffer) {
+    cl_int errCode = 0;
+    auto buffer = Buffer::create(&context, 0, 1, nullptr, errCode);
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    auto memObj = imageDesc.mem_object;
+    imageDesc.mem_object = buffer;
+
+    std::unique_ptr<Image> imageFromBuffer(createImage());
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    EXPECT_TRUE(imageFromBuffer.get()->isImageFromBuffer());
+    EXPECT_TRUE(GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY == imageFromBuffer.get()->getGraphicsAllocation()->getAllocationType());
+
+    buffer->release();
+    imageDesc.mem_object = memObj;
+}
+
+HWTEST_F(Image2dFromBufferTest, givenBufferWhenImageFromBufferThenIsImageFromBufferSetAndAllocationTypeIsBufferNullptr) {
+    class MockHwHelperHw : public HwHelperHw<FamilyType> {
+      public:
+        void checkResourceCompatibility(Buffer *buffer, cl_int &errorCode) override {
+            errorCode = CL_INVALID_MEM_OBJECT;
+        }
+    };
+
+    auto raiiFactory = RAIIHwHelperFactory<MockHwHelperHw>(context.getDevice(0)->getHardwareInfo().pPlatform->eRenderCoreFamily);
+
+    cl_int errCode = CL_SUCCESS;
+    auto buffer = Buffer::create(&context, 0, 1, nullptr, errCode);
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    auto memObj = imageDesc.mem_object;
+    imageDesc.mem_object = buffer;
+
+    Image *imageFromBuffer = createImage();
+    EXPECT_EQ(CL_INVALID_MEM_OBJECT, retVal);
+
+    EXPECT_EQ(imageFromBuffer, nullptr);
+
+    buffer->release();
+    imageDesc.mem_object = memObj;
 }

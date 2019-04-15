@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -29,8 +14,9 @@
 #endif
 
 #include "runtime/gmm_helper/gmm_lib.h"
+#include "runtime/utilities/arrayref.h"
 
-namespace OCLRT {
+namespace NEO {
 enum GFX3DSTATE_SURFACEFORMAT : unsigned short {
     GFX3DSTATE_SURFACEFORMAT_R32G32B32A32_FLOAT = 0x000,
     GFX3DSTATE_SURFACEFORMAT_R32G32B32A32_SINT = 0x001,
@@ -209,6 +195,13 @@ enum class OCLPlane {
     PLANE_UV
 };
 
+enum class TilingMode {
+    DEFAULT = 0,
+    TILE_X = 1,
+    TILE_Y = 2,
+    NON_TILED
+};
+
 struct SurfaceFormatInfo {
     cl_image_format OCLImageFormat;
     GMM_RESOURCE_FORMAT GMMSurfaceFormat;
@@ -233,7 +226,9 @@ struct ImageInfo {
     GMM_YUV_PLANE_ENUM plane;
     uint32_t baseMipLevel;
     uint32_t mipCount;
+    TilingMode tilingMode;
     bool preferRenderCompression;
+    bool useLocalMemory;
 };
 
 struct McsSurfaceInfo {
@@ -242,26 +237,29 @@ struct McsSurfaceInfo {
     uint32_t multisampleCount;
 };
 
-extern const size_t numReadOnlySurfaceFormats;
-extern const size_t numWriteOnlySurfaceFormats;
-extern const size_t numReadWriteSurfaceFormats;
-
-extern const SurfaceFormatInfo readOnlySurfaceFormats[];
-extern const SurfaceFormatInfo writeOnlySurfaceFormats[];
-extern const SurfaceFormatInfo readWriteSurfaceFormats[];
-extern const SurfaceFormatInfo noAccessSurfaceFormats[];
-
+class SurfaceFormats {
+  private:
+    static const SurfaceFormatInfo readOnlySurfaceFormats[];
+    static const SurfaceFormatInfo writeOnlySurfaceFormats[];
+    static const SurfaceFormatInfo readWriteSurfaceFormats[];
+    static const SurfaceFormatInfo readOnlyDepthSurfaceFormats[];
+    static const SurfaceFormatInfo readWriteDepthSurfaceFormats[];
 #ifdef SUPPORT_YUV
-extern const size_t numPackedYuvSurfaceFormats;
-extern const size_t numPlanarYuvSurfaceFormats;
-extern const SurfaceFormatInfo packedYuvSurfaceFormats[];
-extern const SurfaceFormatInfo planarYuvSurfaceFormats[];
+    static const SurfaceFormatInfo packedYuvSurfaceFormats[];
+    static const SurfaceFormatInfo planarYuvSurfaceFormats[];
 #endif
 
-extern const size_t numReadOnlyDepthSurfaceFormats;
-extern const size_t numReadWriteDepthSurfaceFormats;
+  public:
+    static ArrayRef<const SurfaceFormatInfo> readOnly() noexcept;
+    static ArrayRef<const SurfaceFormatInfo> writeOnly() noexcept;
+    static ArrayRef<const SurfaceFormatInfo> readWrite() noexcept;
+    static ArrayRef<const SurfaceFormatInfo> packedYuv() noexcept;
+    static ArrayRef<const SurfaceFormatInfo> planarYuv() noexcept;
+    static ArrayRef<const SurfaceFormatInfo> readOnlyDepth() noexcept;
+    static ArrayRef<const SurfaceFormatInfo> readWriteDepth() noexcept;
 
-extern const SurfaceFormatInfo readOnlyDepthSurfaceFormats[];
-extern const SurfaceFormatInfo readWriteDepthSurfaceFormats[];
+    static ArrayRef<const SurfaceFormatInfo> surfaceFormats(cl_mem_flags flags) noexcept;
+    static ArrayRef<const SurfaceFormatInfo> surfaceFormats(cl_mem_flags flags, const cl_image_format *imageFormat) noexcept;
+};
 
-} // namespace OCLRT
+} // namespace NEO

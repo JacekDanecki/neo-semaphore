@@ -1,33 +1,27 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
-#include "runtime/helpers/hash.h"
-#include "unit_tests/mocks/mock_compilers.h"
-#include "unit_tests/mocks/mock_graphics_allocation.h"
+
 #include "unit_tests/mocks/mock_program.h"
 
-namespace OCLRT {
+#include "runtime/context/context.h"
+#include "runtime/helpers/hash.h"
+#include "runtime/program/create.inl"
+#include "unit_tests/mocks/mock_compilers.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
+
+namespace NEO {
 GlobalMockSipProgram *GlobalMockSipProgram::sipProgram;
-uint64_t MockProgram::getHash() {
-    return Hash::hash(genBinary, genBinarySize);
+ExecutionEnvironment GlobalMockSipProgram::executionEnvironment;
+std::string MockProgram::getCachedFileName() const {
+    auto hwInfo = this->context->getDevice(0)->getHardwareInfo();
+    auto input = ArrayRef<const char>(this->sourceCode.c_str(), this->sourceCode.size());
+    auto opts = ArrayRef<const char>(this->options.c_str(), this->options.size());
+    auto internalOpts = ArrayRef<const char>(this->internalOptions.c_str(), this->internalOptions.size());
+    return BinaryCache::getCachedFileName(hwInfo, input, opts, internalOpts);
 }
 cl_int GlobalMockSipProgram::processGenBinary() {
     return CL_SUCCESS;
@@ -40,13 +34,16 @@ cl_int GlobalMockSipProgram::processGenBinaryOnce() {
     return ret;
 }
 void GlobalMockSipProgram::resetAllocationState() {
-    this->kernelInfoArray[0]->kernelAllocation->residencyTaskCount = 0xffffffff;
-    static_cast<MockGraphicsAllocation *>(this->kernelInfoArray[0]->kernelAllocation)->resetInspectionId();
+    for (uint32_t index = 0u; index < maxOsContextCount; index++) {
+        this->kernelInfoArray[0]->kernelAllocation->releaseResidencyInOsContext(index);
+    }
+    static_cast<MockGraphicsAllocation *>(this->kernelInfoArray[0]->kernelAllocation)->resetInspectionIds();
 }
 void GlobalMockSipProgram::initSipProgram() {
     cl_int retVal = 0;
     std::vector<char> binary = MockCompilerInterface::getDummyGenBinary();
-    sipProgram = Program::createFromGenBinary<GlobalMockSipProgram>(nullptr,
+    sipProgram = Program::createFromGenBinary<GlobalMockSipProgram>(executionEnvironment,
+                                                                    nullptr,
                                                                     binary.data(),
                                                                     binary.size(),
                                                                     true,
@@ -72,4 +69,58 @@ void GlobalMockSipProgram::shutDownSipProgram() {
 
     delete sipProgram;
 }
-} // namespace OCLRT
+
+Program *GlobalMockSipProgram::getSipProgramWithCustomBinary() {
+    char binary[1024];
+    char *pBinary = binary;
+    auto totalSize = 0u;
+
+    SProgramBinaryHeader *pBHdr = (SProgramBinaryHeader *)binary;
+    pBHdr->Magic = iOpenCL::MAGIC_CL;
+    pBHdr->Version = iOpenCL::CURRENT_ICBE_VERSION;
+    pBHdr->Device = platformDevices[0]->pPlatform->eRenderCoreFamily;
+    pBHdr->GPUPointerSizeInBytes = 8;
+    pBHdr->NumberOfKernels = 1;
+    pBHdr->SteppingId = 0;
+    pBHdr->PatchListSize = 0;
+    pBinary += sizeof(SProgramBinaryHeader);
+    totalSize += sizeof(SProgramBinaryHeader);
+
+    SKernelBinaryHeaderCommon *pKHdr = (SKernelBinaryHeaderCommon *)pBinary;
+    pKHdr->CheckSum = 0;
+    pKHdr->ShaderHashCode = 0;
+    pKHdr->KernelNameSize = 4;
+    pKHdr->PatchListSize = 0;
+    pKHdr->KernelHeapSize = 16;
+    pKHdr->GeneralStateHeapSize = 0;
+    pKHdr->DynamicStateHeapSize = 0;
+    pKHdr->SurfaceStateHeapSize = 0;
+    pKHdr->KernelUnpaddedSize = 0;
+    pBinary += sizeof(SKernelBinaryHeaderCommon);
+    totalSize += sizeof(SKernelBinaryHeaderCommon);
+    char *pKernelBin = pBinary;
+    strcpy_s(pBinary, 4, "sip");
+    pBinary += pKHdr->KernelNameSize;
+    totalSize += pKHdr->KernelNameSize;
+
+    strcpy_s(pBinary, 18, "kernel morphEUs()");
+    totalSize += pKHdr->KernelHeapSize;
+
+    uint32_t kernelBinSize =
+        pKHdr->DynamicStateHeapSize +
+        pKHdr->GeneralStateHeapSize +
+        pKHdr->KernelHeapSize +
+        pKHdr->KernelNameSize +
+        pKHdr->PatchListSize +
+        pKHdr->SurfaceStateHeapSize;
+    uint64_t hashValue = Hash::hash(reinterpret_cast<const char *>(pKernelBin), kernelBinSize);
+    pKHdr->CheckSum = static_cast<uint32_t>(hashValue & 0xFFFFFFFF);
+
+    auto errCode = CL_SUCCESS;
+    auto program = Program::createFromGenBinary(executionEnvironment, nullptr, binary, totalSize, false, &errCode);
+    UNRECOVERABLE_IF(errCode != CL_SUCCESS);
+    errCode = program->processGenBinary();
+    UNRECOVERABLE_IF(errCode != CL_SUCCESS);
+    return program;
+}
+} // namespace NEO

@@ -1,35 +1,22 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
-#include <cstdint>
-#include "runtime/memory_manager/memory_constants.h"
 #include "runtime/indirect_heap/indirect_heap.h"
+#include "runtime/memory_manager/memory_constants.h"
 #include "unit_tests/gen_common/gen_cmd_parse.h"
-#include "unit_tests/helpers/l3_helper.h"
-#include "test.h"
+#include "unit_tests/helpers/unit_test_helper.h"
 
-namespace OCLRT {
+#include "gtest/gtest.h"
+
+#include <cstdint>
+
+namespace NEO {
 template <typename FamilyType>
 void validateStateBaseAddress(uint64_t internalHeapBase, IndirectHeap *pDSH,
                               IndirectHeap *pIOH,
@@ -56,7 +43,7 @@ void validateStateBaseAddress(uint64_t internalHeapBase, IndirectHeap *pDSH,
     // Stateless accesses require GSH.base to be 0.
     EXPECT_EQ(expectedGeneralStateHeapBaseAddress, cmd->getGeneralStateBaseAddress());
     EXPECT_EQ(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pSSH->getCpuBase())), cmd->getSurfaceStateBaseAddress());
-    EXPECT_EQ(pIOH->getGraphicsAllocation()->gpuBaseAddress, cmd->getIndirectObjectBaseAddress());
+    EXPECT_EQ(pIOH->getGraphicsAllocation()->getGpuBaseAddress(), cmd->getIndirectObjectBaseAddress());
     EXPECT_EQ(internalHeapBase, cmd->getInstructionBaseAddress());
 
     // Verify all sizes are getting programmed
@@ -80,7 +67,7 @@ void validateL3Programming(GenCmdList &cmdList, GenCmdList::iterator &itorWalker
     typedef typename PARSE::MI_LOAD_REGISTER_IMM MI_LOAD_REGISTER_IMM;
 
     auto itorCmd = findMmio<FamilyType>(cmdList.begin(), itorWalker, L3CNTLRegisterOffset<FamilyType>::registerOffset);
-    if (L3Helper<FamilyType>::isL3ConfigProgrammable()) {
+    if (UnitTestHelper<FamilyType>::isL3ConfigProgrammable()) {
         // All state should be programmed before walker
         ASSERT_NE(itorWalker, itorCmd);
 
@@ -119,4 +106,4 @@ void validateMediaVFEState(const HardwareInfo *hwInfo, void *cmdMediaVfeState, G
     // Generically validate this command
     FamilyType::PARSE::template validateCommand<MEDIA_VFE_STATE *>(cmdList.begin(), itorMediaVfeState);
 }
-} // namespace OCLRT
+} // namespace NEO

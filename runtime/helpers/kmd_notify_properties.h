@@ -1,43 +1,28 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/helpers/completion_stamp.h"
 
-#include <cstdint>
-#include <chrono>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 
-namespace OCLRT {
+namespace NEO {
 struct KmdNotifyProperties {
+    int64_t delayKmdNotifyMicroseconds;
+    int64_t delayQuickKmdSleepMicroseconds;
+    int64_t delayQuickKmdSleepForSporadicWaitsMicroseconds;
     // Main switch for KMD Notify optimization - if its disabled, all below are disabled too
     bool enableKmdNotify;
-    int64_t delayKmdNotifyMicroseconds;
     // Use smaller delay in specific situations (ie. from AsyncEventsHandler)
     bool enableQuickKmdSleep;
-    int64_t delayQuickKmdSleepMicroseconds;
     // If waits are called sporadically  use QuickKmdSleep mode, otherwise use standard delay
     bool enableQuickKmdSleepForSporadicWaits;
-    int64_t delayQuickKmdSleepForSporadicWaitsMicroseconds;
 };
 
 namespace KmdNotifyConstants {
@@ -55,7 +40,8 @@ class KmdNotifyHelper {
                              bool quickKmdSleepRequest,
                              uint32_t currentHwTag,
                              uint32_t taskCountToWait,
-                             FlushStamp flushStampToWait);
+                             FlushStamp flushStampToWait,
+                             bool forcePowerSavingMode);
 
     bool quickKmdSleepForSporadicWaitsEnabled() const { return properties->enableQuickKmdSleepForSporadicWaits; }
     MOCKABLE_VIRTUAL void updateLastWaitForCompletionTimestamp();
@@ -63,6 +49,10 @@ class KmdNotifyHelper {
 
     static void overrideFromDebugVariable(int32_t debugVariableValue, int64_t &destination);
     static void overrideFromDebugVariable(int32_t debugVariableValue, bool &destination);
+
+    void initMaxPowerSavingMode() {
+        maxPowerSavingMode = true;
+    }
 
   protected:
     bool applyQuickKmdSleepForSporadicWait() const;
@@ -72,5 +62,6 @@ class KmdNotifyHelper {
     const KmdNotifyProperties *properties = nullptr;
     std::atomic<int64_t> lastWaitForCompletionTimestampUs{0};
     std::atomic<bool> acLineConnected{true};
+    bool maxPowerSavingMode = false;
 };
-} // namespace OCLRT
+} // namespace NEO

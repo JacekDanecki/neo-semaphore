@@ -1,35 +1,19 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#include "unit_tests/os_interface/linux/hw_info_config_linux_tests.h"
 
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/os_interface/linux/os_interface.h"
 
-#include "unit_tests/libult/mock_gfx_family.h"
-#include "unit_tests/os_interface/linux/hw_info_config_linux_tests.h"
-
 #include <cstring>
 
-namespace OCLRT {
+namespace NEO {
 
 constexpr uint32_t hwConfigTestMidThreadBit = 1 << 8;
 constexpr uint32_t hwConfigTestThreadGroupBit = 1 << 9;
@@ -37,35 +21,34 @@ constexpr uint32_t hwConfigTestMidBatchBit = 1 << 10;
 
 template <>
 int HwInfoConfigHw<IGFX_UNKNOWN>::configureHardwareCustom(HardwareInfo *hwInfo, OSInterface *osIface) {
-    PLATFORM *pPlatform = const_cast<PLATFORM *>(hwInfo->pPlatform);
-    GT_SYSTEM_INFO *pSysInfo = const_cast<GT_SYSTEM_INFO *>(hwInfo->pSysInfo);
     FeatureTable *pSkuTable = const_cast<FeatureTable *>(hwInfo->pSkuTable);
 
-    if (pPlatform->usDeviceID == 30) {
+    if (hwInfo->pPlatform->usDeviceID == 30) {
+        GT_SYSTEM_INFO *pSysInfo = const_cast<GT_SYSTEM_INFO *>(hwInfo->pSysInfo);
         pSysInfo->EdramSizeInKb = 128 * 1000;
     }
-    if (pPlatform->usDeviceID & hwConfigTestMidThreadBit) {
+    if (hwInfo->pPlatform->usDeviceID & hwConfigTestMidThreadBit) {
         pSkuTable->ftrGpGpuMidThreadLevelPreempt = 1;
     }
-    if (pPlatform->usDeviceID & hwConfigTestThreadGroupBit) {
+    if (hwInfo->pPlatform->usDeviceID & hwConfigTestThreadGroupBit) {
         pSkuTable->ftrGpGpuThreadGroupLevelPreempt = 1;
     }
-    if (pPlatform->usDeviceID & hwConfigTestMidBatchBit) {
+    if (hwInfo->pPlatform->usDeviceID & hwConfigTestMidBatchBit) {
         pSkuTable->ftrGpGpuMidBatchPreempt = 1;
     }
-    return (pPlatform->usDeviceID == 10) ? -1 : 0;
+    return (hwInfo->pPlatform->usDeviceID == 10) ? -1 : 0;
 }
 
 template <>
 void HwInfoConfigHw<IGFX_UNKNOWN>::adjustPlatformForProductFamily(HardwareInfo *hwInfo) {
 }
 
-} // namespace OCLRT
+} // namespace NEO
 
 struct DummyHwConfig : HwInfoConfigHw<IGFX_UNKNOWN> {
 };
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace std;
 
 void mockCpuidex(int *cpuInfo, int functionId, int subfunctionId);
@@ -114,8 +97,7 @@ struct HwInfoConfigTestLinuxDummy : HwInfoConfigTestLinux {
 
         drm->StoredDeviceID = 1;
         drm->setGtType(GTTYPE_GT0);
-
-        testPlatform.eRenderCoreFamily = IGFX_UNKNOWN_CORE;
+        testPlatform.eRenderCoreFamily = platformDevices[0]->pPlatform->eRenderCoreFamily;
     }
 
     void TearDown() override {
@@ -263,82 +245,103 @@ TEST_F(HwInfoConfigTestLinuxDummy, dummyNegativeUnknownDeviceId) {
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledMidThreadOn) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::MidThread;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = hwConfigTestMidThreadBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::MidThread, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledThreadGroupOn) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::MidThread;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = hwConfigTestThreadGroupBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::ThreadGroup, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledMidBatchOn) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::MidThread;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = hwConfigTestMidBatchBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::MidBatch, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledNoPreemption) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::MidThread;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = 1;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::Disabled, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmDisabledAllPreemption) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::MidThread;
     drm->StoredPreemptionSupport = 0;
-    drm->StoredMockPreemptionSupport = 0;
     drm->StoredDeviceID = hwConfigTestMidThreadBit | hwConfigTestThreadGroupBit | hwConfigTestMidBatchBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::Disabled, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_FALSE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledAllPreemptionDriverThreadGroup) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::ThreadGroup;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = hwConfigTestMidThreadBit | hwConfigTestThreadGroupBit | hwConfigTestMidBatchBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::ThreadGroup, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledAllPreemptionDriverMidBatch) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::MidBatch;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = hwConfigTestMidThreadBit | hwConfigTestThreadGroupBit | hwConfigTestMidBatchBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::MidBatch, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledAllPreemptionDriverDisabled) {
     pInHwInfo->capabilityTable.defaultPreemptionMode = PreemptionMode::Disabled;
-    drm->StoredPreemptionSupport = 1;
-    drm->StoredMockPreemptionSupport = 1;
+    drm->StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     drm->StoredDeviceID = hwConfigTestMidThreadBit | hwConfigTestThreadGroupBit | hwConfigTestMidBatchBit;
     int ret = hwConfig.configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(PreemptionMode::Disabled, outHwInfo.capabilityTable.defaultPreemptionMode);
+    EXPECT_TRUE(drm->isPreemptionSupported());
 }
 
 TEST_F(HwInfoConfigTestLinuxDummy, givenPlatformEnabledFtrCompressionWhenInitializingThenForceDisable) {

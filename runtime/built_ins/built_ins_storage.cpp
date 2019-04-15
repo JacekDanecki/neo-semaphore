@@ -1,37 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <cstdint>
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/os_interface/debug_settings_manager.h"
+
 #include "os_inc.h"
 
-namespace OCLRT {
+#include <cstdint>
+
+namespace NEO {
 
 const char *getBuiltinAsString(EBuiltInOps builtin) {
     switch (builtin) {
     default:
         return "unknown";
+    case EBuiltInOps::AuxTranslation:
+        return "aux_translation.igdrcl_built_in";
     case EBuiltInOps::CopyBufferToBuffer:
         return "copy_buffer_to_buffer.igdrcl_built_in";
     case EBuiltInOps::CopyBufferRect:
@@ -197,7 +186,7 @@ std::unique_ptr<Program> BuiltinsLib::createProgramFromCode(const BuiltinCode &b
         ret.reset(Program::create(data, &context, device, true, &err));
         break;
     case BuiltinCode::ECodeType::Binary:
-        ret.reset(Program::createFromGenBinary(&context, data, dataLen, true, nullptr));
+        ret.reset(Program::createFromGenBinary(*device.getExecutionEnvironment(), &context, data, dataLen, true, nullptr));
         break;
     }
     return ret;
@@ -221,4 +210,4 @@ BuiltinResourceT BuiltinsLib::getBuiltinResource(EBuiltInOps builtin, BuiltinCod
     return bc;
 }
 
-} // namespace OCLRT
+} // namespace NEO

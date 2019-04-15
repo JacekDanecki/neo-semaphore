@@ -1,37 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/gpgpu_walker.h"
+#include "runtime/command_queue/hardware_interface.h"
 #include "runtime/event/hw_timestamps.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/task_information.h"
+#include "runtime/utilities/tag_allocator.h"
+#include "unit_tests/fixtures/execution_model_fixture.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_device_queue.h"
 
-#include "unit_tests/fixtures/execution_model_fixture.h"
-
 #include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class SubmitBlockedParentKernelFixture : public ExecutionModelSchedulerTest,
                                          public testing::Test {
@@ -70,14 +56,14 @@ class MockDeviceQueueHwWithCriticalSectionRelease : public DeviceQueueHw<GfxFami
         indirectStateSetup = true;
         return BaseClass::setupIndirectState(surfaceStateHeap, dynamicStateHeap, parentKernel, parentIDCount);
     }
-    void addExecutionModelCleanUpSection(Kernel *parentKernel, HwTimeStamps *hwTimeStamp, uint32_t taskCount) override {
+    void addExecutionModelCleanUpSection(Kernel *parentKernel, TagNode<HwTimeStamps> *hwTimeStamp, uint32_t taskCount) override {
         cleanupSectionAdded = true;
-        timestampAddedInCleanupSection = hwTimeStamp;
+        timestampAddedInCleanupSection = hwTimeStamp ? hwTimeStamp->tagForCpuAccess : nullptr;
         return BaseClass::addExecutionModelCleanUpSection(parentKernel, hwTimeStamp, taskCount);
     }
-    void dispatchScheduler(CommandQueue &cmdQ, SchedulerKernel &scheduler, PreemptionMode preemptionMode, IndirectHeap *ssh, IndirectHeap *dsh) override {
+    void dispatchScheduler(LinearStream &commandStream, SchedulerKernel &scheduler, PreemptionMode preemptionMode, IndirectHeap *ssh, IndirectHeap *dsh) override {
         schedulerDispatched = true;
-        return BaseClass::dispatchScheduler(cmdQ, scheduler, preemptionMode, ssh, dsh);
+        return BaseClass::dispatchScheduler(commandStream, scheduler, preemptionMode, ssh, dsh);
     }
 
     uint32_t criticalSectioncheckCounter = 0;
@@ -91,7 +77,7 @@ class MockDeviceQueueHwWithCriticalSectionRelease : public DeviceQueueHw<GfxFami
 HWTEST_F(ParentKernelCommandQueueFixture, givenLockedEMcritcalSectionWhenParentKernelCommandIsSubmittedThenItWaitsForcriticalSectionReleasement) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHwWithCriticalSectionRelease<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -110,17 +96,17 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenLockedEMcritcalSectionWhenParentK
 
         size_t minSizeSSHForEM = KernelCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(*parentKernel);
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
         cmdComputeKernel->submit(0, false);
 
@@ -133,7 +119,7 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenLockedEMcritcalSectionWhenParentK
 HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmittedThenPassedDshIsUsed) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHwWithCriticalSectionRelease<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -170,19 +156,19 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmitte
         uint32_t colorCalcSizeDevQueue = DeviceQueue::colorCalcStateSize;
         EXPECT_EQ(colorCalcSizeDevQueue, usedDSHBeforeSubmit);
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         size_t minSizeSSHForEM = KernelCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(*parentKernel);
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
         cmdComputeKernel->submit(0, false);
 
@@ -198,7 +184,7 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmitte
 HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmittedThenIndirectStateAndEMCleanupSectionIsSetup) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHwWithCriticalSectionRelease<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -213,19 +199,19 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmitte
 
         dsh->getSpace(mockDevQueue.getDshOffset());
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         size_t minSizeSSHForEM = KernelCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(*parentKernel);
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
         cmdComputeKernel->submit(0, false);
 
@@ -240,7 +226,7 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmitte
 HWTEST_F(ParentKernelCommandQueueFixture, givenBlockedParentKernelWithProfilingWhenCommandIsSubmittedThenEMCleanupSectionsSetsCompleteTimestamp) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHwWithCriticalSectionRelease<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -253,27 +239,26 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenBlockedParentKernelWithProfilingW
         pCmdQ->allocateHeapMemory(IndirectHeap::SURFACE_STATE, heapSize, ssh);
         dsh->getSpace(mockDevQueue.getDshOffset());
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         size_t minSizeSSHForEM = KernelCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(*parentKernel);
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
-        HwTimeStamps timestamp;
-
-        cmdComputeKernel->timestamp = &timestamp;
+        auto timestamp = pCmdQ->getCommandStreamReceiver().getEventTsAllocator()->getTag();
+        cmdComputeKernel->timestamp = timestamp;
         cmdComputeKernel->submit(0, false);
 
         EXPECT_TRUE(mockDevQueue.cleanupSectionAdded);
-        EXPECT_EQ(mockDevQueue.timestampAddedInCleanupSection, &timestamp);
+        EXPECT_EQ(mockDevQueue.timestampAddedInCleanupSection, timestamp->tagForCpuAccess);
 
         delete cmdComputeKernel;
         delete parentKernel;
@@ -283,7 +268,7 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenBlockedParentKernelWithProfilingW
 HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmittedThenSchedulerIsDispatched) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHwWithCriticalSectionRelease<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -297,19 +282,19 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmitte
         pCmdQ->allocateHeapMemory(IndirectHeap::SURFACE_STATE, heapSize, ssh);
         dsh->getSpace(mockDevQueue.getDshOffset());
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         size_t minSizeSSHForEM = KernelCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(*parentKernel);
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
         cmdComputeKernel->submit(0, false);
 
@@ -323,7 +308,7 @@ HWTEST_F(ParentKernelCommandQueueFixture, givenParentKernelWhenCommandIsSubmitte
 HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenUsedCommandQueueHeapshenParentKernelIsSubmittedThenQueueHeapsAreNotUsed) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHw<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -352,17 +337,17 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenUsedCommandQue
         queueDsh.getSpace(usedSize);
         queueIoh.getSpace(usedSize);
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(cmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(cmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
         cmdComputeKernel->submit(0, false);
 
@@ -379,7 +364,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenUsedCommandQue
 HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenNotUsedSSHWhenParentKernelIsSubmittedThenExistingSSHIsUsed) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        MockParentKernel *parentKernel = MockParentKernel::create(*device);
+        MockParentKernel *parentKernel = MockParentKernel::create(*context);
         MockDeviceQueueHw<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
         context->setDefaultDeviceQueue(&mockDevQueue);
@@ -402,17 +387,17 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenNotUsedSSHWhen
 
         void *sshBuffer = pCmdQ->getIndirectHeap(IndirectHeap::SURFACE_STATE, 0u).getCpuBase();
 
-        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream()),
+        auto cmdStreamAllocation = device->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER});
+        KernelOperation *blockedCommandData = new KernelOperation(std::unique_ptr<LinearStream>(new LinearStream(cmdStreamAllocation)),
                                                                   std::unique_ptr<IndirectHeap>(dsh),
                                                                   std::unique_ptr<IndirectHeap>(ioh),
                                                                   std::unique_ptr<IndirectHeap>(ssh),
-                                                                  *pCmdQ->getDevice().getMemoryManager());
+                                                                  *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
 
         blockedCommandData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         PreemptionMode preemptionMode = device->getPreemptionMode();
         std::vector<Surface *> surfaces;
-        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, device->getCommandStreamReceiver(),
-                                                          std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
+        auto *cmdComputeKernel = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandData), surfaces, false, false, false, nullptr, preemptionMode, parentKernel, 1);
 
         cmdComputeKernel->submit(0, false);
 
@@ -428,7 +413,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenNotUsedSSHWhen
 HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenBlockedCommandQueueWhenDispatchWalkerIsCalledThenHeapsHaveProperSizes) {
     if (device->getSupportedClVersion() >= 20) {
         cl_queue_properties properties[3] = {0};
-        std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(*device));
+        std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(*context));
 
         MockDeviceQueueHw<FamilyType> mockDevQueue(context, device, properties[0]);
         parentKernel->createReflectionSurface();
@@ -438,19 +423,20 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelCommandQueueFixture, givenBlockedCommand
         const size_t globalOffsets[3] = {0, 0, 0};
         const size_t workItems[3] = {1, 1, 1};
 
-        GpgpuWalkerHelper<FamilyType>::dispatchWalker(*pCmdQ,
-                                                      *parentKernel,
-                                                      1,
-                                                      globalOffsets,
-                                                      workItems,
-                                                      nullptr,
-                                                      0,
-                                                      nullptr,
-                                                      &blockedCommandsData,
-                                                      nullptr,
-                                                      nullptr,
-                                                      device->getPreemptionMode(),
-                                                      true);
+        DispatchInfo dispatchInfo(parentKernel.get(), 1, workItems, nullptr, globalOffsets);
+        MultiDispatchInfo multiDispatchInfo(parentKernel.get());
+        multiDispatchInfo.push(dispatchInfo);
+        HardwareInterface<FamilyType>::dispatchWalker(
+            *pCmdQ,
+            multiDispatchInfo,
+            CsrDependencies(),
+            &blockedCommandsData,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            device->getPreemptionMode(),
+            true);
 
         EXPECT_NE(nullptr, blockedCommandsData);
         EXPECT_EQ(blockedCommandsData->dsh->getMaxAvailableSpace(), mockDevQueue.getDshBuffer()->getUnderlyingBufferSize());

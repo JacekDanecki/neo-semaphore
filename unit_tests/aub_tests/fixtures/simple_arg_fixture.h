@@ -1,36 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "unit_tests/aub_tests/command_stream/aub_command_stream_fixture.h"
-#include "unit_tests/command_stream/command_stream_fixture.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
-#include "unit_tests/indirect_heap/indirect_heap_fixture.h"
+#include "unit_tests/command_stream/command_stream_fixture.h"
 #include "unit_tests/fixtures/simple_arg_fixture.h"
 #include "unit_tests/fixtures/simple_arg_kernel_fixture.h"
+#include "unit_tests/indirect_heap/indirect_heap_fixture.h"
 
-namespace OCLRT {
+namespace NEO {
 
 ////////////////////////////////////////////////////////////////////////////////
 // Factory where all command stream traffic funnels to an AUB file
@@ -61,7 +46,7 @@ struct SimpleArgFixture : public FixtureFactory::IndirectHeapFixture,
     using CommandStreamFixture::pCS;
     using IndirectHeapFixture::SetUp;
     using KernelFixture::pKernel;
-    using SimpleArgKernelFixture::SetUp;
+    using KernelFixture::SetUp;
 
     SimpleArgFixture()
         : pDestMemory(nullptr), sizeUserMemory(128 * sizeof(float)) {
@@ -79,7 +64,7 @@ struct SimpleArgFixture : public FixtureFactory::IndirectHeapFixture,
         KernelFixture::SetUp(pDevice);
         ASSERT_NE(nullptr, pKernel);
 
-        int argVal = (int)0x22222222;
+        argVal = static_cast<int>(0x22222222);
         pDestMemory = alignedMalloc(sizeUserMemory, 4096);
         ASSERT_NE(nullptr, pDestMemory);
 
@@ -91,15 +76,23 @@ struct SimpleArgFixture : public FixtureFactory::IndirectHeapFixture,
         memset(pExpectedMemory, 0x22, sizeUserMemory);
 
         pKernel->setArg(0, sizeof(int), &argVal);
-        pKernel->setArgSvm(1, sizeUserMemory, pDestMemory);
+        pKernel->setArgSvm(1, sizeUserMemory, pDestMemory, nullptr, 0u);
 
-        auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
-        commandStreamReceiver.createAllocationAndHandleResidency(pDestMemory, sizeUserMemory);
+        outBuffer = AUBCommandStreamFixture::createResidentAllocationAndStoreItInCsr(pDestMemory, sizeUserMemory);
+        ASSERT_NE(nullptr, outBuffer);
+        outBuffer->setAllocationType(GraphicsAllocation::AllocationType::BUFFER);
+        outBuffer->setMemObjectsAllocationWithWritableFlags(true);
     }
 
     virtual void TearDown() {
-        alignedFree(pExpectedMemory);
-        alignedFree(pDestMemory);
+        if (pExpectedMemory) {
+            alignedFree(pExpectedMemory);
+            pExpectedMemory = nullptr;
+        }
+        if (pDestMemory) {
+            alignedFree(pDestMemory);
+            pDestMemory = nullptr;
+        }
 
         KernelFixture::TearDown();
         IndirectHeapFixture::TearDown();
@@ -108,8 +101,10 @@ struct SimpleArgFixture : public FixtureFactory::IndirectHeapFixture,
         DeviceFixture::TearDown();
     }
 
+    int argVal;
     void *pDestMemory;
     void *pExpectedMemory;
     size_t sizeUserMemory;
+    GraphicsAllocation *outBuffer;
 };
-} // namespace OCLRT
+} // namespace NEO

@@ -1,31 +1,16 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "unit_tests/fixtures/hello_world_fixture.h"
 #include "unit_tests/command_queue/enqueue_fixture.h"
+#include "unit_tests/fixtures/hello_world_fixture.h"
 #include "unit_tests/helpers/hw_parse.h"
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename FactoryType>
 struct MediaKernelFixture : public HelloWorldFixture<FactoryType>,
@@ -53,7 +38,7 @@ struct MediaKernelFixture : public HelloWorldFixture<FactoryType>,
 
         parseCommands<FamilyType>(*pCmdQ);
 
-        itorWalker1 = find<typename FamilyType::GPGPU_WALKER *>(cmdList.begin(), cmdList.end());
+        itorWalker1 = find<typename FamilyType::WALKER_TYPE *>(cmdList.begin(), cmdList.end());
         ASSERT_NE(cmdList.end(), itorWalker1);
     }
 
@@ -66,7 +51,7 @@ struct MediaKernelFixture : public HelloWorldFixture<FactoryType>,
 
         parseCommands<FamilyType>(*pCmdQ);
 
-        itorWalker1 = find<typename FamilyType::GPGPU_WALKER *>(cmdList.begin(), cmdList.end());
+        itorWalker1 = find<typename FamilyType::WALKER_TYPE *>(cmdList.begin(), cmdList.end());
         ASSERT_NE(cmdList.end(), itorWalker1);
     }
 
@@ -93,8 +78,7 @@ struct MediaKernelFixture : public HelloWorldFixture<FactoryType>,
     }
 
     void TearDown() override {
-        delete pVmeKernel;
-        pVmeKernel = nullptr;
+        pVmeKernel->release();
 
         HardwareParse::TearDown();
         Parent::TearDown();
@@ -105,4 +89,4 @@ struct MediaKernelFixture : public HelloWorldFixture<FactoryType>,
 
     Kernel *pVmeKernel = nullptr;
 };
-} // namespace OCLRT
+} // namespace NEO

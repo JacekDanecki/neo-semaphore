@@ -1,38 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "hw_cmds.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/command_queue/command_queue_hw.h"
-#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_queue/gpgpu_walker.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/task_information.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
+
+#include "hw_cmds.h"
+
 #include <new>
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
 cl_int CommandQueueHw<GfxFamily>::enqueueKernel(
@@ -48,6 +35,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueKernel(
     size_t region[3] = {1, 1, 1};
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t workGroupSize[3] = {1, 1, 1};
+    size_t enqueuedLocalWorkSize[3] = {0, 0, 0};
 
     auto &kernel = *castToObject<Kernel>(clKernel);
     const auto &kernelInfo = kernel.getKernelInfo();
@@ -86,7 +74,15 @@ cl_int CommandQueueHw<GfxFamily>::enqueueKernel(
                     return CL_INVALID_WORK_GROUP_SIZE;
                 }
             }
-            workGroupSize[i] = localWorkSizeIn[i];
+            if (localWorkSizeIn[i] == 0) {
+                return CL_INVALID_WORK_GROUP_SIZE;
+            }
+            if (kernel.getAllowNonUniform()) {
+                workGroupSize[i] = std::min(localWorkSizeIn[i], globalWorkSizeIn[i]);
+            } else {
+                workGroupSize[i] = localWorkSizeIn[i];
+            }
+            enqueuedLocalWorkSize[i] = localWorkSizeIn[i];
             totalWorkItems *= localWorkSizeIn[i];
         }
 
@@ -140,10 +136,11 @@ cl_int CommandQueueHw<GfxFamily>::enqueueKernel(
         globalWorkOffset,
         region,
         localWkgSizeToPass,
+        enqueuedLocalWorkSize,
         numEventsInWaitList,
         eventWaitList,
         event);
 
     return CL_SUCCESS;
 }
-} // namespace OCLRT
+} // namespace NEO

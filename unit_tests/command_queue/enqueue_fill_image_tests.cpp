@@ -1,36 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <algorithm>
-#include "reg_configs_common.h"
-#include "unit_tests/command_queue/enqueue_fill_image_fixture.h"
-#include "unit_tests/gen_common/gen_commands_common_validation.h"
 #include "runtime/helpers/convert_color.h"
 #include "test.h"
+#include "unit_tests/command_queue/enqueue_fill_image_fixture.h"
+#include "unit_tests/gen_common/gen_commands_common_validation.h"
+#include "unit_tests/helpers/unit_test_helper.h"
 
-using namespace OCLRT;
+#include "reg_configs_common.h"
+
+#include <algorithm>
+
+using namespace NEO;
 
 class EnqueueFillImageTest : public EnqueueFillImageTestFixture,
                              public ::testing::Test {
+  public:
     void SetUp(void) override {
         EnqueueFillImageTestFixture::SetUp();
     }
@@ -102,19 +91,19 @@ HWTEST_F(EnqueueFillImageTest, addsIndirectData) {
     auto sshBefore = pSSH->getUsed();
 
     EnqueueFillImageHelper<>::enqueueFillImage(pCmdQ, image);
-    EXPECT_NE(dshBefore, pDSH->getUsed());
+    EXPECT_TRUE(UnitTestHelper<FamilyType>::evaluateDshUsage(dshBefore, pDSH->getUsed(), nullptr));
     EXPECT_NE(iohBefore, pIOH->getUsed());
     EXPECT_NE(sshBefore, pSSH->getUsed());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueFillImageTest, loadRegisterImmediateL3CNTLREG) {
+HWTEST_F(EnqueueFillImageTest, loadRegisterImmediateL3CNTLREG) {
     enqueueFillImage<FamilyType>();
     validateL3Programming<FamilyType>(cmdList, itorWalker);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueFillImageTest, WhenEnqueueIsDoneThenStateBaseAddressIsProperlyProgrammed) {
     enqueueFillImage<FamilyType>();
-    validateStateBaseAddress<FamilyType>(this->pDevice->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
+    validateStateBaseAddress<FamilyType>(this->pCmdQ->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
                                          pDSH, pIOH, pSSH, itorPipelineSelect, itorWalker, cmdList, 0llu);
 }
 
@@ -171,12 +160,12 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueFillImageTest, interfaceDescriptorData) {
     EXPECT_NE(kernelStartPointer, interfaceDescriptorData.getBindingTablePointer());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueFillImageTest, surfaceState) {
+HWTEST_F(EnqueueFillImageTest, surfaceState) {
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
 
     enqueueFillImage<FamilyType>();
 
-    const auto &surfaceState = getSurfaceState<FamilyType>(0);
+    const auto &surfaceState = getSurfaceState<FamilyType>(&pCmdQ->getIndirectHeap(IndirectHeap::SURFACE_STATE, 0), 0);
     const auto &imageDesc = image->getImageDesc();
     EXPECT_EQ(imageDesc.image_width, surfaceState.getWidth());
     EXPECT_EQ(imageDesc.image_height, surfaceState.getHeight());
@@ -185,11 +174,11 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueFillImageTest, surfaceState) {
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_HORIZONTAL_ALIGNMENT_HALIGN_4, surfaceState.getSurfaceHorizontalAlignment());
     EXPECT_EQ(RENDER_SURFACE_STATE::SURFACE_VERTICAL_ALIGNMENT_VALIGN_4, surfaceState.getSurfaceVerticalAlignment());
 
-    const auto &srcSurfaceState = getSurfaceState<FamilyType>(0);
-    EXPECT_EQ(reinterpret_cast<uint64_t>(image->getCpuAddress()), srcSurfaceState.getSurfaceBaseAddress());
+    const auto &srcSurfaceState = getSurfaceState<FamilyType>(&pCmdQ->getIndirectHeap(IndirectHeap::SURFACE_STATE, 0), 0);
+    EXPECT_EQ(image->getGraphicsAllocation()->getGpuAddress(), srcSurfaceState.getSurfaceBaseAddress());
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueFillImageTest, pipelineSelect) {
+HWTEST_F(EnqueueFillImageTest, pipelineSelect) {
     enqueueFillImage<FamilyType>();
     int numCommands = getNumberOfPipelineSelectsThatEnablePipelineSelect<FamilyType>();
     EXPECT_EQ(1, numCommands);

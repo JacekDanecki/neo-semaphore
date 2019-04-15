@@ -1,24 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
+
+#include "runtime/compiler_interface/compiler_interface.h"
+
+#include "runtime/compiler_interface/binary_cache.h"
+#include "runtime/compiler_interface/compiler_interface.inl"
+#include "runtime/helpers/hw_info.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/os_interface/os_inc_base.h"
+#include "runtime/program/program.h"
 
 #include "cif/common/cif_main.h"
 #include "cif/helpers/error.h"
@@ -27,18 +21,10 @@
 #include "ocl_igc_interface/fcl_ocl_device_ctx.h"
 #include "ocl_igc_interface/igc_ocl_device_ctx.h"
 #include "ocl_igc_interface/platform_helper.h"
-#include "runtime/compiler_interface/binary_cache.h"
-#include "runtime/compiler_interface/compiler_interface.h"
-#include "runtime/compiler_interface/compiler_interface.inl"
-#include "runtime/helpers/hw_info.h"
-#include "runtime/program/program.h"
-#include "runtime/os_interface/debug_settings_manager.h"
-#include "runtime/os_interface/os_inc_base.h"
 
 #include <fstream>
 
-namespace OCLRT {
-CompilerInterface *CompilerInterface::pInstance = nullptr;
+namespace NEO {
 bool CompilerInterface::useLlvmText = false;
 std::mutex CompilerInterface::mtx;
 
@@ -70,9 +56,10 @@ cl_int CompilerInterface::build(
         }
     } else {
         highLevelCodeType = IGC::CodeType::oclC;
-        if (useLlvmText == true) {
-            intermediateCodeType = IGC::CodeType::llvmLl;
-        }
+    }
+
+    if (useLlvmText == true) {
+        intermediateCodeType = IGC::CodeType::llvmLl;
     }
 
     CachingMode cachingMode = None;
@@ -145,7 +132,7 @@ cl_int CompilerInterface::build(
             auto igcTranslationCtx = createIgcTranslationCtx(device, intermediateCodeType, IGC::CodeType::oclGenBin);
 
             auto igcOutput = translate(igcTranslationCtx.get(), intermediateRepresentation.get(),
-                                       fclOptions.get(), fclInternalOptions.get());
+                                       fclOptions.get(), fclInternalOptions.get(), inputArgs.GTPinInput);
 
             if (igcOutput == nullptr) {
                 return CL_OUT_OF_HOST_MEMORY;
@@ -251,8 +238,7 @@ cl_int CompilerInterface::link(
         CIF::RAII::UPtr_t<IGC::OclTranslationOutputTagOCL> currOut;
         inSrc->Retain(); // shared with currSrc
         CIF::RAII::UPtr_t<CIF::Builtins::BufferSimple> currSrc(inSrc.get());
-        auto intermediateRepresentation = getPreferredIntermediateRepresentation(device);
-        IGC::CodeType::CodeType_t translationChain[] = {IGC::CodeType::elf, intermediateRepresentation, IGC::CodeType::oclGenBin};
+        IGC::CodeType::CodeType_t translationChain[] = {IGC::CodeType::elf, IGC::CodeType::llvmBc, IGC::CodeType::oclGenBin};
         constexpr size_t numTranslations = sizeof(translationChain) / sizeof(translationChain[0]);
         for (size_t ti = 1; ti < numTranslations; ti++) {
             IGC::CodeType::CodeType_t inType = translationChain[ti - 1];
@@ -277,6 +263,10 @@ cl_int CompilerInterface::link(
 
         program.storeGenBinary(currOut->GetOutput()->GetMemory<char>(), currOut->GetOutput()->GetSizeRaw());
         program.updateBuildLog(&device, currOut->GetBuildLog()->GetMemory<char>(), currOut->GetBuildLog()->GetSizeRaw());
+
+        if (currOut->GetDebugData()->GetSizeRaw() != 0) {
+            program.storeDebugData(currOut->GetDebugData()->GetMemory<char>(), currOut->GetDebugData()->GetSizeRaw());
+        }
     }
 
     return CL_SUCCESS;
@@ -297,7 +287,7 @@ cl_int CompilerInterface::createLibrary(
         auto igcOptions = CIF::Builtins::CreateConstBuffer(igcMain.get(), inputArgs.pOptions, inputArgs.OptionsSize);
         auto igcInternalOptions = CIF::Builtins::CreateConstBuffer(igcMain.get(), inputArgs.pInternalOptions, inputArgs.InternalOptionsSize);
 
-        auto intermediateRepresentation = getPreferredIntermediateRepresentation(device);
+        auto intermediateRepresentation = IGC::CodeType::llvmBc;
         auto igcTranslationCtx = createIgcTranslationCtx(device, IGC::CodeType::elf, intermediateRepresentation);
 
         auto igcOutput = translate(igcTranslationCtx.get(), igcSrc.get(),
@@ -350,8 +340,8 @@ cl_int CompilerInterface::getSipKernelBinary(SipKernelType kernel, const Device 
 
 bool CompilerInterface::initialize() {
     bool compilersModulesSuccessfulyLoaded = true;
-    compilersModulesSuccessfulyLoaded &= OCLRT::loadCompiler<IGC::FclOclDeviceCtx>(Os::frontEndDllName, fclLib, fclMain);
-    compilersModulesSuccessfulyLoaded &= OCLRT::loadCompiler<IGC::IgcOclDeviceCtx>(Os::igcDllName, igcLib, igcMain);
+    compilersModulesSuccessfulyLoaded &= NEO::loadCompiler<IGC::FclOclDeviceCtx>(Os::frontEndDllName, fclLib, fclMain);
+    compilersModulesSuccessfulyLoaded &= NEO::loadCompiler<IGC::IgcOclDeviceCtx>(Os::igcDllName, igcLib, igcMain);
 
     cache.reset(new BinaryCache());
 
@@ -396,7 +386,7 @@ IGC::FclOclDeviceCtxTagOCL *CompilerInterface::getFclDeviceCtx(const Device &dev
 }
 
 IGC::CodeType::CodeType_t CompilerInterface::getPreferredIntermediateRepresentation(const Device &device) {
-    return IGC::CodeType::llvmBc;
+    return getFclDeviceCtx(device)->GetPreferredIntermediateRepresentation();
 }
 
 CIF::RAII::UPtr_t<IGC::FclOclTranslationCtxTagOCL> CompilerInterface::createFclTranslationCtx(const Device &device, IGC::CodeType::CodeType_t inType, IGC::CodeType::CodeType_t outType) {
@@ -442,7 +432,7 @@ CIF::RAII::UPtr_t<IGC::IgcOclTranslationCtxTagOCL> CompilerInterface::createIgcT
         auto igcPlatform = newDeviceCtx->GetPlatformHandle();
         auto igcGtSystemInfo = newDeviceCtx->GetGTSystemInfoHandle();
         auto igcFeWa = newDeviceCtx->GetIgcFeaturesAndWorkaroundsHandle();
-        if (false == OCLRT::areNotNullptr(igcPlatform.get(), igcGtSystemInfo.get(), igcFeWa.get())) {
+        if (false == NEO::areNotNullptr(igcPlatform.get(), igcGtSystemInfo.get(), igcFeWa.get())) {
             DEBUG_BREAK_IF(true); // could not acquire handles to device descriptors
             return nullptr;
         }
@@ -490,4 +480,4 @@ CIF::RAII::UPtr_t<IGC::IgcOclTranslationCtxTagOCL> CompilerInterface::createIgcT
     }
 }
 
-} // namespace OCLRT
+} // namespace NEO

@@ -1,32 +1,60 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "graphics_allocation.h"
-#include "runtime/helpers/aligned_memory.h"
+#include "runtime/memory_manager/graphics_allocation.h"
 
-bool OCLRT::GraphicsAllocation::isL3Capable() {
-    if (alignUp(this->cpuPtr, MemoryConstants::cacheLineSize) == this->cpuPtr &&
-        alignUp(this->size, MemoryConstants::cacheLineSize) == this->size) {
-        return true;
-    }
-    return false;
+#include "runtime/helpers/aligned_memory.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+
+namespace NEO {
+
+void GraphicsAllocation::setAllocationType(AllocationType allocationType) {
+    DebugManager.logAllocation(this);
+    this->allocationType = allocationType;
 }
+
+GraphicsAllocation::GraphicsAllocation(AllocationType allocationType, void *cpuPtrIn, uint64_t gpuAddress, uint64_t baseAddress,
+                                       size_t sizeIn, MemoryPool::Type pool, bool multiOsContextCapable)
+    : gpuBaseAddress(baseAddress),
+      gpuAddress(gpuAddress),
+      size(sizeIn),
+      cpuPtr(cpuPtrIn),
+      memoryPool(pool),
+      allocationType(allocationType) {
+    allocationInfo.flags.multiOsContextCapable = multiOsContextCapable;
+}
+
+GraphicsAllocation::GraphicsAllocation(AllocationType allocationType, void *cpuPtrIn, size_t sizeIn, osHandle sharedHandleIn,
+                                       MemoryPool::Type pool, bool multiOsContextCapable)
+    : gpuAddress(castToUint64(cpuPtrIn)),
+      size(sizeIn),
+      cpuPtr(cpuPtrIn),
+      memoryPool(pool),
+      allocationType(allocationType) {
+    sharingInfo.sharedHandle = sharedHandleIn;
+    allocationInfo.flags.multiOsContextCapable = multiOsContextCapable;
+}
+
+GraphicsAllocation::~GraphicsAllocation() = default;
+
+void GraphicsAllocation::updateTaskCount(uint32_t newTaskCount, uint32_t contextId) {
+    if (usageInfos[contextId].taskCount == objectNotUsed) {
+        registeredContextsNum++;
+    }
+    if (newTaskCount == objectNotUsed) {
+        registeredContextsNum--;
+    }
+    usageInfos[contextId].taskCount = newTaskCount;
+}
+
+std::string GraphicsAllocation::getAllocationInfoString() const {
+    return "";
+}
+
+constexpr uint32_t GraphicsAllocation::objectNotUsed;
+constexpr uint32_t GraphicsAllocation::objectNotResident;
+} // namespace NEO

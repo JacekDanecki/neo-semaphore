@@ -1,24 +1,9 @@
 /*
-* Copyright (c) 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2018-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #include "runtime/helpers/mipmap.h"
 #include "runtime/mem_obj/image.h"
@@ -28,7 +13,7 @@
 
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 constexpr size_t testOrigin[]{2, 3, 5, 7};
 
@@ -71,71 +56,41 @@ INSTANTIATE_TEST_CASE_P(MipLevelOriginIdx,
 TEST(MipmapHelper, givenClImageDescWithoutMipLevelsWhenIsMipMappedIsCalledThenFalseIsReturned) {
     cl_image_desc desc = {};
     desc.num_mip_levels = 0;
-    EXPECT_FALSE(OCLRT::isMipMapped(desc));
+    EXPECT_FALSE(NEO::isMipMapped(desc));
     desc.num_mip_levels = 1;
-    EXPECT_FALSE(OCLRT::isMipMapped(desc));
+    EXPECT_FALSE(NEO::isMipMapped(desc));
 }
 
 TEST(MipmapHelper, givenClImageDescWithMipLevelsWhenIsMipMappedIsCalledThenTrueIsReturned) {
     cl_image_desc desc = {};
     desc.num_mip_levels = 2;
-    EXPECT_TRUE(OCLRT::isMipMapped(desc));
+    EXPECT_TRUE(NEO::isMipMapped(desc));
 }
 
 TEST(MipmapHelper, givenBufferWhenIsMipMappedIsCalledThenFalseIsReturned) {
     MockBuffer buffer;
-    EXPECT_FALSE(OCLRT::isMipMapped(&buffer));
+    EXPECT_FALSE(NEO::isMipMapped(&buffer));
 }
 
-struct MockMipMapGmmResourceInfo : GmmResourceInfo {
-    using GmmResourceInfo::GmmResourceInfo;
-    GMM_STATUS getOffset(GMM_REQ_OFFSET_INFO &reqOffsetInfo) override {
-        receivedMipLevel = reqOffsetInfo.MipLevel;
-        receivedArrayIndex = reqOffsetInfo.ArrayIndex;
-        receivedSlice = reqOffsetInfo.Slice;
-        receivedLockFlagVal = reqOffsetInfo.ReqLock;
-
-        reqOffsetInfo.Lock.Offset = getExpectedReturnOffset();
-
-        return GMM_SUCCESS;
-    }
-
-    uint32_t receivedLockFlagVal = false;
-    uint32_t receivedMipLevel = 0U;
-    uint32_t receivedArrayIndex = 0U;
-    uint32_t receivedSlice = 0U;
-
-    static constexpr uint32_t getExpectedReturnOffset() {
-        return 13;
-    }
-};
-
 struct MockImage : MockImageBase {
-    std::unique_ptr<Gmm> mockGmm;
 
     MockImage() : MockImageBase() {
-        mockGmm.reset(new Gmm(nullptr, 0, false));
-        graphicsAllocation->gmm = mockGmm.get();
-        mockGmm->gmmResourceInfo.reset(new MockMipMapGmmResourceInfo());
-    }
-
-    MockMipMapGmmResourceInfo *getResourceInfo() {
-        return static_cast<MockMipMapGmmResourceInfo *>(mockGmm->gmmResourceInfo.get());
+        surfaceFormatInfo.ImageElementSizeInBytes = 4u;
     }
 };
 
 TEST(MipmapHelper, givenImageWithoutMipLevelsWhenIsMipMappedIsCalledThenFalseIsReturned) {
     MockImage image;
     image.imageDesc.num_mip_levels = 0;
-    EXPECT_FALSE(OCLRT::isMipMapped(&image));
+    EXPECT_FALSE(NEO::isMipMapped(&image));
     image.imageDesc.num_mip_levels = 1;
-    EXPECT_FALSE(OCLRT::isMipMapped(&image));
+    EXPECT_FALSE(NEO::isMipMapped(&image));
 }
 
 TEST(MipmapHelper, givenImageWithMipLevelsWhenIsMipMappedIsCalledThenTrueIsReturned) {
     MockImage image;
     image.imageDesc.num_mip_levels = 2;
-    EXPECT_TRUE(OCLRT::isMipMapped(&image));
+    EXPECT_TRUE(NEO::isMipMapped(&image));
 }
 
 TEST(MipmapHelper, givenImageWithoutMipLevelsWhenGetMipOffsetIsCalledThenZeroIsReturned) {
@@ -147,50 +102,68 @@ TEST(MipmapHelper, givenImageWithoutMipLevelsWhenGetMipOffsetIsCalledThenZeroIsR
     EXPECT_EQ(0U, offset);
 }
 
-struct MipOffsetTestExpVal {
-    uint32_t expectedSlice = 0;
-    uint32_t expectedArrayIndex = 0;
-
-    static MipOffsetTestExpVal ExpectSlice(size_t expectedSlice) {
-        MipOffsetTestExpVal ret = {};
-        ret.expectedSlice = static_cast<uint32_t>(expectedSlice);
-        return ret;
-    }
-
-    static MipOffsetTestExpVal ExpectArrayIndex(size_t expectedArrayIndex) {
-        MipOffsetTestExpVal ret = {};
-        ret.expectedArrayIndex = static_cast<uint32_t>(expectedArrayIndex);
-        return ret;
-    }
-
-    static MipOffsetTestExpVal ExpectNoSliceOrArrayIndex() {
-        return MipOffsetTestExpVal{};
-    }
-};
-
-typedef ::testing::TestWithParam<std::pair<uint32_t, MipOffsetTestExpVal>> MipOffsetTest;
+using myTuple = std::tuple<std::array<size_t, 4>, uint32_t, uint32_t>;
+using MipOffsetTest = ::testing::TestWithParam<myTuple>;
 
 TEST_P(MipOffsetTest, givenImageWithMipLevelsWhenGetMipOffsetIsCalledThenProperOffsetIsReturned) {
-    auto pair = GetParam();
+    std::array<size_t, 4> origin;
+    uint32_t expectedOffset;
+    cl_mem_object_type imageType;
+    std::tie(origin, expectedOffset, imageType) = GetParam();
 
     MockImage image;
     image.imageDesc.num_mip_levels = 16;
-    image.imageDesc.image_type = pair.first;
+    image.imageDesc.image_type = imageType;
+    image.imageDesc.image_width = 11;
+    image.imageDesc.image_height = 13;
+    image.imageDesc.image_depth = 17;
 
-    auto offset = getMipOffset(&image, testOrigin);
+    auto offset = getMipOffset(&image, origin.data());
 
-    EXPECT_EQ(MockMipMapGmmResourceInfo::getExpectedReturnOffset(), offset);
-    EXPECT_EQ(1U, image.getResourceInfo()->receivedLockFlagVal);
-    EXPECT_EQ(findMipLevel(image.imageDesc.image_type, testOrigin), image.getResourceInfo()->receivedMipLevel);
-
-    EXPECT_EQ(pair.second.expectedSlice, image.getResourceInfo()->receivedSlice);
-    EXPECT_EQ(pair.second.expectedArrayIndex, image.getResourceInfo()->receivedArrayIndex);
+    EXPECT_EQ(expectedOffset, offset);
 }
 
-INSTANTIATE_TEST_CASE_P(MipmapOffset,
+constexpr myTuple testOrigins[]{myTuple({{2, 3, 5, 7}},
+                                        812u, CL_MEM_OBJECT_IMAGE3D),
+                                myTuple({{2, 3, 5, 2}},
+                                        592u, CL_MEM_OBJECT_IMAGE3D),
+                                myTuple({{2, 3, 5, 1}},
+                                        572u, CL_MEM_OBJECT_IMAGE3D),
+                                myTuple({{2, 3, 5, 0}},
+                                        0u, CL_MEM_OBJECT_IMAGE3D),
+                                myTuple({{2, 3, 5, 7}},
+                                        812u, CL_MEM_OBJECT_IMAGE2D_ARRAY),
+                                myTuple({{2, 3, 5, 2}},
+                                        592u, CL_MEM_OBJECT_IMAGE2D_ARRAY),
+                                myTuple({{2, 3, 5, 1}},
+                                        572u, CL_MEM_OBJECT_IMAGE2D_ARRAY),
+                                myTuple({{2, 3, 5, 0}},
+                                        0u, CL_MEM_OBJECT_IMAGE2D_ARRAY),
+                                myTuple({{2, 3, 5, 0}},
+                                        724u, CL_MEM_OBJECT_IMAGE2D),
+                                myTuple({{2, 3, 2, 0}},
+                                        592u, CL_MEM_OBJECT_IMAGE2D),
+                                myTuple({{2, 3, 1, 0}},
+                                        572u, CL_MEM_OBJECT_IMAGE2D),
+                                myTuple({{2, 3, 0, 0}},
+                                        0u, CL_MEM_OBJECT_IMAGE2D),
+                                myTuple({{2, 3, 5, 0}},
+                                        724u, CL_MEM_OBJECT_IMAGE1D_ARRAY),
+                                myTuple({{2, 3, 2, 0}},
+                                        592u, CL_MEM_OBJECT_IMAGE1D_ARRAY),
+                                myTuple({{2, 3, 1, 0}},
+                                        572u, CL_MEM_OBJECT_IMAGE1D_ARRAY),
+                                myTuple({{2, 3, 0, 0}},
+                                        0u, CL_MEM_OBJECT_IMAGE1D_ARRAY),
+                                myTuple({{2, 3, 0, 0}},
+                                        56u, CL_MEM_OBJECT_IMAGE1D),
+                                myTuple({{2, 2, 0, 0}},
+                                        52u, CL_MEM_OBJECT_IMAGE1D),
+                                myTuple({{2, 1, 0, 0}},
+                                        44u, CL_MEM_OBJECT_IMAGE1D),
+                                myTuple({{2, 0, 0, 0}},
+                                        0u, CL_MEM_OBJECT_IMAGE1D)};
+
+INSTANTIATE_TEST_CASE_P(MipMapOffset,
                         MipOffsetTest,
-                        ::testing::Values(std::make_pair(CL_MEM_OBJECT_IMAGE1D, MipOffsetTestExpVal::ExpectNoSliceOrArrayIndex()),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE1D_ARRAY, MipOffsetTestExpVal::ExpectArrayIndex(testOrigin[1])),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE2D, MipOffsetTestExpVal::ExpectNoSliceOrArrayIndex()),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE2D_ARRAY, MipOffsetTestExpVal::ExpectArrayIndex(testOrigin[2])),
-                                          std::make_pair(CL_MEM_OBJECT_IMAGE3D, MipOffsetTestExpVal::ExpectSlice(testOrigin[2]))));
+                        ::testing::ValuesIn(testOrigins));

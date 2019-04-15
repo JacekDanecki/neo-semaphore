@@ -1,36 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
+#include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_queue/enqueue_common.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/built_ins/built_ins.h"
+
 #include <new>
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename GfxFamily>
 cl_int CommandQueueHw<GfxFamily>::enqueueReadBufferRect(
@@ -77,9 +63,9 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadBufferRect(
 
         return CL_SUCCESS;
     }
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRect,
-                                                                          this->getContext(), this->getDevice());
-    builder.takeOwnership(this->context);
+    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRect,
+                                                                                                        this->getContext(), this->getDevice());
+    BuiltInOwnershipWrapper builtInLock(builder, this->context);
 
     size_t hostPtrSize = Buffer::calculateHostPtrSize(hostOrigin, region, hostRowPitch, hostSlicePitch);
     void *dstPtr = ptr;
@@ -91,19 +77,22 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadBufferRect(
     if (region[0] != 0 &&
         region[1] != 0 &&
         region[2] != 0) {
-        bool status = createAllocationForHostSurface(hostPtrSurf);
+        bool status = getCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, true);
         if (!status) {
-            builder.releaseOwnership();
             return CL_OUT_OF_RESOURCES;
         }
-        dstPtr = reinterpret_cast<void *>(hostPtrSurf.getAllocation()->getGpuAddressToPatch());
+        dstPtr = reinterpret_cast<void *>(hostPtrSurf.getAllocation()->getGpuAddress());
     }
+
+    void *alignedDstPtr = alignDown(dstPtr, 4);
+    size_t dstPtrOffset = ptrDiff(dstPtr, alignedDstPtr);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
     dc.srcMemObj = buffer;
-    dc.dstPtr = dstPtr;
+    dc.dstPtr = alignedDstPtr;
     dc.srcOffset = bufferOrigin;
     dc.dstOffset = hostOrigin;
+    dc.dstOffset.x += dstPtrOffset;
     dc.size = region;
     dc.srcRowPitch = bufferRowPitch;
     dc.srcSlicePitch = bufferSlicePitch;
@@ -119,8 +108,6 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadBufferRect(
         eventWaitList,
         event);
 
-    builder.releaseOwnership();
-
     if (context->isProvidingPerformanceHints()) {
         context->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_BAD_INTEL, CL_ENQUEUE_READ_BUFFER_RECT_REQUIRES_COPY_DATA, static_cast<cl_mem>(buffer), ptr);
         if (!isL3Capable(ptr, hostPtrSize)) {
@@ -130,4 +117,4 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadBufferRect(
 
     return CL_SUCCESS;
 }
-} // namespace OCLRT
+} // namespace NEO

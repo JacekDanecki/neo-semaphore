@@ -1,39 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/mem_obj/mem_obj.h"
+#include "runtime/memory_manager/allocations_list.h"
+#include "runtime/os_interface/os_context.h"
+#include "runtime/platform/platform.h"
+#include "test.h"
+#include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_memory_manager.h"
-#include "unit_tests/libult/ult_command_stream_receiver.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 template <typename Family>
 class MyCsr : public UltCommandStreamReceiver<Family> {
   public:
-    MyCsr(const HardwareInfo &hwInfo) : UltCommandStreamReceiver<Family>(hwInfo) {}
-    MOCK_METHOD1(waitForFlushStamp, bool(FlushStamp &flushStampToWait));
+    MyCsr(const ExecutionEnvironment &executionEnvironment) : UltCommandStreamReceiver<Family>(const_cast<ExecutionEnvironment &>(executionEnvironment)) {}
     MOCK_METHOD3(waitForCompletionWithTimeout, bool(bool enableTimeout, int64_t timeoutMs, uint32_t taskCountToWait));
 };
 
@@ -43,17 +30,19 @@ void CL_CALLBACK emptyDestructorCallback(cl_mem memObj, void *userData) {
 class MemObjDestructionTest : public ::testing::TestWithParam<bool> {
   public:
     void SetUp() override {
-        context.reset(new MockContext());
-        memoryManager = new MockMemoryManager;
-        device = static_cast<MockDevice *>(context->getDevice(0));
-        device->injectMemoryManager(memoryManager);
-        context->setMemoryManager(memoryManager);
-        allocation = memoryManager->allocateGraphicsMemory(size);
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
+        memoryManager = new MockMemoryManager(*executionEnvironment);
+        executionEnvironment->memoryManager.reset(memoryManager);
+        device.reset(MockDevice::create<MockDevice>(*platformDevices, executionEnvironment, 0));
+        context.reset(new MockContext(device.get()));
+
+        allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{size});
         memObj = new MemObj(context.get(), CL_MEM_OBJECT_BUFFER,
                             CL_MEM_READ_WRITE,
                             size,
                             nullptr, nullptr, allocation, true, false, false);
-        *context->getDevice(0)->getTagAddress() = 0;
+        *device->getDefaultEngine().commandStreamReceiver->getTagAddress() = 0;
+        contextId = device->getDefaultEngine().osContext->getContextId();
     }
 
     void TearDown() override {
@@ -61,20 +50,23 @@ class MemObjDestructionTest : public ::testing::TestWithParam<bool> {
     }
 
     void makeMemObjUsed() {
-        memObj->getGraphicsAllocation()->taskCount = 3;
+        memObj->getGraphicsAllocation()->updateTaskCount(taskCountReady, contextId);
     }
 
     void makeMemObjNotReady() {
         makeMemObjUsed();
-        *context->getDevice(0)->getTagAddress() = memObj->getGraphicsAllocation()->taskCount - 1;
+        *device->getDefaultEngine().commandStreamReceiver->getTagAddress() = taskCountReady - 1;
     }
 
     void makeMemObjReady() {
         makeMemObjUsed();
-        *context->getDevice(0)->getTagAddress() = memObj->getGraphicsAllocation()->taskCount;
+        *device->getDefaultEngine().commandStreamReceiver->getTagAddress() = taskCountReady;
     }
 
-    MockDevice *device;
+    constexpr static uint32_t taskCountReady = 3u;
+    ExecutionEnvironment *executionEnvironment;
+    std::unique_ptr<MockDevice> device;
+    uint32_t contextId = 0;
     MockMemoryManager *memoryManager;
     std::unique_ptr<MockContext> context;
     GraphicsAllocation *allocation;
@@ -119,40 +111,61 @@ TEST_P(MemObjAsyncDestructionTest, givenMemObjWithDestructableAllocationWhenAsyn
     } else {
         makeMemObjNotReady();
     }
-    EXPECT_TRUE(memoryManager->isAllocationListEmpty());
+    auto &allocationList = memoryManager->getDefaultCommandStreamReceiver(0)->getTemporaryAllocations();
+    EXPECT_TRUE(allocationList.peekIsEmpty());
 
     delete memObj;
 
-    EXPECT_EQ(!expectedDeferration, memoryManager->isAllocationListEmpty());
+    EXPECT_EQ(!expectedDeferration, allocationList.peekIsEmpty());
     if (expectedDeferration) {
-        EXPECT_EQ(allocation, memoryManager->peekAllocationListHead());
+        EXPECT_EQ(allocation, allocationList.peekHead());
     }
 }
 
 HWTEST_P(MemObjAsyncDestructionTest, givenUsedMemObjWithAsyncDestructionsEnabledThatHasDestructorCallbacksWhenItIsDestroyedThenDestructorWaitsOnTaskCount) {
-    makeMemObjUsed();
-
     bool hasCallbacks = GetParam();
 
     if (hasCallbacks) {
         memObj->setDestructorCallback(emptyDestructorCallback, nullptr);
     }
 
-    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(device->getHardwareInfo());
-    device->resetCommandStreamReceiver(mockCsr);
+    auto mockCsr0 = new ::testing::NiceMock<MyCsr<FamilyType>>(*device->executionEnvironment);
+    auto mockCsr1 = new ::testing::NiceMock<MyCsr<FamilyType>>(*device->executionEnvironment);
+    device->resetCommandStreamReceiver(mockCsr0, 0);
+    device->resetCommandStreamReceiver(mockCsr1, 1);
+    *mockCsr0->getTagAddress() = 0;
+    *mockCsr1->getTagAddress() = 0;
 
-    bool desired = true;
+    auto waitForCompletionWithTimeoutMock0 = [&mockCsr0](bool enableTimeout, int64_t timeoutMs, uint32_t taskCountToWait) -> bool {
+        *mockCsr0->getTagAddress() = taskCountReady;
+        return true;
+    };
+    auto waitForCompletionWithTimeoutMock1 = [&mockCsr1](bool enableTimeout, int64_t timeoutMs, uint32_t taskCountToWait) -> bool {
+        *mockCsr1->getTagAddress() = taskCountReady;
+        return true;
+    };
+    auto osContextId0 = mockCsr0->getOsContext().getContextId();
+    auto osContextId1 = mockCsr1->getOsContext().getContextId();
 
-    auto waitForCompletionWithTimeoutMock = [=](bool enableTimeout, int64_t timeoutMs, uint32_t taskCountToWait) -> bool { return desired; };
+    memObj->getGraphicsAllocation()->updateTaskCount(taskCountReady, osContextId0);
+    memObj->getGraphicsAllocation()->updateTaskCount(taskCountReady, osContextId1);
 
-    ON_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
-        .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock));
+    ON_CALL(*mockCsr0, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
+        .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock0));
+    ON_CALL(*mockCsr1, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
+        .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock1));
 
     if (hasCallbacks) {
-        EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->taskCount))
+        EXPECT_CALL(*mockCsr0, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->getTaskCount(osContextId0)))
+            .Times(1);
+        EXPECT_CALL(*mockCsr1, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->getTaskCount(osContextId1)))
             .Times(1);
     } else {
-        EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
+        *mockCsr0->getTagAddress() = taskCountReady;
+        *mockCsr1->getTagAddress() = taskCountReady;
+        EXPECT_CALL(*mockCsr0, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
+            .Times(0);
+        EXPECT_CALL(*mockCsr1, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
             .Times(0);
     }
     delete memObj;
@@ -168,8 +181,10 @@ HWTEST_P(MemObjAsyncDestructionTest, givenUsedMemObjWithAsyncDestructionsEnabled
         memObj->setAllocatedMapPtr(allocatedPtr);
     }
 
-    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(device->getHardwareInfo());
+    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(*device->executionEnvironment);
     device->resetCommandStreamReceiver(mockCsr);
+    *mockCsr->getTagAddress() = 0;
+    auto osContextId = mockCsr->getOsContext().getContextId();
 
     bool desired = true;
 
@@ -179,7 +194,7 @@ HWTEST_P(MemObjAsyncDestructionTest, givenUsedMemObjWithAsyncDestructionsEnabled
         .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock));
 
     if (hasAllocatedMappedPtr) {
-        EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->taskCount))
+        EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->getTaskCount(osContextId)))
             .Times(1);
     } else {
         EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
@@ -195,7 +210,7 @@ HWTEST_P(MemObjAsyncDestructionTest, givenUsedMemObjWithAsyncDestructionsEnabled
 
     if (!hasAllocatedMappedPtr) {
         delete memObj;
-        allocation = memoryManager->allocateGraphicsMemory(size);
+        allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{size});
         MemObjOffsetArray origin = {{0, 0, 0}};
         MemObjSizeArray region = {{1, 1, 1}};
         cl_map_flags mapFlags = CL_MAP_READ;
@@ -209,18 +224,20 @@ HWTEST_P(MemObjAsyncDestructionTest, givenUsedMemObjWithAsyncDestructionsEnabled
     }
 
     makeMemObjUsed();
-    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(device->getHardwareInfo());
+    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(*device->executionEnvironment);
     device->resetCommandStreamReceiver(mockCsr);
+    *mockCsr->getTagAddress() = 0;
 
     bool desired = true;
 
     auto waitForCompletionWithTimeoutMock = [=](bool enableTimeout, int64_t timeoutMs, uint32_t taskCountToWait) -> bool { return desired; };
+    auto osContextId = mockCsr->getOsContext().getContextId();
 
     ON_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
         .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock));
 
     if (hasAllocatedMappedPtr) {
-        EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->taskCount))
+        EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->getTaskCount(osContextId)))
             .Times(1);
     } else {
         EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
@@ -242,17 +259,19 @@ HWTEST_P(MemObjSyncDestructionTest, givenMemObjWithDestructableAllocationWhenAsy
     } else {
         makeMemObjNotReady();
     }
-    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(device->getHardwareInfo());
+    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(*device->executionEnvironment);
     device->resetCommandStreamReceiver(mockCsr);
+    *mockCsr->getTagAddress() = 0;
 
     bool desired = true;
 
     auto waitForCompletionWithTimeoutMock = [=](bool enableTimeout, int64_t timeoutMs, uint32_t taskCountToWait) -> bool { return desired; };
+    auto osContextId = mockCsr->getOsContext().getContextId();
 
     ON_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, ::testing::_, ::testing::_))
         .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock));
 
-    EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->taskCount))
+    EXPECT_CALL(*mockCsr, waitForCompletionWithTimeout(::testing::_, TimeoutControls::maxTimeout, allocation->getTaskCount(osContextId)))
         .Times(1);
 
     delete memObj;
@@ -267,8 +286,9 @@ HWTEST_P(MemObjSyncDestructionTest, givenMemObjWithDestructableAllocationWhenAsy
     } else {
         makeMemObjNotReady();
     }
-    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(device->getHardwareInfo());
+    auto mockCsr = new ::testing::NiceMock<MyCsr<FamilyType>>(*device->executionEnvironment);
     device->resetCommandStreamReceiver(mockCsr);
+    *mockCsr->getTagAddress() = 0;
 
     bool desired = true;
 
@@ -278,7 +298,8 @@ HWTEST_P(MemObjSyncDestructionTest, givenMemObjWithDestructableAllocationWhenAsy
         .WillByDefault(::testing::Invoke(waitForCompletionWithTimeoutMock));
 
     delete memObj;
-    EXPECT_TRUE(memoryManager->isAllocationListEmpty());
+    auto &allocationList = memoryManager->getDefaultCommandStreamReceiver(0)->getTemporaryAllocations();
+    EXPECT_TRUE(allocationList.peekIsEmpty());
 }
 
 INSTANTIATE_TEST_CASE_P(

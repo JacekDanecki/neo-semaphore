@@ -1,32 +1,17 @@
 /*
- * Copyright (c) 2017-2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
+#include <condition_variable>
+#include <fstream>
+#include <mutex>
 #include <sstream>
 #include <stdint.h>
 #include <string>
-#include <fstream>
-#include <condition_variable>
-#include <mutex>
 #include <thread>
 
 enum class DebugFunctionalityLevel {
@@ -37,13 +22,13 @@ enum class DebugFunctionalityLevel {
 
 #if defined(_DEBUG)
 constexpr DebugFunctionalityLevel globalDebugFunctionalityLevel = DebugFunctionalityLevel::Full;
-#elif defined(_RELEASE_INTERNAL)
+#elif defined(_RELEASE_INTERNAL) || defined(_RELEASE_BUILD_WITH_REGKEYS)
 constexpr DebugFunctionalityLevel globalDebugFunctionalityLevel = DebugFunctionalityLevel::RegKeys;
 #else
 constexpr DebugFunctionalityLevel globalDebugFunctionalityLevel = DebugFunctionalityLevel::None;
 #endif
 
-namespace OCLRT {
+namespace NEO {
 template <typename... Args>
 void printDebugString(bool showDebugLogs, Args &&... args) {
     if (showDebugLogs) {
@@ -57,6 +42,7 @@ void printDebugString(bool showDebugLogs, Args &&... args) {
 #endif
 
 class Kernel;
+class GraphicsAllocation;
 struct MultiDispatchInfo;
 class SettingsReader;
 
@@ -64,33 +50,36 @@ class SettingsReader;
 #define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description) \
 struct DebugVar##variableName                                                     \
 {                                                                                 \
-        DebugVar##variableName() {                                                \
-            value = (dataType)defaultValue;                                       \
-        }                                                                         \
-        dataType get() const {                                                    \
-            return value;                                                         \
-        }                                                                         \
-        void set(dataType data) {                                                 \
-            value = data;                                                         \
-        }                                                                         \
-private:                                                                          \
-        dataType value;                                                           \
+     DebugVar##variableName() {                                                   \
+         value = (dataType)defaultValue;                                          \
+     }                                                                            \
+     dataType get() const {                                                       \
+         return value;                                                            \
+     }                                                                            \
+     void set(dataType data) {                                                    \
+         value = data;                                                            \
+     }                                                                            \
+     dataType &getRef() {                                                         \
+         return value;                                                            \
+     }                                                                            \
+  private:                                                                        \
+     dataType value;                                                              \
 };
 
-#include "DebugVariables.inl"
+#include "debug_variables.inl"
 #undef DECLARE_DEBUG_VARIABLE
 // clang-format on
+
+struct DebugVariables {
+#define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description) \
+    DebugVar##variableName variableName;
+#include "debug_variables.inl"
+#undef DECLARE_DEBUG_VARIABLE
+};
 
 template <DebugFunctionalityLevel DebugLevel>
 class DebugSettingsManager {
   public:
-    struct DebugVariables {
-#define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description) \
-    DebugVar##variableName variableName;
-#include "DebugVariables.inl"
-#undef DECLARE_DEBUG_VARIABLE
-    };
-
     DebugSettingsManager();
     ~DebugSettingsManager();
 
@@ -117,16 +106,20 @@ class DebugSettingsManager {
         return DebugLevel == DebugFunctionalityLevel::None;
     }
 
+    void getHardwareInfoOverride(std::string &hwInfoConfig);
     void dumpKernel(const std::string &name, const std::string &src);
     void logApiCall(const char *function, bool enter, int32_t errorCode);
+    void logAllocation(GraphicsAllocation const *graphicsAllocation);
     size_t getInput(const size_t *input, int32_t index);
     const std::string getEvents(const uintptr_t *input, uint32_t numOfEvents);
+    const std::string getMemObjects(const uintptr_t *input, uint32_t numOfObjects);
 
     MOCKABLE_VIRTUAL void writeToFile(std::string filename, const char *str, size_t length, std::ios_base::openmode mode);
 
     void dumpBinaryProgram(int32_t numDevices, const size_t *lengths, const unsigned char **binaries);
     void dumpKernelArgs(const Kernel *kernel);
     void dumpKernelArgs(const MultiDispatchInfo *multiDispatchInfo);
+    void injectSettingsFromReader();
 
     const std::string getSizes(const uintptr_t *input, uint32_t workDim, bool local) {
         if (false == debugLoggingAvailable()) {
@@ -149,7 +142,7 @@ class DebugSettingsManager {
         return os.str();
     }
 
-    const std::string deviceInfoPointerToString(const void *paramValue, size_t paramSize) {
+    const std::string infoPointerToString(const void *paramValue, size_t paramSize) {
         if (false == debugLoggingAvailable()) {
             return "";
         }
@@ -221,9 +214,17 @@ class DebugSettingsManager {
     void setLogFileName(std::string filename) {
         logFileName = filename;
     }
+    void setReaderImpl(SettingsReader *newReaderImpl) {
+        readerImpl.reset(newReaderImpl);
+    }
+    SettingsReader *getReaderImpl() {
+        return readerImpl.get();
+    }
+
+    const char *getAllocationTypeString(GraphicsAllocation const *graphicsAllocation);
 
   protected:
-    SettingsReader *readerImpl = nullptr;
+    std::unique_ptr<SettingsReader> readerImpl;
     std::mutex mtx;
     std::string logFileName;
 
@@ -261,9 +262,17 @@ class DebugSettingsManager {
             print(ss, params...);
         }
     }
+
+    template <typename DataType>
+    static void dumpNonDefaultFlag(const char *variableName, const DataType &variableValue, const DataType &defaultValue);
+    void dumpFlags() const;
+    static const char *settingsDumpFileName;
 };
 
 extern DebugSettingsManager<globalDebugFunctionalityLevel> DebugManager;
+
+template <DebugFunctionalityLevel DebugLevel>
+const char *DebugSettingsManager<DebugLevel>::settingsDumpFileName = "igdrcl_dumped.config";
 
 template <bool Enabled>
 class DebugSettingsApiEnterWrapper {
@@ -282,15 +291,13 @@ class DebugSettingsApiEnterWrapper {
     const char *funcName;
     const int *errorCode;
 };
-}; // namespace OCLRT
-
-#define DECLARE_DEBUG_VARIABLE(dataType, variableName, defaultValue, description)
+}; // namespace NEO
 
 #define DBG_LOG_LAZY_EVALUATE_ARGS(DBG_MANAGER, PREDICATE, LOG_FUNCTION, ...) \
     DBG_MANAGER.logLazyEvaluateArgs(DBG_MANAGER.flags.PREDICATE.get(), [&] { DBG_MANAGER.LOG_FUNCTION(__VA_ARGS__); })
 
 #define DBG_LOG(PREDICATE, ...) \
-    DBG_LOG_LAZY_EVALUATE_ARGS(OCLRT::DebugManager, PREDICATE, log, OCLRT::DebugManager.flags.PREDICATE.get(), __VA_ARGS__)
+    DBG_LOG_LAZY_EVALUATE_ARGS(NEO::DebugManager, PREDICATE, log, NEO::DebugManager.flags.PREDICATE.get(), __VA_ARGS__)
 
 #define DBG_LOG_INPUTS(...) \
-    DBG_LOG_LAZY_EVALUATE_ARGS(OCLRT::DebugManager, LogApiCalls, logInputs, __VA_ARGS__)
+    DBG_LOG_LAZY_EVALUATE_ARGS(NEO::DebugManager, LogApiCalls, logInputs, __VA_ARGS__)

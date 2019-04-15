@@ -1,93 +1,86 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "mock_os_layer.h"
-#include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/basic_math.h"
+#include "runtime/memory_manager/memory_manager.h"
 #include "runtime/os_interface/linux/allocator_helper.h"
-#include "unit_tests/custom_event_listener.h"
-#include "unit_tests/helpers/variable_backup.h"
+#include "runtime/os_interface/linux/os_interface.h"
 #include "test.h"
+#include "unit_tests/custom_event_listener.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/variable_backup.h"
+#include "unit_tests/linux/drm_wrap.h"
+#include "unit_tests/linux/mock_os_layer.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
 
-using namespace OCLRT;
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
 
-class DrmWrap : public Drm {
-  public:
-    static Drm *createDrm(int32_t deviceOrdinal) {
-        return Drm::create(deviceOrdinal);
-    }
-    static void closeDevice(int32_t deviceOrdinal) {
-        Drm::closeDevice(deviceOrdinal);
-    };
-};
+#include <string>
+
+using namespace NEO;
 
 class DrmTestsFixture {
   public:
     void SetUp() {
-        //make static things into initial state
-        DrmWrap::closeDevice(0);
-        resetOSMockGlobalState();
     }
 
     void TearDown() {
+        DrmWrap::closeDevice(0);
     }
 };
 
 typedef Test<DrmTestsFixture> DrmTests;
 
+void initializeTestedDevice() {
+    for (uint32_t i = 0; deviceDescriptorTable[i].eGtType != GTTYPE::GTTYPE_UNDEFINED; i++) {
+        if (platformDevices[0]->pPlatform->eProductFamily == deviceDescriptorTable[i].pHwInfo->pPlatform->eProductFamily) {
+            deviceId = deviceDescriptorTable[i].deviceId;
+            break;
+        }
+    }
+}
+
 TEST_F(DrmTests, getReturnsNull) {
-    auto ptr = Drm::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = Drm::get(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, getNoOverrun) {
     //negative device ordinal
-    auto ptr = Drm::get(-1);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = Drm::get(-1);
+    EXPECT_EQ(drm, nullptr);
 
     //some high value
-    ptr = Drm::get(1 << (sizeof(int32_t) * 8 - 2));
-    EXPECT_EQ(ptr, nullptr);
+    drm = Drm::get(1 << (sizeof(int32_t) * 8 - 2));
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, closeNotOpened) {
-    auto ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::get(0);
+    EXPECT_EQ(drm, nullptr);
 
     DrmWrap::closeDevice(0);
 
     DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, openClose) {
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
 
     DrmWrap::closeDevice(0);
 
-    ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    drm = DrmWrap::get(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, closeNoOverrun) {
@@ -99,11 +92,14 @@ TEST_F(DrmTests, closeNoOverrun) {
 }
 
 TEST_F(DrmTests, createReturnsDrm) {
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
 
     drm_i915_getparam_t getParam;
     int lDeviceId;
+
+    VariableBackup<decltype(ioctlCnt)> backupIoctlCnt(&ioctlCnt);
+    VariableBackup<int> backupIoctlSeq(&ioctlSeq[0]);
 
     ioctlCnt = 0;
     ioctlSeq[0] = -1;
@@ -111,7 +107,7 @@ TEST_F(DrmTests, createReturnsDrm) {
     // check if device works, although there was EINTR error from KMD
     getParam.param = I915_PARAM_CHIPSET_ID;
     getParam.value = &lDeviceId;
-    auto ret = ptr->ioctl(DRM_IOCTL_I915_GETPARAM, &getParam);
+    auto ret = drm->ioctl(DRM_IOCTL_I915_GETPARAM, &getParam);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(deviceId, lDeviceId);
 
@@ -121,7 +117,7 @@ TEST_F(DrmTests, createReturnsDrm) {
     // check if device works, although there was EAGAIN error from KMD
     getParam.param = I915_PARAM_CHIPSET_ID;
     getParam.value = &lDeviceId;
-    ret = ptr->ioctl(DRM_IOCTL_I915_GETPARAM, &getParam);
+    ret = drm->ioctl(DRM_IOCTL_I915_GETPARAM, &getParam);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(deviceId, lDeviceId);
 
@@ -131,221 +127,249 @@ TEST_F(DrmTests, createReturnsDrm) {
     // we failed with any other error code
     getParam.param = I915_PARAM_CHIPSET_ID;
     getParam.value = &lDeviceId;
-    ret = ptr->ioctl(DRM_IOCTL_I915_GETPARAM, &getParam);
+    ret = drm->ioctl(DRM_IOCTL_I915_GETPARAM, &getParam);
     EXPECT_EQ(-1, ret);
     EXPECT_EQ(deviceId, lDeviceId);
 }
 
 TEST_F(DrmTests, createTwiceReturnsSameDrm) {
-    auto ptr1 = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr1, nullptr);
-    auto ptr2 = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr2, nullptr);
-    EXPECT_EQ(ptr1, ptr2);
+    auto drm1 = DrmWrap::createDrm(0);
+    EXPECT_NE(drm1, nullptr);
+    auto drm2 = DrmWrap::createDrm(0);
+    EXPECT_NE(drm2, nullptr);
+    EXPECT_EQ(drm1, drm2);
 }
 
 TEST_F(DrmTests, createDriFallback) {
+    VariableBackup<decltype(haveDri)> backupHaveDri(&haveDri);
+
     haveDri = 1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
 }
 
 TEST_F(DrmTests, createNoDevice) {
+    VariableBackup<decltype(haveDri)> backupHaveDri(&haveDri);
     haveDri = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, createNoOverrun) {
-    auto ptr = DrmWrap::createDrm(-1);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(-1);
+    EXPECT_EQ(drm, nullptr);
 
-    ptr = DrmWrap::createDrm(1 << (sizeof(int32_t) * 8 - 2));
-    EXPECT_EQ(ptr, nullptr);
+    drm = DrmWrap::createDrm(1 << (sizeof(int32_t) * 8 - 2));
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, createUnknownDevice) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.PrintDebugMessages.set(true);
+
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+
     deviceId = -1;
 
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    ::testing::internal::CaptureStderr();
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
+    std::string errStr = ::testing::internal::GetCapturedStderr();
+    EXPECT_THAT(errStr, ::testing::HasSubstr(std::string("FATAL: Unknown device: deviceId: ffffffff, revisionId: 0000")));
 }
 
 TEST_F(DrmTests, createNoSoftPin) {
+    VariableBackup<decltype(haveSoftPin)> backupHaveSoftPin(&haveSoftPin);
     haveSoftPin = 0;
 
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnDeviceId) {
+    VariableBackup<decltype(failOnDeviceId)> backupFailOnDeviceId(&failOnDeviceId);
     failOnDeviceId = -1;
 
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnRevisionId) {
+    VariableBackup<decltype(failOnRevisionId)> backupFailOnRevisionId(&failOnRevisionId);
     failOnRevisionId = -1;
 
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnSoftPin) {
+    VariableBackup<decltype(failOnSoftPin)> backupFailOnSoftPin(&failOnSoftPin);
     failOnSoftPin = -1;
 
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnParamBoost) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
     failOnParamBoost = -1;
 
-    auto ptr = DrmWrap::createDrm(0);
+    auto drm = DrmWrap::createDrm(0);
     //non-fatal error - issue warning only
-    EXPECT_NE(ptr, nullptr);
+    EXPECT_NE(drm, nullptr);
 }
 
-#ifdef SUPPORT_BDW
+#ifdef TESTS_BDW
 TEST_F(DrmTests, givenKernelNotSupportingTurboPatchWhenBdwDeviceIsCreatedThenSimplifiedMocsSelectionIsFalse) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
-    useSimplifiedMocsTableBckp = false;
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
+
     deviceId = IBDW_GT3_WRK_DEVICE_F0_ID;
     failOnParamBoost = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_FALSE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_FALSE(drm->getSimplifiedMocsTableUsage());
 }
 #endif
 
-#ifdef SUPPORT_SKL
+#ifdef TESTS_SKL
 TEST_F(DrmTests, givenKernelNotSupportingTurboPatchWhenSklDeviceIsCreatedThenSimplifiedMocsSelectionIsTrue) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
-    useSimplifiedMocsTableBckp = false;
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
+
     deviceId = ISKL_GT2_DT_DEVICE_F0_ID;
     failOnParamBoost = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_TRUE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_TRUE(drm->getSimplifiedMocsTableUsage());
 }
 #endif
-#ifdef SUPPORT_KBL
+#ifdef TESTS_KBL
 TEST_F(DrmTests, givenKernelNotSupportingTurboPatchWhenKblDeviceIsCreatedThenSimplifiedMocsSelectionIsTrue) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
-    useSimplifiedMocsTableBckp = false;
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
+
     deviceId = IKBL_GT1_ULT_DEVICE_F0_ID;
     failOnParamBoost = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_TRUE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_TRUE(drm->getSimplifiedMocsTableUsage());
 }
 #endif
-#ifdef SUPPORT_BXT
+#ifdef TESTS_BXT
 TEST_F(DrmTests, givenKernelNotSupportingTurboPatchWhenBxtDeviceIsCreatedThenSimplifiedMocsSelectionIsTrue) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
-    useSimplifiedMocsTableBckp = false;
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
+
     deviceId = IBXT_X_DEVICE_F0_ID;
     failOnParamBoost = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_TRUE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_TRUE(drm->getSimplifiedMocsTableUsage());
 }
 #endif
-#ifdef SUPPORT_GLK
+#ifdef TESTS_GLK
 TEST_F(DrmTests, givenKernelNotSupportingTurboPatchWhenGlkDeviceIsCreatedThenSimplifiedMocsSelectionIsTrue) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
-    useSimplifiedMocsTableBckp = false;
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
+
     deviceId = IGLK_GT2_ULT_18EU_DEVICE_F0_ID;
     failOnParamBoost = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_TRUE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_TRUE(drm->getSimplifiedMocsTableUsage());
 }
 #endif
-#ifdef SUPPORT_CFL
+#ifdef TESTS_CFL
 TEST_F(DrmTests, givenKernelNotSupportingTurboPatchWhenCflDeviceIsCreatedThenSimplifiedMocsSelectionIsTrue) {
-    VariableBackup<bool> useSimplifiedMocsTableBckp(&GmmHelper::useSimplifiedMocsTable);
-    useSimplifiedMocsTableBckp = false;
+    VariableBackup<decltype(deviceId)> backupDeviceId(&deviceId);
+    VariableBackup<decltype(failOnParamBoost)> backupFailOnParamBoost(&failOnParamBoost);
+
     deviceId = ICFL_GT1_S61_DT_DEVICE_F0_ID;
     failOnParamBoost = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_TRUE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_TRUE(drm->getSimplifiedMocsTableUsage());
 }
 #endif
 
 TEST_F(DrmTests, givenKernelSupportingTurboPatchWhenDeviceIsCreatedThenSimplifiedMocsSelectionIsFalse) {
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    EXPECT_FALSE(GmmHelper::useSimplifiedMocsTable);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
+    EXPECT_FALSE(drm->getSimplifiedMocsTableUsage());
 }
-
-#if defined(I915_PARAM_HAS_PREEMPTION)
-TEST_F(DrmTests, checkPreemption) {
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
-    bool ret = ptr->hasPreemption();
-    EXPECT_EQ(ret, true);
-    DrmWrap::closeDevice(0);
-
-    ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
-}
-#endif
 
 TEST_F(DrmTests, failOnContextCreate) {
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
+    VariableBackup<decltype(failOnContextCreate)> backupFailOnContextCreate(&failOnContextCreate);
+
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
     failOnContextCreate = -1;
-    bool ret = ptr->hasPreemption();
-    EXPECT_EQ(ret, false);
+    EXPECT_THROW(drm->createDrmContext(), std::exception);
+    EXPECT_FALSE(drm->isPreemptionSupported());
     failOnContextCreate = 0;
     DrmWrap::closeDevice(0);
 
-    ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    drm = DrmWrap::get(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnSetPriority) {
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_NE(ptr, nullptr);
+    VariableBackup<decltype(failOnSetPriority)> backupFailOnSetPriority(&failOnSetPriority);
+
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_NE(drm, nullptr);
     failOnSetPriority = -1;
-    bool ret = ptr->hasPreemption();
-    EXPECT_EQ(ret, false);
+    auto drmContext = drm->createDrmContext();
+    EXPECT_THROW(drm->setLowPriorityContextParam(drmContext), std::exception);
+    EXPECT_FALSE(drm->isPreemptionSupported());
     failOnSetPriority = 0;
     DrmWrap::closeDevice(0);
 
-    ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    drm = DrmWrap::get(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnDrmGetVersion) {
+    VariableBackup<decltype(failOnDrmVersion)> backupFailOnDrmVersion(&failOnDrmVersion);
+
     failOnDrmVersion = -1;
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
     failOnDrmVersion = 0;
     DrmWrap::closeDevice(0);
 
-    ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    drm = DrmWrap::get(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST_F(DrmTests, failOnInvalidDeviceName) {
+    VariableBackup<decltype(failOnDrmVersion)> backupFailOnDrmVersion(&failOnDrmVersion);
+
     strcpy(providedDrmVersion, "NA");
-    auto ptr = DrmWrap::createDrm(0);
-    EXPECT_EQ(ptr, nullptr);
+    auto drm = DrmWrap::createDrm(0);
+    EXPECT_EQ(drm, nullptr);
     failOnDrmVersion = 0;
     strcpy(providedDrmVersion, "i915");
     DrmWrap::closeDevice(0);
 
-    ptr = DrmWrap::get(0);
-    EXPECT_EQ(ptr, nullptr);
+    drm = DrmWrap::get(0);
+    EXPECT_EQ(drm, nullptr);
 }
 
 TEST(AllocatorHelper, givenExpectedSizeToMapWhenGetSizetoMapCalledThenExpectedValueReturned) {
-    EXPECT_EQ((alignUp(4 * GB - 8096, 4096)), OCLRT::getSizeToMap());
+    EXPECT_EQ((alignUp(4 * GB - 8096, 4096)), NEO::getSizeToMap());
+}
+
+TEST(DrmMemoryManagerCreate, whenCallCreateMemoryManagerThenDrmMemoryManagerIsCreated) {
+    DrmMockSuccess mock;
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+
+    executionEnvironment.osInterface = std::make_unique<OSInterface>();
+    executionEnvironment.osInterface->get()->setDrm(&mock);
+    auto drmMemoryManager = MemoryManager::createMemoryManager(executionEnvironment);
+    EXPECT_NE(nullptr, drmMemoryManager.get());
+    executionEnvironment.memoryManager = std::move(drmMemoryManager);
 }
 
 int main(int argc, char **argv) {
@@ -370,6 +394,8 @@ int main(int argc, char **argv) {
         listeners.Release(defaultListener);
         listeners.Append(customEventListener);
     }
+
+    initializeTestedDevice();
 
     auto retVal = RUN_ALL_TESTS();
 

@@ -1,33 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/helpers/dispatch_info_builder.h"
-#include "unit_tests/fixtures/context_fixture.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/mocks/mock_buffer.h"
-#include "unit_tests/fixtures/device_fixture.h"
 #include "test.h"
+#include "unit_tests/fixtures/context_fixture.h"
+#include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/mocks/mock_buffer.h"
+#include "unit_tests/mocks/mock_kernel.h"
 
-namespace OCLRT {
+namespace NEO {
 
 using namespace SplitDispatch;
 
@@ -45,7 +30,7 @@ class DispatchInfoBuilderFixture : public ContextFixture, public DeviceFixture {
         DeviceFixture::SetUp();
         cl_device_id device = pDevice;
         ContextFixture::SetUp(1, &device);
-        pKernelInfo = KernelInfo::create();
+        pKernelInfo = std::make_unique<KernelInfo>();
 
         pMediaVFEstate = new SPatchMediaVFEState();
         pMediaVFEstate->PerThreadScratchSpace = 1024;
@@ -54,6 +39,7 @@ class DispatchInfoBuilderFixture : public ContextFixture, public DeviceFixture {
         pExecutionEnvironment = new SPatchExecutionEnvironment();
         pExecutionEnvironment->CompiledSIMD32 = 1;
         pExecutionEnvironment->LargestCompiledSIMDSize = 32;
+        pExecutionEnvironment->NumGRFRequired = GrfConfig::DefaultGrfNumber;
 
         pPrintfSurface = new SPatchAllocateStatelessPrintfSurface();
 
@@ -79,7 +65,7 @@ class DispatchInfoBuilderFixture : public ContextFixture, public DeviceFixture {
         pKernelInfo->kernelArgInfo[2].kernelArgPatchInfoVector[0].crossthreadOffset = 0x50;
         pKernelInfo->kernelArgInfo[2].kernelArgPatchInfoVector[0].size = (uint32_t)sizeof(void *);
 
-        pProgram = new MockProgram(pContext, false);
+        pProgram = new MockProgram(*pDevice->getExecutionEnvironment(), pContext, false);
 
         pKernel = new MockKernel(pProgram, *pKernelInfo, *pDevice);
         ASSERT_EQ(CL_SUCCESS, pKernel->initialize());
@@ -96,13 +82,12 @@ class DispatchInfoBuilderFixture : public ContextFixture, public DeviceFixture {
         delete pExecutionEnvironment;
         delete pMediaVFEstate;
         delete pProgram;
-        delete pKernelInfo;
 
         ContextFixture::TearDown();
         DeviceFixture::TearDown();
     }
 
-    KernelInfo *pKernelInfo = nullptr;
+    std::unique_ptr<KernelInfo> pKernelInfo;
     SPatchMediaVFEState *pMediaVFEstate = nullptr;
     SPatchExecutionEnvironment *pExecutionEnvironment;
     SPatchAllocateStatelessPrintfSurface *pPrintfSurface = nullptr;
@@ -893,8 +878,8 @@ TEST_F(DispatchInfoBuilderTest, setKernelArg) {
     EXPECT_EQ(CL_SUCCESS, diBuilder->setArg(0, sizeof(cl_mem *), pVal));
     char data[128];
     void *svmPtr = &data;
-    EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvm(1, sizeof(svmPtr), svmPtr));
-    GraphicsAllocation svmAlloc(svmPtr, 128);
+    EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvm(1, sizeof(svmPtr), svmPtr, nullptr, 0u));
+    MockGraphicsAllocation svmAlloc(svmPtr, 128);
     EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvmAlloc(2, svmPtr, &svmAlloc));
 
     for (auto &dispatchInfo : multiDispatchInfo) {
@@ -960,17 +945,17 @@ TEST_F(DispatchInfoBuilderTest, SetArgSplit) {
 
     //Set arg SVM
     clearCrossThreadData();
-    builder1D.setArgSvm(SplitDispatch::RegionCoordX::Left, 1, sizeof(svmPtr), svmPtr);
+    builder1D.setArgSvm(SplitDispatch::RegionCoordX::Left, 1, sizeof(svmPtr), svmPtr, nullptr, 0u);
     for (auto &dispatchInfo : mdi1D) {
         EXPECT_EQ(svmPtr, *(reinterpret_cast<void **>(dispatchInfo.getKernel()->getCrossThreadData() + 0x30)));
     }
     clearCrossThreadData();
-    builder2D.setArgSvm(SplitDispatch::RegionCoordX::Left, SplitDispatch::RegionCoordY::Top, 1, sizeof(svmPtr), svmPtr);
+    builder2D.setArgSvm(SplitDispatch::RegionCoordX::Left, SplitDispatch::RegionCoordY::Top, 1, sizeof(svmPtr), svmPtr, nullptr, 0u);
     for (auto &dispatchInfo : mdi2D) {
         EXPECT_EQ(svmPtr, *(reinterpret_cast<void **>(dispatchInfo.getKernel()->getCrossThreadData() + 0x30)));
     }
     clearCrossThreadData();
-    builder3D.setArgSvm(SplitDispatch::RegionCoordX::Left, SplitDispatch::RegionCoordY::Top, SplitDispatch::RegionCoordZ::Front, 1, sizeof(svmPtr), svmPtr);
+    builder3D.setArgSvm(SplitDispatch::RegionCoordX::Left, SplitDispatch::RegionCoordY::Top, SplitDispatch::RegionCoordZ::Front, 1, sizeof(svmPtr), svmPtr, nullptr, 0u);
     for (auto &dispatchInfo : mdi3D) {
         EXPECT_EQ(svmPtr, *(reinterpret_cast<void **>(dispatchInfo.getKernel()->getCrossThreadData() + 0x30)));
     }
@@ -993,7 +978,7 @@ TEST_F(DispatchInfoBuilderTest, setKernelArgNegative) {
 
     diBuilder->bake(multiDispatchInfo);
     EXPECT_NE(CL_SUCCESS, diBuilder->setArg(0, sizeof(cl_mem *), pVal));
-    EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvm(1, sizeof(void *), nullptr));
+    EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvm(1, sizeof(void *), nullptr, nullptr, 0u));
 
     delete diBuilder;
     delete[] buffer;
@@ -1005,7 +990,7 @@ TEST_F(DispatchInfoBuilderTest, setKernelArgNullKernel) {
     auto pVal = &val;
     char data[128];
     void *svmPtr = &data;
-    GraphicsAllocation svmAlloc(svmPtr, 128);
+    MockGraphicsAllocation svmAlloc(svmPtr, 128);
 
     DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::NoSplit> *diBuilder = new DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::NoSplit>();
     ASSERT_NE(nullptr, diBuilder);
@@ -1015,10 +1000,10 @@ TEST_F(DispatchInfoBuilderTest, setKernelArgNullKernel) {
 
     diBuilder->bake(multiDispatchInfo);
     EXPECT_EQ(CL_SUCCESS, diBuilder->setArg(0, sizeof(cl_mem *), pVal));
-    EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvm(1, sizeof(svmPtr), svmPtr));
+    EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvm(1, sizeof(svmPtr), svmPtr, nullptr, 0u));
     EXPECT_EQ(CL_SUCCESS, diBuilder->setArgSvmAlloc(2, svmPtr, &svmAlloc));
 
     delete diBuilder;
     delete buffer;
 }
-} // namespace OCLRT
+} // namespace NEO

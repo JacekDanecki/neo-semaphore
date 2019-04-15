@@ -1,36 +1,27 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/mem_obj/mem_obj.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/device/device.h"
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/properties_helper.h"
+#include "runtime/mem_obj/mem_obj.h"
+#include "runtime/memory_manager/allocations_list.h"
+#include "runtime/os_interface/os_context.h"
+#include "runtime/platform/platform.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_deferred_deleter.h"
+#include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
 #include "unit_tests/mocks/mock_memory_manager.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct MySharingHandler : public SharingHandler {
     MySharingHandler(MemObj *memObj) : memObj(memObj) {
@@ -63,21 +54,6 @@ struct MySharingHandler : public SharingHandler {
     MemObj *memObj = nullptr;
     GraphicsAllocation *allocation = nullptr;
 };
-
-TEST(MemObj, useCount) {
-    char buffer[64];
-    MockContext context;
-    MockGraphicsAllocation *mockAllocation = new MockGraphicsAllocation(buffer, sizeof(buffer));
-
-    MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_USE_HOST_PTR,
-                  sizeof(buffer), buffer, buffer, mockAllocation, true, false, false);
-
-    EXPECT_EQ(ObjectNotResident, memObj.getGraphicsAllocation()->residencyTaskCount);
-    memObj.getGraphicsAllocation()->residencyTaskCount = 1;
-    EXPECT_EQ(1, memObj.getGraphicsAllocation()->residencyTaskCount);
-    memObj.getGraphicsAllocation()->residencyTaskCount--;
-    EXPECT_EQ(0, memObj.getGraphicsAllocation()->residencyTaskCount);
-}
 
 TEST(MemObj, GivenMemObjWhenInititalizedFromHostPtrThenInitializeFields) {
     const size_t size = 64;
@@ -169,100 +145,79 @@ TEST(MemObj, givenMemObjWhenReleaseAllocatedPtrIsCalledTwiceThenItDoesntCrash) {
 }
 
 TEST(MemObj, givenNotReadyGraphicsAllocationWhenMemObjDestroysAllocationAsyncThenAllocationIsAddedToMemoryManagerAllocationList) {
-    MockMemoryManager memoryManager;
     MockContext context;
 
-    context.setMemoryManager(&memoryManager);
-    memoryManager.setDevice(context.getDevice(0));
+    auto memoryManager = context.getDevice(0)->getExecutionEnvironment()->memoryManager.get();
 
-    auto allocation = memoryManager.allocateGraphicsMemory(MemoryConstants::pageSize);
-    allocation->taskCount = 2;
-    *memoryManager.device->getTagAddress() = 1;
+    auto allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    allocation->updateTaskCount(2, context.getDevice(0)->getDefaultEngine().osContext->getContextId());
+    *(memoryManager->getDefaultCommandStreamReceiver(0)->getTagAddress()) = 1;
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_COPY_HOST_PTR,
                   MemoryConstants::pageSize, nullptr, nullptr, nullptr, true, false, false);
-
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    auto &allocationList = memoryManager->getDefaultCommandStreamReceiver(0)->getTemporaryAllocations();
+    EXPECT_TRUE(allocationList.peekIsEmpty());
     memObj.destroyGraphicsAllocation(allocation, true);
 
-    EXPECT_FALSE(memoryManager.isAllocationListEmpty());
+    EXPECT_FALSE(allocationList.peekIsEmpty());
 }
 
 TEST(MemObj, givenReadyGraphicsAllocationWhenMemObjDestroysAllocationAsyncThenAllocationIsNotAddedToMemoryManagerAllocationList) {
-    MockMemoryManager memoryManager;
-    MockContext context;
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    auto device = std::unique_ptr<MockDevice>(MockDevice::create<MockDevice>(*platformDevices, executionEnvironment, 0));
+    MockContext context(device.get());
+    auto memoryManager = executionEnvironment->memoryManager.get();
 
-    context.setMemoryManager(&memoryManager);
-    memoryManager.setDevice(context.getDevice(0));
-
-    auto allocation = memoryManager.allocateGraphicsMemory(MemoryConstants::pageSize);
-    allocation->taskCount = 1;
-    *memoryManager.device->getTagAddress() = 1;
+    auto allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    allocation->updateTaskCount(1, device->getDefaultEngine().osContext->getContextId());
+    *device->getDefaultEngine().commandStreamReceiver->getTagAddress() = 1;
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_COPY_HOST_PTR,
                   MemoryConstants::pageSize, nullptr, nullptr, nullptr, true, false, false);
 
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    auto &allocationList = device->getDefaultEngine().commandStreamReceiver->getTemporaryAllocations();
+    EXPECT_TRUE(allocationList.peekIsEmpty());
     memObj.destroyGraphicsAllocation(allocation, true);
 
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    EXPECT_TRUE(allocationList.peekIsEmpty());
 }
 
 TEST(MemObj, givenNotUsedGraphicsAllocationWhenMemObjDestroysAllocationAsyncThenAllocationIsNotAddedToMemoryManagerAllocationList) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
-    memoryManager.setDevice(context.getDevice(0));
 
-    auto allocation = memoryManager.allocateGraphicsMemory(MemoryConstants::pageSize);
-    allocation->taskCount = ObjectNotUsed;
+    auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_COPY_HOST_PTR,
                   MemoryConstants::pageSize, nullptr, nullptr, nullptr, true, false, false);
 
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    auto &allocationList = memoryManager.getDefaultCommandStreamReceiver(0)->getTemporaryAllocations();
+    EXPECT_TRUE(allocationList.peekIsEmpty());
     memObj.destroyGraphicsAllocation(allocation, true);
 
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    EXPECT_TRUE(allocationList.peekIsEmpty());
 }
 
 TEST(MemObj, givenMemoryManagerWithoutDeviceWhenMemObjDestroysAllocationAsyncThenAllocationIsNotAddedToMemoryManagerAllocationList) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
 
-    auto allocation = memoryManager.allocateGraphicsMemory(MemoryConstants::pageSize);
+    auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_COPY_HOST_PTR,
                   MemoryConstants::pageSize, nullptr, nullptr, nullptr, true, false, false);
 
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    auto &allocationList = memoryManager.getDefaultCommandStreamReceiver(0)->getTemporaryAllocations();
+    EXPECT_TRUE(allocationList.peekIsEmpty());
     memObj.destroyGraphicsAllocation(allocation, true);
 
-    EXPECT_TRUE(memoryManager.isAllocationListEmpty());
+    EXPECT_TRUE(allocationList.peekIsEmpty());
 }
 
-TEST(MemObj, givenMemObjWhenItDoesntHaveGraphicsAllocationThenWaitForCsrCompletionDoesntCrash) {
-    MockMemoryManager memoryManager;
-    MockContext context;
-
-    context.setMemoryManager(&memoryManager);
-
-    MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_COPY_HOST_PTR,
-                  MemoryConstants::pageSize, nullptr, nullptr, nullptr, true, false, false);
-
-    EXPECT_EQ(nullptr, memoryManager.device);
-    EXPECT_EQ(nullptr, memObj.getGraphicsAllocation());
-    memObj.waitForCsrCompletion();
-
-    memoryManager.setDevice(context.getDevice(0));
-
-    EXPECT_NE(nullptr, memoryManager.device);
-    EXPECT_EQ(nullptr, memObj.getGraphicsAllocation());
-    memObj.waitForCsrCompletion();
-}
 TEST(MemObj, givenMemObjAndPointerToObjStorageWithProperCommandWhenCheckIfMemTransferRequiredThenReturnFalse) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
 
@@ -288,8 +243,8 @@ TEST(MemObj, givenMemObjAndPointerToObjStorageWithProperCommandWhenCheckIfMemTra
     EXPECT_FALSE(isMemTransferNeeded);
 }
 TEST(MemObj, givenMemObjAndPointerToObjStorageBadCommandWhenCheckIfMemTransferRequiredThenReturnTrue) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
 
@@ -300,8 +255,8 @@ TEST(MemObj, givenMemObjAndPointerToObjStorageBadCommandWhenCheckIfMemTransferRe
     EXPECT_TRUE(isMemTransferNeeded);
 }
 TEST(MemObj, givenMemObjAndPointerToDiffrentStorageAndProperCommandWhenCheckIfMemTransferRequiredThenReturnTrue) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
 
@@ -331,30 +286,30 @@ TEST(MemObj, givenTiledObjectWhenAskedForCpuMappingThenReturnFalse) {
 }
 
 TEST(MemObj, givenRenderCompressedGmmWhenAskingForMappingOnCpuThenDisallow) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
 
-    auto allocation = memoryManager.allocateGraphicsMemory(1);
-    allocation->gmm = new Gmm(nullptr, 1, false);
+    auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    allocation->setDefaultGmm(new Gmm(nullptr, 1, false));
 
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_READ_WRITE,
                   1, allocation->getUnderlyingBuffer(), nullptr, allocation, false, false, false);
 
-    allocation->gmm->isRenderCompressed = false;
+    allocation->getDefaultGmm()->isRenderCompressed = false;
     EXPECT_TRUE(memObj.mappingOnCpuAllowed());
-    allocation->gmm->isRenderCompressed = true;
+    allocation->getDefaultGmm()->isRenderCompressed = true;
     EXPECT_FALSE(memObj.mappingOnCpuAllowed());
 }
 
 TEST(MemObj, givenDefaultWhenAskedForCpuMappingThenReturnTrue) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
 
     context.setMemoryManager(&memoryManager);
 
-    auto allocation = memoryManager.allocateGraphicsMemory(64);
+    auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_COPY_HOST_PTR,
                   64, allocation->getUnderlyingBuffer(), nullptr, allocation, true, false, false);
@@ -364,13 +319,29 @@ TEST(MemObj, givenDefaultWhenAskedForCpuMappingThenReturnTrue) {
     EXPECT_TRUE(memObj.mappingOnCpuAllowed());
 }
 
-TEST(MemObj, givenMultipleMemObjectsWithReusedGraphicsAllocationWhenDestroyedThenFreeAllocationOnce) {
-
-    MockMemoryManager memoryManager;
+TEST(MemObj, givenNonCpuAccessibleMemoryWhenAskingForMappingOnCpuThenDisallow) {
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
+
     context.setMemoryManager(&memoryManager);
 
-    auto allocation = memoryManager.allocateGraphicsMemory(1);
+    auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    allocation->setDefaultGmm(new Gmm(nullptr, 1, false));
+
+    MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_READ_WRITE,
+                  1, allocation->getUnderlyingBuffer(), nullptr, allocation, false, false, false);
+
+    EXPECT_TRUE(memObj.mappingOnCpuAllowed());
+    reinterpret_cast<MemoryAllocation *>(allocation)->overrideMemoryPool(MemoryPool::SystemCpuInaccessible);
+    EXPECT_FALSE(memObj.mappingOnCpuAllowed());
+}
+
+TEST(MemObj, givenMultipleMemObjectsWithReusedGraphicsAllocationWhenDestroyedThenFreeAllocationOnce) {
+    MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
+    context.setMemoryManager(&memoryManager);
+
+    auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     std::unique_ptr<MemObj> memObj1(new MemObj(&context, CL_MEM_OBJECT_BUFFER, 0, 1, nullptr, nullptr, allocation, true, false, false));
     memObj1->setSharingHandler(new MySharingHandler(allocation));
@@ -402,8 +373,8 @@ TEST(MemObj, givenMemObjectWhenContextIsNotNullThenContextOutlivesMemobjects) {
 }
 
 TEST(MemObj, givenSharedMemObjectWithNullGfxAllocationWhenSettingGfxAllocationThenSucceed) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
     context.setMemoryManager(&memoryManager);
     MockGraphicsAllocation *gfxAllocation = new MockGraphicsAllocation(nullptr, 0);
 
@@ -419,8 +390,8 @@ TEST(MemObj, givenSharedMemObjectWithNullGfxAllocationWhenSettingGfxAllocationTh
 }
 
 TEST(MemObj, givenSharedMemObjectAndNullGfxAllocationProvidedWhenSettingGfxAllocationThenSucceed) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
     context.setMemoryManager(&memoryManager);
     MockGraphicsAllocation *graphicsAllocation = new MockGraphicsAllocation(nullptr, 0);
 
@@ -435,8 +406,8 @@ TEST(MemObj, givenSharedMemObjectAndNullGfxAllocationProvidedWhenSettingGfxAlloc
 }
 
 TEST(MemObj, givenSharedMemObjectAndZeroReuseCountWhenChangingGfxAllocationThenOldAllocationIsDestroyed) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
     context.setMemoryManager(&memoryManager);
     MockGraphicsAllocation *oldGfxAllocation = new MockGraphicsAllocation(nullptr, 0);
     MockGraphicsAllocation *newGfxAllocation = new MockGraphicsAllocation(nullptr, 0);
@@ -454,8 +425,8 @@ TEST(MemObj, givenSharedMemObjectAndZeroReuseCountWhenChangingGfxAllocationThenO
 }
 
 TEST(MemObj, givenSharedMemObjectAndNonZeroReuseCountWhenChangingGfxAllocationThenOldAllocationIsNotDestroyed) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
     context.setMemoryManager(&memoryManager);
     MockGraphicsAllocation *oldGfxAllocation = new MockGraphicsAllocation(nullptr, 0);
     MockGraphicsAllocation *newGfxAllocation = new MockGraphicsAllocation(nullptr, 0);
@@ -473,8 +444,8 @@ TEST(MemObj, givenSharedMemObjectAndNonZeroReuseCountWhenChangingGfxAllocationTh
 }
 
 TEST(MemObj, givenNotSharedMemObjectWhenChangingGfxAllocationThenOldAllocationIsDestroyed) {
-    MockMemoryManager memoryManager;
     MockContext context;
+    MockMemoryManager memoryManager(*context.getDevice(0)->getExecutionEnvironment());
     context.setMemoryManager(&memoryManager);
     MockGraphicsAllocation *oldGfxAllocation = new MockGraphicsAllocation(nullptr, 0);
     MockGraphicsAllocation *newGfxAllocation = new MockGraphicsAllocation(nullptr, 0);
@@ -485,4 +456,25 @@ TEST(MemObj, givenNotSharedMemObjectWhenChangingGfxAllocationThenOldAllocationIs
     memObj.resetGraphicsAllocation(newGfxAllocation);
 
     EXPECT_EQ(newGfxAllocation, memObj.getGraphicsAllocation());
+}
+
+TEST(MemObj, givenGraphicsAllocationWhenCallingIsAllocDumpableThenItReturnsTheCorrectValue) {
+    MockGraphicsAllocation gfxAllocation(nullptr, 0);
+    EXPECT_FALSE(gfxAllocation.isAllocDumpable());
+    gfxAllocation.setAllocDumpable(true);
+    EXPECT_TRUE(gfxAllocation.isAllocDumpable());
+}
+
+TEST(MemObj, givenMemObjNotUsingHostPtrWhenGettingBasePtrTwiceReturnSameMapPtr) {
+    MockContext context;
+
+    MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, CL_MEM_READ_WRITE,
+                  1, nullptr, nullptr, nullptr, true, false, false);
+
+    void *mapPtr = memObj.getBasePtrForMap();
+    EXPECT_NE(nullptr, mapPtr);
+    auto mapAllocation = memObj.getMapAllocation();
+    ASSERT_NE(nullptr, mapAllocation);
+    EXPECT_EQ(mapPtr, mapAllocation->getUnderlyingBuffer());
+    EXPECT_EQ(mapPtr, memObj.getAllocatedMapPtr());
 }

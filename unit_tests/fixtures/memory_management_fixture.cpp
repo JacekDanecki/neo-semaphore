@@ -1,35 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/options.h"
-#include "unit_tests/memory_leak_listener.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
+
+#include "runtime/helpers/options.h"
 #include "unit_tests/helpers/memory_management.h"
+#include "unit_tests/memory_leak_listener.h"
+
 #include <cinttypes>
 #if defined(__linux__)
 #include <cstdio>
-#include <execinfo.h>
 #include <cxxabi.h>
 #include <dlfcn.h>
+#include <execinfo.h>
 #elif defined(_WIN32)
 #include <Windows.h>
 #pragma warning(push)           // Saves the current warning state.
@@ -52,7 +39,7 @@ void MemoryManagementFixture::SetUp() {
     MemoryManagement::indexDeallocation = 0;
     MemoryManagement::failingAllocation = -1;
     previousAllocations = MemoryManagement::numAllocations.load();
-    MemoryManagement::logTraces = OCLRT::captureCallStacks;
+    MemoryManagement::logTraces = NEO::captureCallStacks;
 }
 
 void MemoryManagementFixture::TearDown() {
@@ -88,7 +75,7 @@ size_t MemoryManagementFixture::enumerateLeak(size_t indexAllocationTop, size_t 
             continue;
         }
 
-        if (fastLookup && eventAllocation.fastLeakDetectionMode == 0) {
+        if (fastLookup && !eventAllocation.fastLeakDetectionEnabled) {
             continue;
         }
 
@@ -109,7 +96,7 @@ size_t MemoryManagementFixture::enumerateLeak(size_t indexAllocationTop, size_t 
                     }
 
                     //allocated with fast lookup, but deallocated other way, not a match
-                    if (fastLookup && eventDeallocation.fastLeakDetectionMode != 1) {
+                    if (fastLookup && !eventDeallocation.fastLeakDetectionEnabled) {
                         continue;
                     }
 
@@ -140,8 +127,8 @@ std::string printCallStack(const MemoryManagement::AllocationEvent &event) {
     std::string result = "";
 
     printf("printCallStack.%d.%d\n", printMemoryOpCallStack, event.frames);
-    if (!OCLRT::captureCallStacks) {
-        printf("for detailed stack information turn on captureCallStacks in options.h\n");
+    if (!NEO::captureCallStacks) {
+        printf("for detailed stack information turn on captureCallStacks in memory_management_fixture.h\n");
     }
     if (printMemoryOpCallStack && event.frames > 0) {
 #if defined(__linux__)

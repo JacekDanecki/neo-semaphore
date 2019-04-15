@@ -1,30 +1,15 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/command_queue/enqueue_fixture.h"
 #include "unit_tests/fixtures/hello_world_fixture.h"
 #include "unit_tests/mocks/mock_csr.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct OOQFixtureFactory : public HelloWorldFixtureFactory {
     typedef OOQueueFixture CommandQueueFixture;
@@ -48,7 +33,7 @@ bool isBlockingCall(unsigned int cmdType) {
 }
 
 TYPED_TEST_P(OOQTaskTypedTests, givenNonBlockingCallWhenDoneOnOutOfOrderQueueThenTaskLevelDoesntChange) {
-    auto &commandStreamReceiver = this->pDevice->getCommandStreamReceiver();
+    auto &commandStreamReceiver = this->pCmdQ->getCommandStreamReceiver();
     auto tagAddress = commandStreamReceiver.getTagAddress();
 
     auto blockingCall = isBlockingCall(TypeParam::Traits::cmdType);
@@ -75,7 +60,7 @@ TYPED_TEST_P(OOQTaskTypedTests, givenNonBlockingCallWhenDoneOnOutOfOrderQueueThe
 }
 
 TYPED_TEST_P(OOQTaskTypedTests, givenTaskWhenEnqueuedOnOutOfOrderQueueThenTaskCountIsUpdated) {
-    auto &commandStreamReceiver = this->pDevice->getCommandStreamReceiver();
+    auto &commandStreamReceiver = this->pCmdQ->getCommandStreamReceiver();
     auto previousTaskCount = commandStreamReceiver.peekTaskCount();
     auto tagAddress = commandStreamReceiver.getTagAddress();
     auto blockingCall = isBlockingCall(TypeParam::Traits::cmdType);
@@ -119,7 +104,7 @@ INSTANTIATE_TYPED_TEST_CASE_P(OOQ, OOQTaskTypedTests, EnqueueParams);
 typedef OOQTaskTypedTests<EnqueueKernelHelper<>> OOQTaskTests;
 
 TEST_F(OOQTaskTests, enqueueKernel_changesTaskCount) {
-    auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
+    auto &commandStreamReceiver = pCmdQ->getCommandStreamReceiver();
     auto previousTaskCount = commandStreamReceiver.peekTaskCount();
 
     EnqueueKernelHelper<>::enqueueKernel(this->pCmdQ,
@@ -136,7 +121,7 @@ HWTEST_F(OOQTaskTests, givenCommandQueueWithLowerTaskLevelThenCsrWhenItIsSubmitt
 }
 
 HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenMultipleEnqueueAreDoneThenTaskLevelDoesntChnage) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
     mockCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
     mockCsr->taskLevel = 100;
@@ -151,7 +136,7 @@ HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenMultipleEnqueueAreDone
 }
 
 HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenItIsFlushedAndFollowedByNewCommandsThenTheyHaveHigherTaskLevel) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
     mockCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
     mockCsr->taskLevel = 100;
@@ -170,7 +155,7 @@ HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenItIsFlushedAndFollowed
 }
 
 HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenItIsFlushedAndFollowedByNewCommandsAndBarrierThenCsrTaskLevelIncreases) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
     mockCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
     mockCsr->taskLevel = 100;
@@ -190,7 +175,7 @@ HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenItIsFlushedAndFollowed
 }
 
 HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenItIsFlushedAndFollowedByNewCommandsAndMarkerThenCsrTaskLevelIsNotIncreasing) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
     mockCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
     mockCsr->taskLevel = 100;
@@ -210,7 +195,7 @@ HWTEST_F(OOQTaskTests, givenCommandQueueAtTaskLevel100WhenItIsFlushedAndFollowed
 }
 
 HWTEST_F(OOQTaskTests, givenTwoEnqueueCommandSynchronizedByEventsWhenTheyAreEnqueueThenSecondHasHigherTaskLevelThenFirst) {
-    auto mockCsr = new MockCsrHw2<FamilyType>(*platformDevices[0]);
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
     mockCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
     auto currentTaskLevel = this->pCmdQ->taskLevel;
@@ -267,6 +252,7 @@ TEST_F(OOQTaskTests, enqueueReadBuffer_blockingAndNonBlockedOnUserEvent) {
                                                           0,
                                                           BufferDefaults::sizeInBytes,
                                                           alignedReadPtr,
+                                                          nullptr,
                                                           1,
                                                           &userEvent,
                                                           nullptr);

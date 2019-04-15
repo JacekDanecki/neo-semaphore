@@ -1,40 +1,29 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include <cstdint>
-#include "drm/i915_drm.h"
-#include "gmock/gmock.h"
-#include "gtest/gtest.h"
 #include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/os_interface/linux/drm_memory_manager.h"
 #include "runtime/os_interface/linux/drm_neo.h"
 #include "unit_tests/helpers/gtest_helpers.h"
+
+#include "drm/i915_drm.h"
+#include "engine_node.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
 #include <atomic>
+#include <cstdint>
 #include <iostream>
 
 #define RENDER_DEVICE_NAME_MATCHER ::testing::StrEq("/dev/dri/renderD128")
 
-using OCLRT::Drm;
+using NEO::Drm;
 
 static const int mockFd = 33;
 
@@ -89,6 +78,7 @@ class DrmMockCustom : public Drm {
             gemUserptr = 0;
             gemCreate = 0;
             gemSetTiling = 0;
+            gemGetTiling = 0;
             primeFdToHandle = 0;
             gemMmap = 0;
             gemSetDomain = 0;
@@ -96,6 +86,8 @@ class DrmMockCustom : public Drm {
             gemClose = 0;
             regRead = 0;
             contextGetParam = 0;
+            contextCreate = 0;
+            contextDestroy = 0;
         }
 
         std::atomic<int32_t> total;
@@ -103,6 +95,7 @@ class DrmMockCustom : public Drm {
         std::atomic<int32_t> gemUserptr;
         std::atomic<int32_t> gemCreate;
         std::atomic<int32_t> gemSetTiling;
+        std::atomic<int32_t> gemGetTiling;
         std::atomic<int32_t> primeFdToHandle;
         std::atomic<int32_t> gemMmap;
         std::atomic<int32_t> gemSetDomain;
@@ -110,6 +103,8 @@ class DrmMockCustom : public Drm {
         std::atomic<int32_t> gemClose;
         std::atomic<int32_t> regRead;
         std::atomic<int32_t> contextGetParam;
+        std::atomic<int32_t> contextCreate;
+        std::atomic<int32_t> contextDestroy;
     };
 
     std::atomic<int> ioctl_res;
@@ -129,6 +124,7 @@ class DrmMockCustom : public Drm {
         NEO_IOCTL_EXPECT_EQ(gemUserptr);
         NEO_IOCTL_EXPECT_EQ(gemCreate);
         NEO_IOCTL_EXPECT_EQ(gemSetTiling);
+        NEO_IOCTL_EXPECT_EQ(gemGetTiling);
         NEO_IOCTL_EXPECT_EQ(primeFdToHandle);
         NEO_IOCTL_EXPECT_EQ(gemMmap);
         NEO_IOCTL_EXPECT_EQ(gemSetDomain);
@@ -136,6 +132,8 @@ class DrmMockCustom : public Drm {
         NEO_IOCTL_EXPECT_EQ(gemClose);
         NEO_IOCTL_EXPECT_EQ(regRead);
         NEO_IOCTL_EXPECT_EQ(contextGetParam);
+        NEO_IOCTL_EXPECT_EQ(contextCreate);
+        NEO_IOCTL_EXPECT_EQ(contextDestroy);
 #undef NEO_IOCTL_EXPECT_EQ
     }
 
@@ -149,6 +147,9 @@ class DrmMockCustom : public Drm {
     __u32 setTilingMode = 0;
     __u32 setTilingHandle = 0;
     __u32 setTilingStride = 0;
+    //DRM_IOCTL_I915_GEM_GET_TILING
+    __u32 getTilingModeOut = I915_TILING_NONE;
+    __u32 getTilingHandleIn = 0;
     //DRM_IOCTL_PRIME_FD_TO_HANDLE
     __u32 outputHandle = 0;
     __s32 inputFd = 0;
@@ -202,6 +203,12 @@ class DrmMockCustom : public Drm {
             setTilingStride = setTilingParams->stride;
             ioctl_cnt.gemSetTiling++;
         } break;
+        case DRM_IOCTL_I915_GEM_GET_TILING: {
+            auto *getTilingParams = (drm_i915_gem_get_tiling *)arg;
+            getTilingParams->tiling_mode = getTilingModeOut;
+            getTilingHandleIn = getTilingParams->handle;
+            ioctl_cnt.gemGetTiling++;
+        } break;
         case DRM_IOCTL_PRIME_FD_TO_HANDLE: {
             auto *primeToHandleParams = (drm_prime_handle *)arg;
             //return BO
@@ -246,6 +253,14 @@ class DrmMockCustom : public Drm {
             getContextParam->value = getContextParamRetValue;
         } break;
 
+        case DRM_IOCTL_I915_GEM_CONTEXT_CREATE: {
+            auto contextCreateParam = reinterpret_cast<drm_i915_gem_context_create *>(arg);
+            contextCreateParam->ctx_id = ++ioctl_cnt.contextCreate;
+        } break;
+        case DRM_IOCTL_I915_GEM_CONTEXT_DESTROY: {
+            ioctl_cnt.contextDestroy++;
+        } break;
+
         default:
             std::cout << std::hex << DRM_IOCTL_I915_GEM_WAIT << std::endl;
             std::cout << "unexpected IOCTL: " << std::hex << request << std::endl;
@@ -270,6 +285,8 @@ class DrmMockCustom : public Drm {
 
     DrmMockCustom() : Drm(mockFd) {
         reset();
+        ioctl_expected.contextCreate = static_cast<int>(NEO::HwHelper::get(NEO::platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances().size());
+        ioctl_expected.contextDestroy = ioctl_expected.contextCreate.load();
     }
     int getErrno() override {
         return errnoValue;

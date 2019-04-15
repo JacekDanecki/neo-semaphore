@@ -1,37 +1,25 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_queue/command_queue.h"
+#include "runtime/command_stream/command_stream_receiver.h"
+#include "runtime/command_stream/preemption.h"
+#include "runtime/device_queue/device_queue_hw.h"
+#include "runtime/helpers/dispatch_info.h"
+#include "runtime/helpers/engine_control.h"
+#include "runtime/helpers/queue_helpers.h"
 #include "runtime/mem_obj/mem_obj.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/program/printf_handler.h"
-#include "runtime/helpers/dispatch_info.h"
-#include "runtime/command_stream/preemption.h"
-#include "runtime/helpers/queue_helpers.h"
+
 #include <memory>
 
-namespace OCLRT {
+namespace NEO {
 
 class EventBuilder;
 
@@ -48,6 +36,7 @@ class CommandQueueHw : public CommandQueue {
 
         if (clPriority & static_cast<cl_queue_priority_khr>(CL_QUEUE_PRIORITY_LOW_KHR)) {
             priority = QueuePriority::LOW;
+            this->engine = &device->getEngine(aub_stream::ENGINE_RCS, true);
         } else if (clPriority & static_cast<cl_queue_priority_khr>(CL_QUEUE_PRIORITY_MED_KHR)) {
             priority = QueuePriority::MEDIUM;
         } else if (clPriority & static_cast<cl_queue_priority_khr>(CL_QUEUE_PRIORITY_HIGH_KHR)) {
@@ -65,16 +54,23 @@ class CommandQueueHw : public CommandQueue {
         }
 
         if (getCmdQueueProperties<cl_queue_properties>(properties, CL_QUEUE_PROPERTIES) & static_cast<cl_queue_properties>(CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE)) {
-            device->getCommandStreamReceiver().overrideDispatchPolicy(DispatchMode::BatchedDispatch);
-            device->getCommandStreamReceiver().enableNTo1SubmissionModel();
+            getCommandStreamReceiver().overrideDispatchPolicy(DispatchMode::BatchedDispatch);
+            getCommandStreamReceiver().enableNTo1SubmissionModel();
         }
+
+        this->requiresCacheFlushAfterWalker = CommandQueueHw<GfxFamily>::requiresCacheFlushAfterWalkerBasedOnProperties(properties);
     }
+
+    static bool requiresCacheFlushAfterWalkerBasedOnProperties(const cl_queue_properties *properties);
 
     static CommandQueue *create(Context *context,
                                 Device *device,
                                 const cl_queue_properties *properties) {
         return new CommandQueueHw<GfxFamily>(context, device, properties);
     }
+
+    MOCKABLE_VIRTUAL void notifyEnqueueReadBuffer(Buffer *buffer, bool blockingRead);
+    MOCKABLE_VIRTUAL void notifyEnqueueReadImage(Image *image, bool blockingRead);
 
     cl_int enqueueBarrierWithWaitList(cl_uint numEventsInWaitList,
                                       const cl_event *eventWaitList,
@@ -201,6 +197,7 @@ class CommandQueueHw : public CommandQueue {
                              size_t offset,
                              size_t size,
                              void *ptr,
+                             GraphicsAllocation *mapAllocation,
                              cl_uint numEventsInWaitList,
                              const cl_event *eventWaitList,
                              cl_event *event) override;
@@ -235,6 +232,7 @@ class CommandQueueHw : public CommandQueue {
                               size_t offset,
                               size_t cb,
                               const void *ptr,
+                              GraphicsAllocation *mapAllocation,
                               cl_uint numEventsInWaitList,
                               const cl_event *eventWaitList,
                               cl_event *event) override;
@@ -281,6 +279,11 @@ class CommandQueueHw : public CommandQueue {
                                     cl_uint numEventsInWaitList,
                                     const cl_event *eventWaitList,
                                     cl_event *event) override;
+    cl_int enqueueResourceBarrier(BarrierCommand *resourceBarrier,
+                                  cl_uint numEventsInWaitList,
+                                  const cl_event *eventWaitList,
+                                  cl_event *event) override;
+
     cl_int finish(bool dcFlush) override;
     cl_int flush() override;
 
@@ -311,6 +314,7 @@ class CommandQueueHw : public CommandQueue {
                         const size_t globalOffsets[3],
                         const size_t workItems[3],
                         const size_t *localWorkSizesIn,
+                        const size_t *enqueuedWorkSizes,
                         cl_uint numEventsInWaitList,
                         const cl_event *eventWaitList,
                         cl_event *event);
@@ -322,6 +326,8 @@ class CommandQueueHw : public CommandQueue {
                                       size_t commandStreamStart,
                                       bool &blocking,
                                       const MultiDispatchInfo &multiDispatchInfo,
+                                      TimestampPacketContainer *previousTimestampPacketNodes,
+                                      EventsRequest &eventsRequest,
                                       EventBuilder &eventBuilder,
                                       uint32_t taskLevel,
                                       bool slmUsed,
@@ -332,22 +338,36 @@ class CommandQueueHw : public CommandQueue {
                         size_t surfacesCount,
                         bool &blocking,
                         const MultiDispatchInfo &multiDispatchInfo,
+                        TimestampPacketContainer *previousTimestampPacketNodes,
                         KernelOperation *blockedCommandsData,
-                        cl_uint numEventsInWaitList,
-                        const cl_event *eventWaitList,
+                        EventsRequest &eventsRequest,
                         bool slmUsed,
                         EventBuilder &externalEventBuilder,
                         std::unique_ptr<PrintfHandler> printfHandler);
 
+    CompletionStamp enqueueCommandWithoutKernel(Surface **surfaces,
+                                                size_t surfaceCount,
+                                                LinearStream &commandStream,
+                                                size_t commandStreamStart,
+                                                bool &blocking,
+                                                TimestampPacketContainer *previousTimestampPacketNodes,
+                                                EventsRequest &eventsRequest,
+                                                EventBuilder &eventBuilder,
+                                                uint32_t taskLevel);
+    void processDispatchForCacheFlush(Surface **surfaces,
+                                      size_t numSurfaces,
+                                      LinearStream *commandStream);
+
+    bool isCacheFlushCommand(uint32_t commandType) override;
+
   protected:
     MOCKABLE_VIRTUAL void enqueueHandlerHook(const unsigned int commandType, const MultiDispatchInfo &dispatchInfo){};
-    bool createAllocationForHostSurface(HostPtrSurface &surface);
-    size_t calculateHostPtrSizeForImage(size_t *region, size_t rowPitch, size_t slicePitch, Image *image);
+    size_t calculateHostPtrSizeForImage(const size_t *region, size_t rowPitch, size_t slicePitch, Image *image);
 
   private:
     bool isTaskLevelUpdateRequired(const uint32_t &taskLevel, const cl_event *eventWaitList, const cl_uint &numEventsInWaitList, unsigned int commandType);
     void obtainTaskLevelAndBlockedStatus(unsigned int &taskLevel, cl_uint &numEventsInWaitList, const cl_event *&eventWaitList, bool &blockQueue, unsigned int commandType) override;
-    void forceDispatchScheduler(OCLRT::MultiDispatchInfo &multiDispatchInfo);
+    void forceDispatchScheduler(NEO::MultiDispatchInfo &multiDispatchInfo);
     static void computeOffsetsValueForRectCommands(size_t *bufferOffset,
                                                    size_t *hostOffset,
                                                    const size_t *bufferOrigin,
@@ -357,5 +377,24 @@ class CommandQueueHw : public CommandQueue {
                                                    size_t bufferSlicePitch,
                                                    size_t hostRowPitch,
                                                    size_t hostSlicePitch);
+    void processDeviceEnqueue(Kernel *parentKernel,
+                              DeviceQueueHw<GfxFamily> *devQueueHw,
+                              const MultiDispatchInfo &multiDispatchInfo,
+                              TagNode<HwTimeStamps> *hwTimeStamps,
+                              PreemptionMode preemption,
+                              bool &blocking);
+
+    template <uint32_t commandType>
+    void processDispatchForKernels(const MultiDispatchInfo &multiDispatchInfo,
+                                   std::unique_ptr<PrintfHandler> &printfHandler,
+                                   Event *event,
+                                   TagNode<NEO::HwTimeStamps> *&hwTimeStamps,
+                                   Kernel *parentKernel,
+                                   bool blockQueue,
+                                   DeviceQueueHw<GfxFamily> *devQueueHw,
+                                   CsrDependencies &csrDeps,
+                                   KernelOperation *&blockedCommandsData,
+                                   TimestampPacketContainer &previousTimestampPacketNodes,
+                                   PreemptionMode preemption);
 };
-} // namespace OCLRT
+} // namespace NEO

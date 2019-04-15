@@ -1,35 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/sharings/va/va_surface.h"
+
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
-#include "runtime/mem_obj/image.h"
-#include "runtime/memory_manager/memory_manager.h"
-#include "runtime/helpers/get_info.h"
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/helpers/get_info.h"
+#include "runtime/mem_obj/image.h"
+#include "runtime/memory_manager/memory_manager.h"
 
-namespace OCLRT {
+namespace NEO {
 Image *VASurface::createSharedVaSurface(Context *context, VASharingFunctions *sharingFunctions,
                                         cl_mem_flags flags, VASurfaceID *surface,
                                         cl_uint plane, cl_int *errcodeRet) {
@@ -71,12 +57,9 @@ Image *VASurface::createSharedVaSurface(Context *context, VASharingFunctions *sh
     imgSurfaceFormat = Image::getSurfaceFormatFromTable(flags, &imgFormat);
 
     sharingFunctions->extGetSurfaceHandle(surface, &sharedHandle);
+    AllocationProperties properties(false, imgInfo, GraphicsAllocation::AllocationType::SHARED_IMAGE);
 
-    auto alloc = memoryManager->createGraphicsAllocationFromSharedHandle(sharedHandle, false, true);
-
-    Gmm *gmm = new Gmm(imgInfo);
-    DEBUG_BREAK_IF(alloc->gmm != nullptr);
-    alloc->gmm = gmm;
+    auto alloc = memoryManager->createGraphicsAllocationFromSharedHandle(sharedHandle, properties, false);
 
     imgDesc.image_row_pitch = imgInfo.rowPitch;
     imgDesc.image_slice_pitch = 0u;
@@ -99,11 +82,11 @@ Image *VASurface::createSharedVaSurface(Context *context, VASharingFunctions *sh
     return image;
 }
 
-void VASurface::synchronizeObject(UpdateData *updateData) {
+void VASurface::synchronizeObject(UpdateData &updateData) {
     if (!interopUserSync) {
         sharingFunctions->syncSurface(*surfaceId);
     }
-    updateData->synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
+    updateData.synchronizationStatus = SynchronizeStatus::ACQUIRE_SUCCESFUL;
 }
 
 void VASurface::getMemObjectInfo(size_t &paramValueSize, void *&paramValue) {
@@ -111,4 +94,4 @@ void VASurface::getMemObjectInfo(size_t &paramValueSize, void *&paramValue) {
     paramValue = &surfaceId;
 }
 
-} // namespace OCLRT
+} // namespace NEO

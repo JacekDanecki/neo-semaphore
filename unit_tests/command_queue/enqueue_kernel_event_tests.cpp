@@ -1,31 +1,17 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/event/event.h"
 #include "unit_tests/fixtures/hello_world_fixture.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef HelloWorldTest<HelloWorldFixtureFactory> EventTests;
 TEST_F(EventTests, eventShouldBeReturned) {
@@ -58,8 +44,8 @@ TEST_F(EventTests, eventReturnedShouldBeMaxOfInputEventsAndCmdQPlus1) {
 
     uint32_t taskLevelEvent1 = 8;
     uint32_t taskLevelEvent2 = 19;
-    Event event1(nullptr, CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent1, 15);
-    Event event2(nullptr, CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent2, 16);
+    Event event1(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent1, 15);
+    Event event2(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, taskLevelEvent2, 16);
 
     cl_event eventWaitList[] =
         {
@@ -84,7 +70,7 @@ TEST_F(EventTests, eventWaitShouldntSendPC) {
     cl_event *eventWaitList = nullptr;
     cl_event event = nullptr;
 
-    auto &csr = pCmdQ->getDevice().getCommandStreamReceiver();
+    auto &csr = pCmdQ->getCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event);
 
@@ -123,7 +109,7 @@ TEST_F(EventTests, waitForArray) {
     cl_event *eventWaitList = nullptr;
     cl_event event[2] = {};
 
-    auto &csr = pCmdQ->getDevice().getCommandStreamReceiver();
+    auto &csr = pCmdQ->getCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event[0]);
 
@@ -167,7 +153,7 @@ TEST_F(EventTests, event_NDR_Wait_NDR_Finish) {
     cl_event *eventWaitList = nullptr;
     cl_event event = nullptr;
 
-    auto &csr = pCmdQ->getDevice().getCommandStreamReceiver();
+    auto &csr = pCmdQ->getCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event);
 
@@ -206,7 +192,7 @@ TEST_F(EventTests, eventPassedToEnqueueMarkerHasTheSameLevelAsPreviousCommand) {
     cl_uint numEventsInWaitList = 0;
     cl_event *eventWaitList = nullptr;
     cl_event event = nullptr;
-    auto &csr = pCmdQ->getDevice().getCommandStreamReceiver();
+    auto &csr = pCmdQ->getCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event);
 

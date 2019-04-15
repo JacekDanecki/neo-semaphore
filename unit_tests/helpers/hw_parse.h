@@ -1,36 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/linear_stream.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/pipeline_select_helper.h"
+#include "runtime/helpers/ptr_math.h"
 #include "runtime/kernel/kernel.h"
 #include "unit_tests/gen_common/gen_cmd_parse.h"
+
 #include "gtest/gtest.h"
 
-namespace OCLRT {
+namespace NEO {
 
 struct HardwareParse {
     HardwareParse() : previousCS(nullptr),
@@ -79,7 +65,10 @@ struct HardwareParse {
     void findHardwareCommands();
 
     template <typename FamilyType>
-    void parseCommands(OCLRT::LinearStream &commandStream, size_t startOffset = 0) {
+    void findHardwareCommands(IndirectHeap *dsh);
+
+    template <typename FamilyType>
+    void parseCommands(NEO::LinearStream &commandStream, size_t startOffset = 0) {
         ASSERT_LE(startOffset, commandStream.getUsed());
         auto sizeToParse = commandStream.getUsed() - startOffset;
         ASSERT_TRUE(FamilyType::PARSE::parseCommandBuffer(
@@ -89,15 +78,14 @@ struct HardwareParse {
     }
 
     template <typename FamilyType>
-    void parseCommands(OCLRT::CommandQueue &commandQueue) {
-        auto &device = commandQueue.getDevice();
-        auto &commandStreamReceiver = device.getCommandStreamReceiver();
+    void parseCommands(NEO::CommandQueue &commandQueue) {
+        auto &commandStreamReceiver = commandQueue.getCommandStreamReceiver();
         auto &commandStreamCSR = commandStreamReceiver.getCS();
 
         parseCommands<FamilyType>(commandStreamCSR, startCSRCS);
         startCSRCS = commandStreamCSR.getUsed();
 
-        auto &commandStream = commandQueue.getCS();
+        auto &commandStream = commandQueue.getCS(1024);
         if (previousCS != &commandStream) {
             startCS = 0;
         }
@@ -106,11 +94,11 @@ struct HardwareParse {
         previousCS = &commandStream;
 
         sizeUsed = commandStream.getUsed();
-        findHardwareCommands<FamilyType>();
+        findHardwareCommands<FamilyType>(&commandStreamReceiver.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 0));
     }
 
     template <typename FamilyType>
-    const typename FamilyType::RENDER_SURFACE_STATE &getSurfaceState(uint32_t index) {
+    const typename FamilyType::RENDER_SURFACE_STATE &getSurfaceState(IndirectHeap *ssh, uint32_t index) {
         typedef typename FamilyType::BINDING_TABLE_STATE BINDING_TABLE_STATE;
         typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
         typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
@@ -120,6 +108,9 @@ struct HardwareParse {
 
         auto cmdSBA = (STATE_BASE_ADDRESS *)cmdStateBaseAddress;
         auto surfaceStateHeap = cmdSBA->getSurfaceStateBaseAddress();
+        if (ssh && (ssh->getHeapGpuBase() == surfaceStateHeap)) {
+            surfaceStateHeap = reinterpret_cast<uint64_t>(ssh->getCpuBase());
+        }
         EXPECT_NE(0u, surfaceStateHeap);
 
         auto bindingTablePointer = interfaceDescriptorData.getBindingTablePointer();
@@ -178,6 +169,27 @@ struct HardwareParse {
         return numCommands;
     }
 
+    template <typename CmdType>
+    uint32_t getCommandCount() {
+        GenCmdList::iterator cmdItor = cmdList.begin();
+        uint32_t cmdCount = 0;
+
+        do {
+            cmdItor = find<CmdType *>(cmdItor, cmdList.end());
+            if (cmdItor != cmdList.end()) {
+                ++cmdCount;
+                ++cmdItor;
+            }
+        } while (cmdItor != cmdList.end());
+
+        return cmdCount;
+    }
+
+    template <typename FamilyType>
+    static const char *getCommandName(void *cmd) {
+        return FamilyType::PARSE::getCommandName(cmd);
+    }
+
     // The starting point of parsing commandBuffers.  This is important
     // because as buffers get reused, we only want to parse the deltas.
     LinearStream *previousCS;
@@ -204,4 +216,5 @@ struct HardwareParse {
     void *cmdBBStartAfterWalker;
     void *cmdGpgpuCsrBaseAddress;
 };
-} // namespace OCLRT
+
+} // namespace NEO

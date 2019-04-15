@@ -1,33 +1,22 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
+
+#include "unit_tests/mocks/mock_gmm_resource_info.h"
 
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/surface_formats.h"
-#include "unit_tests/mocks/mock_gmm_resource_info.h"
 
 using namespace ::testing;
 
-namespace OCLRT {
+namespace NEO {
 GmmResourceInfo *GmmResourceInfo::create(GMM_RESCREATE_PARAMS *resourceCreateParams) {
+    if (resourceCreateParams->Type == GMM_RESOURCE_TYPE::RESOURCE_INVALID) {
+        return nullptr;
+    }
     return new ::testing::NiceMock<MockGmmResourceInfo>(resourceCreateParams);
 }
 
@@ -85,32 +74,37 @@ void MockGmmResourceInfo::computeRowPitch() {
     if (mockResourceCreateParams.OverridePitch) {
         rowPitch = mockResourceCreateParams.OverridePitch;
     } else {
-        rowPitch = static_cast<size_t>(mockResourceCreateParams.BaseWidth * (surfaceFormatInfo->PerChannelSizeInBytes * surfaceFormatInfo->NumChannels));
+        rowPitch = static_cast<size_t>(mockResourceCreateParams.BaseWidth64 * (surfaceFormatInfo->PerChannelSizeInBytes * surfaceFormatInfo->NumChannels));
         rowPitch = alignUp(rowPitch, 64);
     }
 }
 
 void MockGmmResourceInfo::setSurfaceFormat() {
-    auto iterate = [&](const SurfaceFormatInfo *formats, const size_t numFormats) {
+    auto iterate = [&](ArrayRef<const SurfaceFormatInfo> formats) {
         if (!surfaceFormatInfo) {
-            for (size_t i = 0; i < numFormats; i++) {
-                if (mockResourceCreateParams.Format == formats[i].GMMSurfaceFormat) {
-                    surfaceFormatInfo = &formats[i];
+            for (auto &format : formats) {
+                if (mockResourceCreateParams.Format == format.GMMSurfaceFormat) {
+                    surfaceFormatInfo = &format;
                     break;
                 }
             }
         }
     };
 
-    iterate(readOnlySurfaceFormats, numReadOnlySurfaceFormats);
-    iterate(writeOnlySurfaceFormats, numWriteOnlySurfaceFormats);
-    iterate(readWriteSurfaceFormats, numReadWriteSurfaceFormats);
+    if (mockResourceCreateParams.Format == GMM_RESOURCE_FORMAT::GMM_FORMAT_P010) {
+        tempSurface.GMMSurfaceFormat = GMM_RESOURCE_FORMAT::GMM_FORMAT_P010;
+        surfaceFormatInfo = &tempSurface;
+    }
 
-    iterate(packedYuvSurfaceFormats, numPackedYuvSurfaceFormats);
-    iterate(planarYuvSurfaceFormats, numPlanarYuvSurfaceFormats);
+    iterate(SurfaceFormats::readOnly());
+    iterate(SurfaceFormats::writeOnly());
+    iterate(SurfaceFormats::readWrite());
 
-    iterate(readOnlyDepthSurfaceFormats, numReadOnlyDepthSurfaceFormats);
-    iterate(readWriteDepthSurfaceFormats, numReadWriteDepthSurfaceFormats);
+    iterate(SurfaceFormats::packedYuv());
+    iterate(SurfaceFormats::planarYuv());
+
+    iterate(SurfaceFormats::readOnlyDepth());
+    iterate(SurfaceFormats::readWriteDepth());
 
     ASSERT_NE(nullptr, surfaceFormatInfo);
 }
@@ -125,6 +119,26 @@ void MockGmmResourceInfo::setUnifiedAuxTranslationCapable() {
     mockResourceCreateParams.Flags.Info.RenderCompressed = 1;
 }
 
+void MockGmmResourceInfo::setMultisampleControlSurface() {
+    mockResourceCreateParams.Flags.Gpu.MCS = 1;
+}
+
+void MockGmmResourceInfo::setUnifiedAuxPitchTiles(uint32_t value) {
+    this->unifiedAuxPitch = value;
+}
+void MockGmmResourceInfo::setAuxQPitch(uint32_t value) {
+    this->auxQPitch = value;
+}
+
+uint32_t MockGmmResourceInfo::getTileModeSurfaceState() {
+    if (mockResourceCreateParams.Type == GMM_RESOURCE_TYPE::RESOURCE_2D ||
+        mockResourceCreateParams.Type == GMM_RESOURCE_TYPE::RESOURCE_3D) {
+        return 3;
+    } else {
+        return 0;
+    }
+}
+
 MockGmmResourceInfo::MockGmmResourceInfo() {}
 MockGmmResourceInfo::~MockGmmResourceInfo() {}
-} // namespace OCLRT
+} // namespace NEO

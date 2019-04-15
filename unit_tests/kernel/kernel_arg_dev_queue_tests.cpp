@@ -1,38 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/device_host_queue_fixture.h"
+#include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/mocks/mock_buffer.h"
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace DeviceHostQueue;
 
 struct KernelArgDevQueueTest : public DeviceFixture,
                                public DeviceHostQueueFixture<DeviceQueue> {
-    KernelArgDevQueueTest() : program(), kernelArgPatchInfo() {}
-
   protected:
     void SetUp() override {
         DeviceFixture::SetUp();
@@ -40,7 +23,7 @@ struct KernelArgDevQueueTest : public DeviceFixture,
 
         pDeviceQueue = createQueueObject();
 
-        pKernelInfo = KernelInfo::create();
+        pKernelInfo = std::make_unique<KernelInfo>();
         pKernelInfo->kernelArgInfo.resize(1);
         pKernelInfo->kernelArgInfo[0].isDeviceQueue = true;
 
@@ -50,7 +33,8 @@ struct KernelArgDevQueueTest : public DeviceFixture,
 
         pKernelInfo->kernelArgInfo[0].kernelArgPatchInfoVector.push_back(kernelArgPatchInfo);
 
-        pKernel = new MockKernel(&program, *pKernelInfo, *pDevice);
+        program = std::make_unique<MockProgram>(*pDevice->getExecutionEnvironment());
+        pKernel = new MockKernel(program.get(), *pKernelInfo, *pDevice);
         ASSERT_EQ(CL_SUCCESS, pKernel->initialize());
 
         uint8_t pCrossThreadData[crossThreadDataSize];
@@ -59,8 +43,8 @@ struct KernelArgDevQueueTest : public DeviceFixture,
     }
 
     void TearDown() override {
-        delete pKernelInfo;
         delete pKernel;
+
         delete pDeviceQueue;
 
         DeviceHostQueueFixture<DeviceQueue>::TearDown();
@@ -80,10 +64,10 @@ struct KernelArgDevQueueTest : public DeviceFixture,
     static const uint32_t crossThreadDataSize = 0x10;
     static const char crossThreadDataInit = 0x7e;
 
-    MockProgram program;
+    std::unique_ptr<MockProgram> program;
     DeviceQueue *pDeviceQueue = nullptr;
     MockKernel *pKernel = nullptr;
-    KernelInfo *pKernelInfo = nullptr;
+    std::unique_ptr<KernelInfo> pKernelInfo;
     KernelArgPatchInfo kernelArgPatchInfo;
 };
 

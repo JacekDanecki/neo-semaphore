@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/accelerators/intel_accelerator.h"
@@ -25,7 +10,7 @@
 #include "runtime/context/context.h"
 #include "unit_tests/api/cl_api_tests.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 namespace ULT {
 
@@ -262,7 +247,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoDescriptorExactExpectPass) {
         accelerator,
         CL_ACCELERATOR_DESCRIPTOR_INTEL,
         sizeof(cl_motion_estimation_desc_intel), // exact
-        reinterpret_cast<void *>(&descReturn),
+        &descReturn,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_SUCCESS, result);
@@ -279,7 +264,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoDescriptorShortExpectFail) {
         accelerator,
         CL_ACCELERATOR_DESCRIPTOR_INTEL,
         sizeof(cl_motion_estimation_desc_intel) - 1, // short
-        reinterpret_cast<void *>(&descReturn),
+        &descReturn,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_INVALID_VALUE, result);
@@ -291,7 +276,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoDescriptorVeryShortExpectFail) {
         accelerator,
         CL_ACCELERATOR_DESCRIPTOR_INTEL,
         0, // very short
-        reinterpret_cast<void *>(&descReturn),
+        &descReturn,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_INVALID_VALUE, result);
@@ -303,7 +288,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoDescriptorLongExpectPass) {
         accelerator,
         CL_ACCELERATOR_DESCRIPTOR_INTEL,
         sizeof(cl_motion_estimation_desc_intel) + 1, // long
-        reinterpret_cast<void *>(&descReturn),
+        &descReturn,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_SUCCESS, result);
@@ -329,7 +314,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoTypeExpectPass) {
         accelerator,
         CL_ACCELERATOR_TYPE_INTEL,
         sizeof(cl_uint),
-        reinterpret_cast<void *>(&type_returned),
+        &type_returned,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_SUCCESS, result);
@@ -343,7 +328,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoTypeExactExpectPass) {
         accelerator,
         CL_ACCELERATOR_TYPE_INTEL,
         sizeof(cl_uint), // exact
-        reinterpret_cast<void *>(&type_returned),
+        &type_returned,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_SUCCESS, result);
@@ -357,7 +342,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoTypeShortExpectFail) {
         accelerator,
         CL_ACCELERATOR_TYPE_INTEL,
         sizeof(cl_uint) - 1, // short
-        reinterpret_cast<void *>(&type_returned),
+        &type_returned,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_INVALID_VALUE, result);
@@ -369,7 +354,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoTypeVeryShortExpectFail) {
         accelerator,
         CL_ACCELERATOR_TYPE_INTEL,
         0, // very short
-        reinterpret_cast<void *>(&type_returned),
+        &type_returned,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_INVALID_VALUE, result);
@@ -381,7 +366,7 @@ TEST_F(IntelMotionEstimationGetInfoTest, getInfoTypeLongExpectPass) {
         accelerator,
         CL_ACCELERATOR_TYPE_INTEL,
         sizeof(cl_uint) + 1, // long
-        reinterpret_cast<void *>(&type_returned),
+        &type_returned,
         &param_value_size_ret);
 
     EXPECT_EQ(CL_SUCCESS, result);

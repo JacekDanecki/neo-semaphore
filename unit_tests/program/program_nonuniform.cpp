@@ -1,71 +1,48 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/kernel/kernel.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
-#include "unit_tests/libult/ult_command_stream_receiver.h"
-#include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/hash.h"
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/ptr_math.h"
+#include "runtime/indirect_heap/indirect_heap.h"
+#include "runtime/kernel/kernel.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/surface.h"
-#include "program_tests.h"
+#include "test.h"
+#include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/helpers/kernel_binary_helper.h"
+#include "unit_tests/libult/ult_command_stream_receiver.h"
+#include "unit_tests/mocks/mock_kernel.h"
+#include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/program/program_from_binary.h"
 #include "unit_tests/program/program_with_source.h"
-#include "test.h"
+
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+#include "program_tests.h"
+
+#include <map>
 #include <memory>
 #include <vector>
-#include <map>
-#include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "gtest/gtest.h"
-#include "gmock/gmock.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
-struct ProgramMock : Program {
-    void updateNonUniformFlag() {
-        Program::updateNonUniformFlag();
-    }
+class MyMockProgram : public MockProgram {
+  public:
+    MyMockProgram() : MockProgram(*new ExecutionEnvironment()), executionEnvironment(&this->peekExecutionEnvironment()) {}
 
-    void updateNonUniformFlag(const Program **inputPrograms, uint32_t numInputPrograms) {
-        Program::updateNonUniformFlag(inputPrograms, numInputPrograms);
-    }
-
-    void setBuildOptions(const char *buildOptions) {
-        options = buildOptions != nullptr ? buildOptions : "";
-    }
-
-    void forceNonUniformFlag(bool flag) {
-        this->allowNonUniform = flag;
-    }
+  private:
+    std::unique_ptr<ExecutionEnvironment> executionEnvironment;
 };
 
 TEST(ProgramNonUniform, UpdateAllowNonUniform) {
-    ProgramMock pm;
+    MyMockProgram pm;
     EXPECT_FALSE(pm.getAllowNonUniform());
     EXPECT_EQ(12u, pm.getProgramOptionVersion());
     pm.setBuildOptions(nullptr);
@@ -75,7 +52,7 @@ TEST(ProgramNonUniform, UpdateAllowNonUniform) {
 }
 
 TEST(ProgramNonUniform, UpdateAllowNonUniform12) {
-    ProgramMock pm;
+    MyMockProgram pm;
     EXPECT_FALSE(pm.getAllowNonUniform());
     EXPECT_EQ(12u, pm.getProgramOptionVersion());
     pm.setBuildOptions("-cl-std=CL1.2");
@@ -85,7 +62,7 @@ TEST(ProgramNonUniform, UpdateAllowNonUniform12) {
 }
 
 TEST(ProgramNonUniform, UpdateAllowNonUniform20) {
-    ProgramMock pm;
+    MyMockProgram pm;
     EXPECT_FALSE(pm.getAllowNonUniform());
     EXPECT_EQ(12u, pm.getProgramOptionVersion());
     pm.setBuildOptions("-cl-std=CL2.0");
@@ -95,7 +72,7 @@ TEST(ProgramNonUniform, UpdateAllowNonUniform20) {
 }
 
 TEST(ProgramNonUniform, UpdateAllowNonUniform21) {
-    ProgramMock pm;
+    MyMockProgram pm;
     EXPECT_FALSE(pm.getAllowNonUniform());
     EXPECT_EQ(12u, pm.getProgramOptionVersion());
     pm.setBuildOptions("-cl-std=CL2.1");
@@ -105,7 +82,7 @@ TEST(ProgramNonUniform, UpdateAllowNonUniform21) {
 }
 
 TEST(ProgramNonUniform, UpdateAllowNonUniform20UniformFlag) {
-    ProgramMock pm;
+    MyMockProgram pm;
     EXPECT_FALSE(pm.getAllowNonUniform());
     EXPECT_EQ(12u, pm.getProgramOptionVersion());
     pm.setBuildOptions("-cl-std=CL2.0 -cl-uniform-work-group-size");
@@ -115,7 +92,7 @@ TEST(ProgramNonUniform, UpdateAllowNonUniform20UniformFlag) {
 }
 
 TEST(ProgramNonUniform, UpdateAllowNonUniform21UniformFlag) {
-    ProgramMock pm;
+    MyMockProgram pm;
     EXPECT_FALSE(pm.getAllowNonUniform());
     EXPECT_EQ(12u, pm.getProgramOptionVersion());
     pm.setBuildOptions("-cl-std=CL2.1 -cl-uniform-work-group-size");
@@ -125,9 +102,9 @@ TEST(ProgramNonUniform, UpdateAllowNonUniform21UniformFlag) {
 }
 
 TEST(KernelNonUniform, GetAllowNonUniformFlag) {
-    ProgramMock pm;
     KernelInfo ki;
     MockDevice d(*platformDevices[0]);
+    MockProgram pm(*d.getExecutionEnvironment());
     struct KernelMock : Kernel {
         KernelMock(Program *p, KernelInfo &ki, Device &d)
             : Kernel(p, ki, d) {
@@ -135,53 +112,54 @@ TEST(KernelNonUniform, GetAllowNonUniformFlag) {
     };
 
     KernelMock k{&pm, ki, d};
-    pm.forceNonUniformFlag(false);
+    pm.setAllowNonUniform(false);
     EXPECT_FALSE(k.getAllowNonUniform());
-    pm.forceNonUniformFlag(true);
+    pm.setAllowNonUniform(true);
     EXPECT_TRUE(k.getAllowNonUniform());
-    pm.forceNonUniformFlag(false);
+    pm.setAllowNonUniform(false);
     EXPECT_FALSE(k.getAllowNonUniform());
 }
 
 TEST(ProgramNonUniform, UpdateAllowNonUniformOutcomeUniformFlag) {
-    ProgramMock pm;
-    ProgramMock pm1;
-    ProgramMock pm2;
-    const ProgramMock *inputPrograms[] = {&pm1, &pm2};
+    ExecutionEnvironment executionEnvironment;
+    MockProgram pm(executionEnvironment);
+    MockProgram pm1(executionEnvironment);
+    MockProgram pm2(executionEnvironment);
+    const MockProgram *inputPrograms[] = {&pm1, &pm2};
     cl_uint numInputPrograms = 2;
 
-    pm1.forceNonUniformFlag(false);
-    pm2.forceNonUniformFlag(false);
+    pm1.setAllowNonUniform(false);
+    pm2.setAllowNonUniform(false);
     pm.updateNonUniformFlag((const Program **)inputPrograms, numInputPrograms);
     EXPECT_FALSE(pm.getAllowNonUniform());
 
-    pm1.forceNonUniformFlag(false);
-    pm2.forceNonUniformFlag(true);
+    pm1.setAllowNonUniform(false);
+    pm2.setAllowNonUniform(true);
     pm.updateNonUniformFlag((const Program **)inputPrograms, numInputPrograms);
     EXPECT_FALSE(pm.getAllowNonUniform());
 
-    pm1.forceNonUniformFlag(true);
-    pm2.forceNonUniformFlag(false);
+    pm1.setAllowNonUniform(true);
+    pm2.setAllowNonUniform(false);
     pm.updateNonUniformFlag((const Program **)inputPrograms, numInputPrograms);
     EXPECT_FALSE(pm.getAllowNonUniform());
 
-    pm1.forceNonUniformFlag(true);
-    pm2.forceNonUniformFlag(true);
+    pm1.setAllowNonUniform(true);
+    pm2.setAllowNonUniform(true);
     pm.updateNonUniformFlag((const Program **)inputPrograms, numInputPrograms);
     EXPECT_TRUE(pm.getAllowNonUniform());
 }
 
 #include "runtime/helpers/options.h"
 #include "runtime/kernel/kernel.h"
+#include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/platform_fixture.h"
 #include "unit_tests/fixtures/program_fixture.h"
-#include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/mocks/mock_program.h"
 
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 
 class ProgramNonUniformTest : public ContextFixture,
                               public PlatformFixture,
@@ -209,7 +187,6 @@ class ProgramNonUniformTest : public ContextFixture,
         ProgramFixture::TearDown();
         ContextFixture::TearDown();
         PlatformFixture::TearDown();
-        CompilerInterface::shutdown();
     }
     cl_device_id device;
     cl_int retVal = CL_SUCCESS;
@@ -338,4 +315,4 @@ TEST_F(ProgramNonUniformTest, ExecuteKernelNonUniform12) {
 
     delete pKernel;
 }
-} // namespace OCLRT
+} // namespace NEO

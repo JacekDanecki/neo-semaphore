@@ -1,29 +1,15 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/program/program.h"
 #include "runtime/context/context.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/program/program.h"
 
-namespace OCLRT {
+namespace NEO {
 
 template <typename T>
 T *Program::create(
@@ -37,9 +23,11 @@ T *Program::create(
     auto pContext = castToObject<Context>(context);
     DEBUG_BREAK_IF(!pContext);
 
-    auto program = new T(pContext, false);
+    auto program = new T(*pContext->getDevice(0)->getExecutionEnvironment(), pContext, false);
 
     auto retVal = program->createProgramFromBinary(binaries[0], lengths[0]);
+
+    program->createdFrom = CreatedFrom::BINARY;
 
     if (binaryStatus) {
         DEBUG_BREAK_IF(retVal != CL_SUCCESS);
@@ -76,8 +64,9 @@ T *Program::create(
         lengths);
 
     if (CL_SUCCESS == retVal) {
-        program = new T(pContext, false);
+        program = new T(*pContext->getDevice(0)->getExecutionEnvironment(), pContext, false);
         program->sourceCode.swap(combinedString);
+        program->createdFrom = CreatedFrom::SOURCE;
     }
 
     errcodeRet = retVal;
@@ -99,7 +88,7 @@ T *Program::create(
     }
 
     if (retVal == CL_SUCCESS) {
-        program = new T();
+        program = new T(*device.getExecutionEnvironment());
         program->setSource((char *)nullTerminatedString);
         program->context = context;
         program->isBuiltIn = isBuiltIn;
@@ -121,6 +110,39 @@ T *Program::create(
 }
 
 template <typename T>
+T *Program::createFromGenBinary(
+    ExecutionEnvironment &executionEnvironment,
+    Context *context,
+    const void *binary,
+    size_t size,
+    bool isBuiltIn,
+    cl_int *errcodeRet) {
+    cl_int retVal = CL_SUCCESS;
+    T *program = nullptr;
+
+    if ((binary == nullptr) || (size == 0)) {
+        retVal = CL_INVALID_VALUE;
+    }
+
+    if (CL_SUCCESS == retVal) {
+        program = new T(executionEnvironment, context, isBuiltIn);
+        program->numDevices = 1;
+        program->storeGenBinary(binary, size);
+        program->isCreatedFromBinary = true;
+        program->programBinaryType = CL_PROGRAM_BINARY_TYPE_EXECUTABLE;
+        program->isProgramBinaryResolved = true;
+        program->buildStatus = CL_BUILD_SUCCESS;
+        program->createdFrom = CreatedFrom::BINARY;
+    }
+
+    if (errcodeRet) {
+        *errcodeRet = retVal;
+    }
+
+    return program;
+}
+
+template <typename T>
 T *Program::createFromIL(Context *ctx,
                          const void *il,
                          size_t length,
@@ -132,8 +154,11 @@ T *Program::createFromIL(Context *ctx,
         return nullptr;
     }
 
-    T *program = new T(ctx, false);
+    T *program = new T(*ctx->getDevice(0)->getExecutionEnvironment(), ctx, false);
     errcodeRet = program->createProgramFromBinary(il, length);
+
+    program->createdFrom = CreatedFrom::IL;
+
     if (errcodeRet != CL_SUCCESS) {
         delete program;
         program = nullptr;
@@ -141,4 +166,4 @@ T *Program::createFromIL(Context *ctx,
 
     return program;
 }
-} // namespace OCLRT
+} // namespace NEO

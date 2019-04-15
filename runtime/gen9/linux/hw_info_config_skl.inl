@@ -1,33 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/gen_common/hw_cmds.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/os_interface/hw_info_config.h"
-#include "runtime/gen_common/hw_cmds.h"
 
-namespace OCLRT {
+namespace NEO {
 
 template <>
 int HwInfoConfigHw<IGFX_SKYLAKE>::configureHardwareCustom(HardwareInfo *hwInfo, OSInterface *osIface) {
+    if (nullptr == osIface) {
+        return 0;
+    }
+
     FeatureTable *pSkuTable = const_cast<FeatureTable *>(hwInfo->pSkuTable);
     GT_SYSTEM_INFO *pSysInfo = const_cast<GT_SYSTEM_INFO *>(hwInfo->pSysInfo);
     WorkaroundTable *pWaTable = const_cast<WorkaroundTable *>(hwInfo->pWaTable);
@@ -42,56 +31,55 @@ int HwInfoConfigHw<IGFX_SKYLAKE>::configureHardwareCustom(HardwareInfo *hwInfo, 
     pSysInfo->VDBoxInfo.Instances.Bits.VDBox0Enabled = 1;
     pSysInfo->VEBoxInfo.IsValid = true;
     pSysInfo->VDBoxInfo.IsValid = true;
+    pSkuTable->ftrGpGpuMidBatchPreempt = true;
+    pSkuTable->ftrGpGpuThreadGroupLevelPreempt = true;
+    pSkuTable->ftrGpGpuMidThreadLevelPreempt = true;
+    pSkuTable->ftr3dMidBatchPreempt = true;
+    pSkuTable->ftr3dObjectLevelPreempt = true;
+    pSkuTable->ftrPerCtxtPreemptionGranularityControl = true;
+    pSkuTable->ftrPPGTT = true;
+    pSkuTable->ftrSVM = true;
+    pSkuTable->ftrL3IACoherency = true;
+    pSkuTable->ftrIA32eGfxPTEs = true;
 
-    pSkuTable->ftrGpGpuMidBatchPreempt = 1;
-    pSkuTable->ftrGpGpuThreadGroupLevelPreempt = 1;
-    pSkuTable->ftrGpGpuMidThreadLevelPreempt = 0;
-    pSkuTable->ftr3dMidBatchPreempt = 1;
-    pSkuTable->ftr3dObjectLevelPreempt = 1;
-    pSkuTable->ftrPerCtxtPreemptionGranularityControl = 1;
+    pSkuTable->ftrDisplayYTiling = true;
+    pSkuTable->ftrTranslationTable = true;
+    pSkuTable->ftrUserModeTranslationTable = true;
 
-    pSkuTable->ftrPPGTT = 1;
-    pSkuTable->ftrSVM = 1;
-    pSkuTable->ftrL3IACoherency = 1;
-    pSkuTable->ftrIA32eGfxPTEs = 1;
+    pSkuTable->ftrEnableGuC = true;
 
-    pSkuTable->ftrDisplayYTiling = 1;
-    pSkuTable->ftrTranslationTable = 1;
-    pSkuTable->ftrUserModeTranslationTable = 1;
-
-    pSkuTable->ftrEnableGuC = 1;
-
-    pSkuTable->ftrFbc = 1;
-    pSkuTable->ftrFbc2AddressTranslation = 1;
-    pSkuTable->ftrFbcBlitterTracking = 1;
-    pSkuTable->ftrFbcCpuTracking = 1;
+    pSkuTable->ftrFbc = true;
+    pSkuTable->ftrFbc2AddressTranslation = true;
+    pSkuTable->ftrFbcBlitterTracking = true;
+    pSkuTable->ftrFbcCpuTracking = true;
 
     pSkuTable->ftrVcs2 = pSkuTable->ftrGT3 || pSkuTable->ftrGT4;
-    pSkuTable->ftrVEBOX = 1;
+    pSkuTable->ftrVEBOX = true;
     pSkuTable->ftrSingleVeboxSlice = pSkuTable->ftrGT1 || pSkuTable->ftrGT2;
+    pSkuTable->ftrTileY = true;
 
-    pWaTable->waEnablePreemptionGranularityControlByUMD = 1;
-    pWaTable->waSendMIFLUSHBeforeVFE = 1;
-    pWaTable->waReportPerfCountUseGlobalContextID = 1;
-    pWaTable->waDisableLSQCROPERFforOCL = 1;
-    pWaTable->waMsaa8xTileYDepthPitchAlignment = 1;
-    pWaTable->waLosslessCompressionSurfaceStride = 1;
-    pWaTable->waFbcLinearSurfaceStride = 1;
-    pWaTable->wa4kAlignUVOffsetNV12LinearSurface = 1;
-    pWaTable->waEncryptedEdramOnlyPartials = 1;
-    pWaTable->waDisableEdramForDisplayRT = 1;
-    pWaTable->waForcePcBbFullCfgRestore = 1;
-    pWaTable->waSamplerCacheFlushBetweenRedescribedSurfaceReads = 1;
+    pWaTable->waEnablePreemptionGranularityControlByUMD = true;
+    pWaTable->waSendMIFLUSHBeforeVFE = true;
+    pWaTable->waReportPerfCountUseGlobalContextID = true;
+    pWaTable->waDisableLSQCROPERFforOCL = true;
+    pWaTable->waMsaa8xTileYDepthPitchAlignment = true;
+    pWaTable->waLosslessCompressionSurfaceStride = true;
+    pWaTable->waFbcLinearSurfaceStride = true;
+    pWaTable->wa4kAlignUVOffsetNV12LinearSurface = true;
+    pWaTable->waEncryptedEdramOnlyPartials = true;
+    pWaTable->waDisableEdramForDisplayRT = true;
+    pWaTable->waForcePcBbFullCfgRestore = true;
+    pWaTable->waSamplerCacheFlushBetweenRedescribedSurfaceReads = true;
 
     if ((1 << hwInfo->pPlatform->usRevId) & 0x0eu) {
-        pWaTable->waCompressedResourceRequiresConstVA21 = 1;
+        pWaTable->waCompressedResourceRequiresConstVA21 = true;
     }
     if ((1 << hwInfo->pPlatform->usRevId) & 0x0fu) {
-        pWaTable->waDisablePerCtxtPreemptionGranularityControl = 1;
-        pWaTable->waModifyVFEStateAfterGPGPUPreemption = 1;
+        pWaTable->waDisablePerCtxtPreemptionGranularityControl = true;
+        pWaTable->waModifyVFEStateAfterGPGPUPreemption = true;
     }
     if ((1 << hwInfo->pPlatform->usRevId) & 0x3f) {
-        pWaTable->waCSRUncachable = 1;
+        pWaTable->waCSRUncachable = true;
     }
 
     if (hwInfo->pPlatform->usDeviceID == ISKL_GT3e_ULT_DEVICE_F0_ID_540 ||
@@ -116,4 +104,4 @@ int HwInfoConfigHw<IGFX_SKYLAKE>::configureHardwareCustom(HardwareInfo *hwInfo, 
 }
 
 template class HwInfoConfigHw<IGFX_SKYLAKE>;
-} // namespace OCLRT
+} // namespace NEO

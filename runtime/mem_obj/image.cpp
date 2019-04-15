@@ -1,28 +1,13 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/mem_obj/image.h"
+
 #include "common/compiler_support.h"
-#include "igfxfmid.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
@@ -32,17 +17,22 @@
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/basic_math.h"
 #include "runtime/helpers/get_info.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/buffer.h"
+#include "runtime/mem_obj/mem_obj_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/os_interface/debug_settings_manager.h"
+
+#include "igfxfmid.h"
+
 #include <map>
 
-namespace OCLRT {
+namespace NEO {
 
 ImageFuncs imageFactory[IGFX_MAX_CORE] = {};
 
@@ -191,14 +181,19 @@ Image *Image::create(Context *context,
         auto hostPtrRowPitch = imageDesc->image_row_pitch ? imageDesc->image_row_pitch : imageWidth * surfaceFormat->ImageElementSizeInBytes;
         auto hostPtrSlicePitch = imageDesc->image_slice_pitch ? imageDesc->image_slice_pitch : hostPtrRowPitch * imageHeight;
         auto isTilingAllowed = context->isSharedContext ? false : GmmHelper::allowTiling(*imageDesc);
-        imgInfo.preferRenderCompression = isTilingAllowed;
+        imgInfo.preferRenderCompression = MemObjHelper::isSuitableForRenderCompression(isTilingAllowed, flags,
+                                                                                       context->peekContextType(), true);
 
         bool zeroCopy = false;
         bool transferNeeded = false;
-        bool imageRedescribed = false;
-        bool copyRequired = false;
         if (((imageDesc->image_type == CL_MEM_OBJECT_IMAGE1D_BUFFER) || (imageDesc->image_type == CL_MEM_OBJECT_IMAGE2D)) && (parentBuffer != nullptr)) {
-            imageRedescribed = true;
+
+            HwHelper::get(context->getDevice(0)->getHardwareInfo().pPlatform->eRenderCoreFamily).checkResourceCompatibility(parentBuffer, errcodeRet);
+
+            if (errcodeRet != CL_SUCCESS) {
+                return nullptr;
+            }
+
             memory = parentBuffer->getGraphicsAllocation();
             // Image from buffer - we never allocate memory, we use what buffer provides
             zeroCopy = true;
@@ -221,36 +216,39 @@ Image *Image::create(Context *context,
             }
         } else if (parentImage != nullptr) {
             memory = parentImage->getGraphicsAllocation();
-            memory->gmm->queryImageParams(imgInfo);
+            memory->getDefaultGmm()->queryImageParams(imgInfo);
             isTilingAllowed = parentImage->allowTiling();
         } else {
-            gmm = new Gmm(imgInfo);
-
             errcodeRet = CL_OUT_OF_HOST_MEMORY;
             if (flags & CL_MEM_USE_HOST_PTR) {
-                size_t pointerPassedSize = hostPtrRowPitch * imageHeight * imageDepth * imageCount;
-                auto alignedSizePassedPointer = alignSizeWholePage(const_cast<void *>(hostPtr), pointerPassedSize);
-                auto alignedSizeRequiredForAllocation = alignSizeWholePage(const_cast<void *>(hostPtr), imgInfo.size);
 
-                // Passed pointer doesn't have enough memory, copy is needed
-                copyRequired = (alignedSizeRequiredForAllocation > alignedSizePassedPointer) |
-                               (imgInfo.rowPitch != hostPtrRowPitch) |
-                               (imgInfo.slicePitch != hostPtrSlicePitch) |
-                               ((reinterpret_cast<uintptr_t>(hostPtr) & (MemoryConstants::cacheLineSize - 1)) != 0) |
-                               isTilingAllowed;
+                if (!context->isSharedContext) {
+                    AllocationProperties allocProperties = MemObjHelper::getAllocationProperties(imgInfo, false, flags);
 
-                if (copyRequired && !context->isSharedContext) {
-                    memory = memoryManager->allocateGraphicsMemoryForImage(imgInfo, gmm);
-                    zeroCopy = false;
-                    transferNeeded = true;
+                    memory = memoryManager->allocateGraphicsMemoryWithProperties(allocProperties, hostPtr);
+
+                    if (memory) {
+                        if (memory->getUnderlyingBuffer() != hostPtr) {
+                            zeroCopy = false;
+                            transferNeeded = true;
+                        } else {
+                            zeroCopy = true;
+                        }
+                    }
                 } else {
-                    memory = memoryManager->allocateGraphicsMemory(imgInfo.size, hostPtr);
-                    memory->gmm = gmm;
+                    gmm = new Gmm(imgInfo);
+                    memory = memoryManager->allocateGraphicsMemoryWithProperties({false, imgInfo.size, GraphicsAllocation::AllocationType::UNDECIDED}, hostPtr);
+                    memory->setDefaultGmm(gmm);
                     zeroCopy = true;
                 }
+
             } else {
-                memory = memoryManager->allocateGraphicsMemoryForImage(imgInfo, gmm);
-                zeroCopy = true;
+                AllocationProperties allocProperties = MemObjHelper::getAllocationProperties(imgInfo, true, flags);
+                memory = memoryManager->allocateGraphicsMemoryWithProperties(allocProperties);
+
+                if (memory && MemoryPool::isSystemMemoryPool(memory->getMemoryPool())) {
+                    zeroCopy = true;
+                }
             }
         }
         transferNeeded |= !!(flags & CL_MEM_COPY_HOST_PTR);
@@ -282,13 +280,12 @@ Image *Image::create(Context *context,
         }
 
         if (!memory) {
-            if (gmm) {
-                delete gmm;
-            }
             break;
         }
 
-        memory->setAllocationType(GraphicsAllocation::AllocationType::IMAGE);
+        if (parentBuffer == nullptr) {
+            memory->setAllocationType(GraphicsAllocation::AllocationType::IMAGE);
+        }
         memory->setMemObjectsAllocationWithWritableFlags(!(flags & (CL_MEM_READ_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_HOST_NO_ACCESS)));
 
         DBG_LOG(LogMemoryObject, __FUNCTION__, "hostPtr:", hostPtr, "size:", memory->getUnderlyingBufferSize(), "memoryStorage:", memory->getUnderlyingBuffer(), "GPU address:", std::hex, memory->getGpuAddress());
@@ -306,7 +303,7 @@ Image *Image::create(Context *context,
         }
 
         image = createImageHw(context, flags, imgInfo.size, hostPtrToSet, surfaceFormat->OCLImageFormat,
-                              imageDescriptor, zeroCopy, memory, imageRedescribed, isTilingAllowed, 0, 0, surfaceFormat);
+                              imageDescriptor, zeroCopy, memory, false, isTilingAllowed, 0, 0, surfaceFormat);
 
         if (imageDesc->image_type != CL_MEM_OBJECT_IMAGE1D_ARRAY && imageDesc->image_type != CL_MEM_OBJECT_IMAGE2D_ARRAY) {
             image->imageDesc.image_array_size = 0;
@@ -314,9 +311,7 @@ Image *Image::create(Context *context,
         if ((imageDesc->image_type == CL_MEM_OBJECT_IMAGE1D_BUFFER) || ((imageDesc->image_type == CL_MEM_OBJECT_IMAGE2D) && (imageDesc->mem_object != nullptr))) {
             image->associatedMemObject = castToObject<MemObj>(imageDesc->mem_object);
         }
-        if (parentImage) {
-            image->isImageFromImageCreated = true;
-        }
+
         // Driver needs to store rowPitch passed by the app in order to synchronize the host_ptr later on map call
         image->setHostPtrRowPitch(imageDesc->image_row_pitch ? imageDesc->image_row_pitch : hostPtrRowPitch);
         image->setHostPtrSlicePitch(hostPtrSlicePitch);
@@ -347,7 +342,7 @@ Image *Image::create(Context *context,
                 copyRegion = {{imageWidth, imageHeight, std::max(imageDepth, imageCount)}};
             }
 
-            if (isTilingAllowed) {
+            if (isTilingAllowed || !MemoryPool::isSystemMemoryPool(memory->getMemoryPool())) {
                 auto cmdQ = context->getSpecialQueue();
 
                 if (IsNV12Image(&image->getImageFormat())) {
@@ -395,9 +390,7 @@ Image *Image::createImageHw(Context *context, cl_mem_flags flags, size_t size, v
 Image *Image::createSharedImage(Context *context, SharingHandler *sharingHandler, McsSurfaceInfo &mcsSurfaceInfo,
                                 GraphicsAllocation *graphicsAllocation, GraphicsAllocation *mcsAllocation,
                                 cl_mem_flags flags, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount) {
-    auto tileWalk = graphicsAllocation->gmm->gmmResourceInfo->getTileType();
-    auto tileMode = GmmHelper::getRenderTileMode(tileWalk);
-    bool isTiledImage = tileMode ? true : false;
+    bool isTiledImage = graphicsAllocation->getDefaultGmm()->gmmResourceInfo->getTileModeSurfaceState() != 0;
 
     auto sharedImage = createImageHw(context, flags, graphicsAllocation->getUnderlyingBufferSize(),
                                      nullptr, imgInfo.surfaceFormat->OCLImageFormat, *imgInfo.imgDesc, false, graphicsAllocation, false, isTiledImage, baseMipLevel, mipCount, imgInfo.surfaceFormat);
@@ -586,7 +579,7 @@ cl_int Image::validateImageTraits(Context *context, cl_mem_flags flags, const cl
     return CL_SUCCESS;
 }
 
-size_t Image::calculateHostPtrSize(size_t *region, size_t rowPitch, size_t slicePitch, size_t pixelSize, uint32_t imageType) {
+size_t Image::calculateHostPtrSize(const size_t *region, size_t rowPitch, size_t slicePitch, size_t pixelSize, uint32_t imageType) {
     DEBUG_BREAK_IF(!((rowPitch != 0) && (slicePitch != 0)));
     size_t sizeToReturn = 0u;
 
@@ -671,6 +664,46 @@ const cl_image_format &Image::getImageFormat() const {
 
 const SurfaceFormatInfo &Image::getSurfaceFormatInfo() const {
     return surfaceFormatInfo;
+}
+
+bool Image::isCopyRequired(ImageInfo &imgInfo, const void *hostPtr) {
+    if (!hostPtr) {
+        return false;
+    }
+
+    size_t imageWidth = imgInfo.imgDesc->image_width;
+    size_t imageHeight = 1;
+    size_t imageDepth = 1;
+    size_t imageCount = 1;
+
+    switch (imgInfo.imgDesc->image_type) {
+    case CL_MEM_OBJECT_IMAGE3D:
+        imageDepth = imgInfo.imgDesc->image_depth;
+        CPP_ATTRIBUTE_FALLTHROUGH;
+    case CL_MEM_OBJECT_IMAGE2D:
+    case CL_MEM_OBJECT_IMAGE2D_ARRAY:
+        imageHeight = imgInfo.imgDesc->image_height;
+        break;
+    default:
+        break;
+    }
+
+    auto hostPtrRowPitch = imgInfo.imgDesc->image_row_pitch ? imgInfo.imgDesc->image_row_pitch : imageWidth * imgInfo.surfaceFormat->ImageElementSizeInBytes;
+    auto hostPtrSlicePitch = imgInfo.imgDesc->image_slice_pitch ? imgInfo.imgDesc->image_slice_pitch : hostPtrRowPitch * imgInfo.imgDesc->image_height;
+    auto isTilingAllowed = GmmHelper::allowTiling(*imgInfo.imgDesc);
+
+    size_t pointerPassedSize = hostPtrRowPitch * imageHeight * imageDepth * imageCount;
+    auto alignedSizePassedPointer = alignSizeWholePage(const_cast<void *>(hostPtr), pointerPassedSize);
+    auto alignedSizeRequiredForAllocation = alignSizeWholePage(const_cast<void *>(hostPtr), imgInfo.size);
+
+    // Passed pointer doesn't have enough memory, copy is needed
+    bool copyRequired = (alignedSizeRequiredForAllocation > alignedSizePassedPointer) |
+                        (imgInfo.rowPitch != hostPtrRowPitch) |
+                        (imgInfo.slicePitch != hostPtrSlicePitch) |
+                        ((reinterpret_cast<uintptr_t>(hostPtr) & (MemoryConstants::cacheLineSize - 1)) != 0) |
+                        isTilingAllowed;
+
+    return copyRequired;
 }
 
 cl_int Image::getImageInfo(cl_image_info paramName,
@@ -789,6 +822,8 @@ Image *Image::redescribeFillImage() {
     uint32_t redescribeTableCol = this->surfaceFormatInfo.NumChannels / 2;
     uint32_t redescribeTableRow = this->surfaceFormatInfo.PerChannelSizeInBytes / 2;
 
+    ArrayRef<const SurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
+
     uint32_t surfaceFormatIdx = redescribeTable[redescribeTableRow][redescribeTableCol];
     surfaceFormat = &readWriteSurfaceFormats[surfaceFormatIdx];
 
@@ -797,7 +832,7 @@ Image *Image::redescribeFillImage() {
 
     DEBUG_BREAK_IF(nullptr == createFunction);
     auto image = createFunction(context,
-                                flags | CL_MEM_USE_HOST_PTR,
+                                properties.flags | CL_MEM_USE_HOST_PTR,
                                 this->getSize(),
                                 this->getCpuAddress(),
                                 imageFormatNew,
@@ -812,6 +847,7 @@ Image *Image::redescribeFillImage() {
                                 &this->surfaceOffsets);
     image->setQPitch(this->getQPitch());
     image->setCubeFaceIndex(this->getCubeFaceIndex());
+    image->associatedMemObject = this->associatedMemObject;
     return image;
 }
 
@@ -835,6 +871,8 @@ Image *Image::redescribe() {
     DEBUG_BREAK_IF(exponent >= 32);
 
     uint32_t surfaceFormatIdx = redescribeTableBytes[exponent % 5];
+    ArrayRef<const SurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
+
     surfaceFormat = &readWriteSurfaceFormats[surfaceFormatIdx];
 
     imageFormatNew.image_channel_order = surfaceFormat->OCLImageFormat.image_channel_order;
@@ -842,7 +880,7 @@ Image *Image::redescribe() {
 
     DEBUG_BREAK_IF(nullptr == createFunction);
     auto image = createFunction(context,
-                                flags | CL_MEM_USE_HOST_PTR,
+                                properties.flags | CL_MEM_USE_HOST_PTR,
                                 this->getSize(),
                                 this->getCpuAddress(),
                                 imageFormatNew,
@@ -857,6 +895,7 @@ Image *Image::redescribe() {
                                 &this->surfaceOffsets);
     image->setQPitch(this->getQPitch());
     image->setCubeFaceIndex(this->getCubeFaceIndex());
+    image->associatedMemObject = this->associatedMemObject;
     return image;
 }
 
@@ -935,68 +974,32 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
 
 const SurfaceFormatInfo *Image::getSurfaceFormatFromTable(cl_mem_flags flags, const cl_image_format *imageFormat) {
     if (!imageFormat) {
+        DEBUG_BREAK_IF("Invalid format");
         return nullptr;
     }
-    const SurfaceFormatInfo *surfaceFormatTable = nullptr;
-    size_t numSurfaceFormats = 0;
-    bool isDepthFormat = Image::isDepthFormat(*imageFormat);
 
-    if (IsNV12Image(imageFormat)) {
-#if SUPPORT_YUV
-        surfaceFormatTable = planarYuvSurfaceFormats;
-        numSurfaceFormats = numPlanarYuvSurfaceFormats;
-#else
-        return nullptr;
-#endif
-    } else if (IsPackedYuvImage(imageFormat)) {
-#if SUPPORT_YUV
-        surfaceFormatTable = packedYuvSurfaceFormats;
-        numSurfaceFormats = numPackedYuvSurfaceFormats;
-#else
-        return nullptr;
-#endif
-    } else if ((flags & CL_MEM_READ_ONLY) == CL_MEM_READ_ONLY) {
-        surfaceFormatTable = isDepthFormat ? readOnlyDepthSurfaceFormats : readOnlySurfaceFormats;
-        numSurfaceFormats = isDepthFormat ? numReadOnlyDepthSurfaceFormats : numReadOnlySurfaceFormats;
-    } else if ((flags & CL_MEM_WRITE_ONLY) == CL_MEM_WRITE_ONLY) {
-        surfaceFormatTable = isDepthFormat ? readWriteDepthSurfaceFormats : writeOnlySurfaceFormats;
-        numSurfaceFormats = isDepthFormat ? numReadWriteDepthSurfaceFormats : numWriteOnlySurfaceFormats;
-    } else {
-        surfaceFormatTable = isDepthFormat ? readWriteDepthSurfaceFormats : readWriteSurfaceFormats;
-        numSurfaceFormats = isDepthFormat ? numReadWriteDepthSurfaceFormats : numReadWriteSurfaceFormats;
-    }
+    ArrayRef<const SurfaceFormatInfo> formats = SurfaceFormats::surfaceFormats(flags, imageFormat);
 
-    // Find a matching surface format
-    size_t indexSurfaceFormat = 0;
-    while (indexSurfaceFormat < numSurfaceFormats) {
-        const auto &surfaceFormat = surfaceFormatTable[indexSurfaceFormat].OCLImageFormat;
-        if (surfaceFormat.image_channel_data_type == imageFormat->image_channel_data_type &&
-            surfaceFormat.image_channel_order == imageFormat->image_channel_order) {
-            break;
+    for (auto &format : formats) {
+        if (format.OCLImageFormat.image_channel_data_type == imageFormat->image_channel_data_type &&
+            format.OCLImageFormat.image_channel_order == imageFormat->image_channel_order) {
+            return &format;
         }
-        ++indexSurfaceFormat;
     }
-
-    if (indexSurfaceFormat >= numSurfaceFormats) {
-        return nullptr;
-    }
-
-    return &surfaceFormatTable[indexSurfaceFormat];
+    DEBUG_BREAK_IF("Invalid format");
+    return nullptr;
 }
 
 bool Image::isImage2d(cl_mem_object_type imageType) {
-    return (imageType == CL_MEM_OBJECT_IMAGE2D);
+    return imageType == CL_MEM_OBJECT_IMAGE2D;
 }
 
 bool Image::isImage2dOr2dArray(cl_mem_object_type imageType) {
-    return (imageType == CL_MEM_OBJECT_IMAGE2D) || (imageType == CL_MEM_OBJECT_IMAGE2D_ARRAY);
+    return imageType == CL_MEM_OBJECT_IMAGE2D || imageType == CL_MEM_OBJECT_IMAGE2D_ARRAY;
 }
 
 bool Image::isDepthFormat(const cl_image_format &imageFormat) {
-    if (imageFormat.image_channel_order == CL_DEPTH || imageFormat.image_channel_order == CL_DEPTH_STENCIL) {
-        return true;
-    }
-    return false;
+    return imageFormat.image_channel_order == CL_DEPTH || imageFormat.image_channel_order == CL_DEPTH_STENCIL;
 }
 
 Image *Image::validateAndCreateImage(Context *context,
@@ -1215,19 +1218,14 @@ size_t Image::calculateOffsetForMapping(const MemObjOffsetArray &origin) const {
 
     switch (imageDesc.image_type) {
     case CL_MEM_OBJECT_IMAGE1D_ARRAY:
-        if (imageDesc.num_mip_levels <= 1) {
-            offset += slicePitch * origin[1];
-        }
+        offset += slicePitch * origin[1];
         break;
     case CL_MEM_OBJECT_IMAGE2D:
         offset += rowPitch * origin[1];
         break;
     case CL_MEM_OBJECT_IMAGE2D_ARRAY:
     case CL_MEM_OBJECT_IMAGE3D:
-        offset += rowPitch * origin[1];
-        if (imageDesc.num_mip_levels <= 1) {
-            offset += slicePitch * origin[2];
-        }
+        offset += rowPitch * origin[1] + slicePitch * origin[2];
         break;
     default:
         break;
@@ -1236,29 +1234,33 @@ size_t Image::calculateOffsetForMapping(const MemObjOffsetArray &origin) const {
     return offset;
 }
 
-bool Image::validateRegionAndOrigin(const size_t *origin, const size_t *region, const cl_image_desc &imgDesc) {
+cl_int Image::validateRegionAndOrigin(const size_t *origin, const size_t *region, const cl_image_desc &imgDesc) {
     if (region[0] == 0 || region[1] == 0 || region[2] == 0) {
-        return false;
+        return CL_INVALID_VALUE;
     }
 
-    bool notMippMapped = (false == isMipMapped(imgDesc));
+    bool notMipMapped = (false == isMipMapped(imgDesc));
 
     if ((imgDesc.image_type == CL_MEM_OBJECT_IMAGE1D || imgDesc.image_type == CL_MEM_OBJECT_IMAGE1D_BUFFER) &&
-        (((origin[1] > 0) && notMippMapped) || origin[2] > 0 || region[1] > 1 || region[2] > 1)) {
-        return false;
+        (((origin[1] > 0) && notMipMapped) || origin[2] > 0 || region[1] > 1 || region[2] > 1)) {
+        return CL_INVALID_VALUE;
     }
 
     if ((imgDesc.image_type == CL_MEM_OBJECT_IMAGE2D || imgDesc.image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY) &&
-        (((origin[2] > 0) && notMippMapped) || region[2] > 1)) {
-        return false;
+        (((origin[2] > 0) && notMipMapped) || region[2] > 1)) {
+        return CL_INVALID_VALUE;
     }
 
-    if (notMippMapped) {
-        return true;
+    if (notMipMapped) {
+        return CL_SUCCESS;
     }
 
     uint32_t mipLevel = findMipLevel(imgDesc.image_type, origin);
-    return mipLevel < imgDesc.num_mip_levels;
+    if (mipLevel < imgDesc.num_mip_levels) {
+        return CL_SUCCESS;
+    } else {
+        return CL_INVALID_MIP_LEVEL;
+    }
 }
 
 bool Image::hasSameDescriptor(const cl_image_desc &imageDesc) const {
@@ -1300,4 +1302,4 @@ bool Image::hasValidParentImageFormat(const cl_image_format &imageFormat) const 
         return false;
     }
 }
-} // namespace OCLRT
+} // namespace NEO

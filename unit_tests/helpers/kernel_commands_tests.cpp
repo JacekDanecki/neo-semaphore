@@ -1,75 +1,61 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/built_ins/built_ins.h"
+#include "unit_tests/helpers/kernel_commands_tests.h"
+
+#include "runtime/api/api.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
-#include "hw_cmds.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/helpers/basic_math.h"
 #include "runtime/helpers/kernel_commands.h"
-#include "runtime/kernel/kernel.h"
-#include "unit_tests/fixtures/context_fixture.h"
-#include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/fixtures/image_fixture.h"
+#include "runtime/memory_manager/svm_memory_manager.h"
 #include "unit_tests/fixtures/execution_model_kernel_fixture.h"
+#include "unit_tests/fixtures/hello_world_fixture.h"
+#include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/indirect_heap/indirect_heap_fixture.h"
-#include "unit_tests/fixtures/built_in_fixture.h"
-#include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/mocks/mock_program.h"
-#include "unit_tests/mocks/mock_context.h"
-#include "test.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
+#include "unit_tests/utilities/base_object_utils.h"
 
-#include <memory>
+#include "hw_cmds.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
-struct KernelCommandsTest : DeviceFixture,
-                            ContextFixture,
-                            BuiltInFixture,
-                            ::testing::Test {
+void KernelCommandsTest::SetUp() {
+    DeviceFixture::SetUp();
+    ASSERT_NE(nullptr, pDevice);
+    cl_device_id device = pDevice;
+    ContextFixture::SetUp(1, &device);
+    ASSERT_NE(nullptr, pContext);
+    BuiltInFixture::SetUp(pDevice);
+    ASSERT_NE(nullptr, pBuiltIns);
 
-    using BuiltInFixture::SetUp;
-    using ContextFixture::SetUp;
+    mockKernelWithInternal = std::make_unique<MockKernelWithInternals>(*pDevice, pContext);
+}
 
-    void SetUp() override {
-        DeviceFixture::SetUp();
-        ASSERT_NE(nullptr, pDevice);
-        cl_device_id device = pDevice;
-        ContextFixture::SetUp(1, &device);
-        ASSERT_NE(nullptr, pContext);
-        BuiltInFixture::SetUp(pDevice);
-        ASSERT_NE(nullptr, pBuiltIns);
-    }
+void KernelCommandsTest::TearDown() {
+    mockKernelWithInternal.reset(nullptr);
+    BuiltInFixture::TearDown();
+    ContextFixture::TearDown();
+    DeviceFixture::TearDown();
+}
 
-    void TearDown() override {
-        BuiltInFixture::TearDown();
-        ContextFixture::TearDown();
-        DeviceFixture::TearDown();
-    }
-
-    size_t sizeRequiredCS;
-    size_t sizeRequiredISH;
-};
+void KernelCommandsTest::addSpaceForSingleKernelArg() {
+    kernelArguments.resize(1);
+    kernelArguments[0] = kernelArgInfo;
+    mockKernelWithInternal->kernelInfo.resizeKernelArgInfoAndRegisterParameter(1);
+    mockKernelWithInternal->kernelInfo.kernelArgInfo.resize(1);
+    mockKernelWithInternal->kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector.resize(1);
+    mockKernelWithInternal->kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset = 0;
+    mockKernelWithInternal->kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector[0].size = sizeof(uintptr_t);
+    mockKernelWithInternal->mockKernel->setKernelArguments(kernelArguments);
+    mockKernelWithInternal->mockKernel->kernelArgRequiresCacheFlush.resize(1);
+}
 
 HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, programInterfaceDescriptorDataResourceUsage) {
     CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
@@ -80,8 +66,8 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, programInterfaceDescriptorDataRe
     ASSERT_NE(nullptr, dstImage.get());
 
     MultiDispatchInfo multiDispatchInfo;
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
-                                                                          cmdQ.getContext(), cmdQ.getDevice());
+    auto &builder = pDevice->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
+                                                                                                     cmdQ.getContext(), cmdQ.getDevice());
     ASSERT_NE(nullptr, &builder);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
@@ -103,7 +89,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, programInterfaceDescriptorDataRe
 
     size_t crossThreadDataSize = kernel->getCrossThreadDataSize();
     KernelCommandsHelper<FamilyType>::sendInterfaceDescriptorData(
-        indirectHeap, 0, 0, crossThreadDataSize, 64, 0, 0, 0, 1, 0 * KB, false, pDevice->getPreemptionMode(), nullptr);
+        indirectHeap, 0, 0, crossThreadDataSize, 64, 0, 0, 0, 1, 0 * KB, 0, false, pDevice->getPreemptionMode(), nullptr);
 
     auto usedIndirectHeapAfter = indirectHeap.getUsed();
     EXPECT_EQ(sizeof(INTERFACE_DESCRIPTOR_DATA), usedIndirectHeapAfter - usedIndirectHeapBefore);
@@ -116,7 +102,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, programMediaInterfaceDescriptorL
     typedef typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD MEDIA_INTERFACE_DESCRIPTOR_LOAD;
     typedef typename FamilyType::MEDIA_STATE_FLUSH MEDIA_STATE_FLUSH;
 
-    auto &commandStream = cmdQ.getCS();
+    auto &commandStream = cmdQ.getCS(1024);
     auto usedBefore = commandStream.getUsed();
 
     KernelCommandsHelper<FamilyType>::sendMediaInterfaceDescriptorLoad(commandStream,
@@ -133,7 +119,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, programMediaStateFlushResourceUs
     typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
     typedef typename FamilyType::MEDIA_STATE_FLUSH MEDIA_STATE_FLUSH;
 
-    auto &commandStream = cmdQ.getCS();
+    auto &commandStream = cmdQ.getCS(1024);
     auto usedBefore = commandStream.getUsed();
 
     KernelCommandsHelper<FamilyType>::sendMediaStateFlush(commandStream,
@@ -152,8 +138,8 @@ HWTEST_F(KernelCommandsTest, sendCrossThreadDataResourceUsage) {
     ASSERT_NE(nullptr, dstImage.get());
 
     MultiDispatchInfo multiDispatchInfo;
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
-                                                                          cmdQ.getContext(), cmdQ.getDevice());
+    auto &builder = pDevice->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
+                                                                                                     cmdQ.getContext(), cmdQ.getDevice());
     ASSERT_NE(nullptr, &builder);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
@@ -170,10 +156,13 @@ HWTEST_F(KernelCommandsTest, sendCrossThreadDataResourceUsage) {
 
     auto &indirectHeap = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
     auto usedBefore = indirectHeap.getUsed();
-
+    auto sizeCrossThreadData = kernel->getCrossThreadDataSize();
     KernelCommandsHelper<FamilyType>::sendCrossThreadData(
         indirectHeap,
-        *kernel);
+        *kernel,
+        false,
+        nullptr,
+        sizeCrossThreadData);
 
     auto usedAfter = indirectHeap.getUsed();
     EXPECT_EQ(kernel->getCrossThreadDataSize(), usedAfter - usedBefore);
@@ -183,18 +172,23 @@ HWTEST_F(KernelCommandsTest, givenSendCrossThreadDataWhenWhenAddPatchInfoComment
     CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
 
     MockContext context;
-    MockProgram program(&context, false);
-    std::unique_ptr<KernelInfo> kernelInfo(KernelInfo::create());
+
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
+    auto kernelInfo = std::make_unique<KernelInfo>();
+
     std::unique_ptr<MockKernel> kernel(new MockKernel(&program, *kernelInfo, *pDevice));
 
     auto &indirectHeap = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
 
     PatchInfoData patchInfoData = {0xaaaaaaaa, 0, PatchInfoAllocationType::KernelArg, 0xbbbbbbbb, 0, PatchInfoAllocationType::IndirectObjectHeap};
     kernel->getPatchInfoDataList().push_back(patchInfoData);
-
+    auto sizeCrossThreadData = kernel->getCrossThreadDataSize();
     KernelCommandsHelper<FamilyType>::sendCrossThreadData(
         indirectHeap,
-        *kernel);
+        *kernel,
+        false,
+        nullptr,
+        sizeCrossThreadData);
 
     ASSERT_EQ(1u, kernel->getPatchInfoDataList().size());
     EXPECT_EQ(0xaaaaaaaa, kernel->getPatchInfoDataList()[0].sourceAllocation);
@@ -206,26 +200,32 @@ HWTEST_F(KernelCommandsTest, givenSendCrossThreadDataWhenWhenAddPatchInfoComment
 }
 
 HWTEST_F(KernelCommandsTest, givenIndirectHeapNotAllocatedFromInternalPoolWhenSendCrossThreadDataIsCalledThenOffsetZeroIsReturned) {
-    auto nonInternalAllocation = pDevice->getMemoryManager()->allocateGraphicsMemory(4096);
+    auto nonInternalAllocation = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     IndirectHeap indirectHeap(nonInternalAllocation, false);
 
-    MockKernelWithInternals mockKernelWithInternal(*pDevice);
+    auto sizeCrossThreadData = mockKernelWithInternal->mockKernel->getCrossThreadDataSize();
     auto offset = KernelCommandsHelper<FamilyType>::sendCrossThreadData(
         indirectHeap,
-        *mockKernelWithInternal.mockKernel);
+        *mockKernelWithInternal->mockKernel,
+        false,
+        nullptr,
+        sizeCrossThreadData);
     EXPECT_EQ(0u, offset);
     pDevice->getMemoryManager()->freeGraphicsMemory(nonInternalAllocation);
 }
 
 HWTEST_F(KernelCommandsTest, givenIndirectHeapAllocatedFromInternalPoolWhenSendCrossThreadDataIsCalledThenHeapBaseOffsetIsReturned) {
-    auto internalAllocation = pDevice->getMemoryManager()->allocate32BitGraphicsMemory(MemoryConstants::pageSize, nullptr, AllocationOrigin::INTERNAL_ALLOCATION);
+    auto internalAllocation = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties(true, MemoryConstants::pageSize, GraphicsAllocation::AllocationType::INTERNAL_HEAP));
     IndirectHeap indirectHeap(internalAllocation, true);
     auto expectedOffset = internalAllocation->getGpuAddressToPatch();
 
-    MockKernelWithInternals mockKernelWithInternal(*pDevice);
+    auto sizeCrossThreadData = mockKernelWithInternal->mockKernel->getCrossThreadDataSize();
     auto offset = KernelCommandsHelper<FamilyType>::sendCrossThreadData(
         indirectHeap,
-        *mockKernelWithInternal.mockKernel);
+        *mockKernelWithInternal->mockKernel,
+        false,
+        nullptr,
+        sizeCrossThreadData);
     EXPECT_EQ(expectedOffset, offset);
 
     pDevice->getMemoryManager()->freeGraphicsMemory(internalAllocation);
@@ -238,8 +238,10 @@ HWTEST_F(KernelCommandsTest, givenSendCrossThreadDataWhenWhenAddPatchInfoComment
     CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
 
     MockContext context;
-    MockProgram program(&context, false);
-    std::unique_ptr<KernelInfo> kernelInfo(KernelInfo::create());
+
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
+    auto kernelInfo = std::make_unique<KernelInfo>();
+
     std::unique_ptr<MockKernel> kernel(new MockKernel(&program, *kernelInfo, *pDevice));
 
     auto &indirectHeap = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
@@ -250,10 +252,13 @@ HWTEST_F(KernelCommandsTest, givenSendCrossThreadDataWhenWhenAddPatchInfoComment
 
     kernel->getPatchInfoDataList().push_back(patchInfoData1);
     kernel->getPatchInfoDataList().push_back(patchInfoData2);
-
+    auto sizeCrossThreadData = kernel->getCrossThreadDataSize();
     auto offsetCrossThreadData = KernelCommandsHelper<FamilyType>::sendCrossThreadData(
         indirectHeap,
-        *kernel);
+        *kernel,
+        false,
+        nullptr,
+        sizeCrossThreadData);
 
     ASSERT_NE(0u, offsetCrossThreadData);
     EXPECT_EQ(128u, offsetCrossThreadData);
@@ -270,7 +275,8 @@ HWTEST_F(KernelCommandsTest, givenSendCrossThreadDataWhenWhenAddPatchInfoComment
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, sendIndirectStateResourceUsage) {
-    typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
 
     CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
 
@@ -280,8 +286,8 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, sendIndirectStateResourceUsage) 
     ASSERT_NE(nullptr, dstImage.get());
 
     MultiDispatchInfo multiDispatchInfo;
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
-                                                                          cmdQ.getContext(), cmdQ.getDevice());
+    auto &builder = pDevice->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
+                                                                                                     cmdQ.getContext(), cmdQ.getDevice());
     ASSERT_NE(nullptr, &builder);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
@@ -299,7 +305,10 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, sendIndirectStateResourceUsage) 
     const size_t localWorkSize = 256;
     const size_t localWorkSizes[3]{localWorkSize, 1, 1};
 
-    auto &commandStream = cmdQ.getCS();
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
     auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
     auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
     auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
@@ -316,7 +325,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, sendIndirectStateResourceUsage) 
         commandStream,
         IDToffset,
         sizeof(INTERFACE_DESCRIPTOR_DATA));
-
+    uint32_t interfaceDescriptorIndex = 0;
     KernelCommandsHelper<FamilyType>::sendIndirectState(
         commandStream,
         dsh,
@@ -326,9 +335,11 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, sendIndirectStateResourceUsage) 
         kernel->getKernelInfo().getMaxSimdSize(),
         localWorkSizes,
         IDToffset,
-        0,
+        interfaceDescriptorIndex,
         pDevice->getPreemptionMode(),
-        nullptr);
+        pWalkerCmd,
+        nullptr,
+        true);
 
     // It's okay these are EXPECT_GE as they're only going to be used for
     // estimation purposes to avoid OOM.
@@ -344,20 +355,218 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, sendIndirectStateResourceUsage) 
     EXPECT_GE(sizeRequiredSSH, usedAfterSSH - usedBeforeSSH);
 
     auto usedAfterCS = commandStream.getUsed();
-    EXPECT_GE(KernelCommandsHelper<FamilyType>::getSizeRequiredCS(), usedAfterCS - usedBeforeCS);
+    EXPECT_GE(KernelCommandsHelper<FamilyType>::getSizeRequiredCS(kernel), usedAfterCS - usedBeforeCS);
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, givenKernelWithFourBindingTableEntriesWhenIndirectStateIsEmittedThenInterfaceDescriptorContainsCorrectBindingTableEntryCount) {
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
+    CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
+
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
+    auto expectedBindingTableCount = 3u;
+    mockKernelWithInternal->mockKernel->numberOfBindingTableStates = expectedBindingTableCount;
+
+    auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
+    auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
+    auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
+    const size_t localWorkSize = 256;
+    const size_t localWorkSizes[3]{localWorkSize, 1, 1};
+    uint32_t interfaceDescriptorIndex = 0;
+    KernelCommandsHelper<FamilyType>::sendIndirectState(
+        commandStream,
+        dsh,
+        ioh,
+        ssh,
+        *mockKernelWithInternal->mockKernel,
+        mockKernelWithInternal->mockKernel->getKernelInfo().getMaxSimdSize(),
+        localWorkSizes,
+        0,
+        interfaceDescriptorIndex,
+        pDevice->getPreemptionMode(),
+        pWalkerCmd,
+        nullptr,
+        true);
+
+    auto interfaceDescriptor = reinterpret_cast<INTERFACE_DESCRIPTOR_DATA *>(dsh.getCpuBase());
+    if (KernelCommandsHelper<FamilyType>::doBindingTablePrefetch()) {
+        EXPECT_EQ(expectedBindingTableCount, interfaceDescriptor->getBindingTableEntryCount());
+    } else {
+        EXPECT_EQ(0u, interfaceDescriptor->getBindingTableEntryCount());
+    }
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, givenKernelThatIsSchedulerWhenIndirectStateIsEmittedThenInterfaceDescriptorContainsZeroBindingTableEntryCount) {
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
+    CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
+
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
+    auto expectedBindingTableCount = 3u;
+    mockKernelWithInternal->mockKernel->numberOfBindingTableStates = expectedBindingTableCount;
+    auto isScheduler = const_cast<bool *>(&mockKernelWithInternal->mockKernel->isSchedulerKernel);
+    *isScheduler = true;
+
+    auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
+    auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
+    auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
+    const size_t localWorkSize = 256;
+    const size_t localWorkSizes[3]{localWorkSize, 1, 1};
+    uint32_t interfaceDescriptorIndex = 0;
+    KernelCommandsHelper<FamilyType>::sendIndirectState(
+        commandStream,
+        dsh,
+        ioh,
+        ssh,
+        *mockKernelWithInternal->mockKernel,
+        mockKernelWithInternal->mockKernel->getKernelInfo().getMaxSimdSize(),
+        localWorkSizes,
+        0,
+        interfaceDescriptorIndex,
+        pDevice->getPreemptionMode(),
+        pWalkerCmd,
+        nullptr,
+        true);
+
+    auto interfaceDescriptor = reinterpret_cast<INTERFACE_DESCRIPTOR_DATA *>(dsh.getCpuBase());
+    EXPECT_EQ(0u, interfaceDescriptor->getBindingTableEntryCount());
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, givenKernelWith100BindingTableEntriesWhenIndirectStateIsEmittedThenInterfaceDescriptorHas31BindingTableEntriesSet) {
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
+    CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
+
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
+    auto expectedBindingTableCount = 100u;
+    mockKernelWithInternal->mockKernel->numberOfBindingTableStates = expectedBindingTableCount;
+
+    auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
+    auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
+    auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
+    const size_t localWorkSize = 256;
+    const size_t localWorkSizes[3]{localWorkSize, 1, 1};
+    uint32_t interfaceDescriptorIndex = 0;
+    KernelCommandsHelper<FamilyType>::sendIndirectState(
+        commandStream,
+        dsh,
+        ioh,
+        ssh,
+        *mockKernelWithInternal->mockKernel,
+        mockKernelWithInternal->mockKernel->getKernelInfo().getMaxSimdSize(),
+        localWorkSizes,
+        0,
+        interfaceDescriptorIndex,
+        pDevice->getPreemptionMode(),
+        pWalkerCmd,
+        nullptr,
+        true);
+
+    auto interfaceDescriptor = reinterpret_cast<INTERFACE_DESCRIPTOR_DATA *>(dsh.getCpuBase());
+    if (KernelCommandsHelper<FamilyType>::doBindingTablePrefetch()) {
+        EXPECT_EQ(31u, interfaceDescriptor->getBindingTableEntryCount());
+    } else {
+        EXPECT_EQ(0u, interfaceDescriptor->getBindingTableEntryCount());
+    }
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, whenSendingIndirectStateThenKernelsWalkOrderIsTakenIntoAccount) {
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
+
+    CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
+
+    std::unique_ptr<Image> img(Image2dHelper<>::create(pContext));
+
+    MultiDispatchInfo multiDispatchInfo;
+    auto &builder = cmdQ.getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImageToImage3d,
+                                                                                                             cmdQ.getContext(), cmdQ.getDevice());
+
+    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    dc.srcMemObj = img.get();
+    dc.dstMemObj = img.get();
+    dc.size = {1, 1, 1};
+    builder.buildDispatchInfos(multiDispatchInfo, dc);
+    ASSERT_NE(0u, multiDispatchInfo.size());
+
+    auto kernel = multiDispatchInfo.begin()->getKernel();
+    ASSERT_NE(nullptr, kernel);
+
+    const size_t localWorkSizeX = 2;
+    const size_t localWorkSizeY = 3;
+    const size_t localWorkSizeZ = 4;
+    const size_t localWorkSizes[3]{localWorkSizeX, localWorkSizeY, localWorkSizeZ};
+
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
+    auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
+    auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
+    auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
+
+    dsh.align(KernelCommandsHelper<FamilyType>::alignInterfaceDescriptorData);
+    size_t IDToffset = dsh.getUsed();
+    dsh.getSpace(sizeof(INTERFACE_DESCRIPTOR_DATA));
+
+    KernelInfo modifiedKernelInfo = {};
+    modifiedKernelInfo.patchInfo = kernel->getKernelInfo().patchInfo;
+    modifiedKernelInfo.workgroupWalkOrder[0] = 2;
+    modifiedKernelInfo.workgroupWalkOrder[1] = 1;
+    modifiedKernelInfo.workgroupWalkOrder[2] = 0;
+    modifiedKernelInfo.workgroupDimensionsOrder[0] = 2;
+    modifiedKernelInfo.workgroupDimensionsOrder[1] = 1;
+    modifiedKernelInfo.workgroupDimensionsOrder[2] = 0;
+    MockKernel mockKernel{kernel->getProgram(), modifiedKernelInfo, kernel->getDevice(), false};
+    uint32_t interfaceDescriptorIndex = 0;
+    KernelCommandsHelper<FamilyType>::sendIndirectState(
+        commandStream,
+        dsh,
+        ioh,
+        ssh,
+        mockKernel,
+        modifiedKernelInfo.getMaxSimdSize(),
+        localWorkSizes,
+        IDToffset,
+        interfaceDescriptorIndex,
+        pDevice->getPreemptionMode(),
+        pWalkerCmd,
+        nullptr,
+        true);
+
+    size_t numThreads = localWorkSizeX * localWorkSizeY * localWorkSizeZ;
+    numThreads = (numThreads + modifiedKernelInfo.getMaxSimdSize() - 1) / modifiedKernelInfo.getMaxSimdSize();
+    size_t expectedIohSize = ((modifiedKernelInfo.getMaxSimdSize() == 32) ? 32 : 16) * 3 * numThreads * sizeof(uint16_t);
+    ASSERT_LE(expectedIohSize, ioh.getUsed());
+    auto expectedLocalIds = alignedMalloc(expectedIohSize, 64);
+    generateLocalIDs(expectedLocalIds, modifiedKernelInfo.getMaxSimdSize(),
+                     std::array<uint16_t, 3>{{localWorkSizeX, localWorkSizeY, localWorkSizeZ}},
+                     std::array<uint8_t, 3>{{modifiedKernelInfo.workgroupDimensionsOrder[0], modifiedKernelInfo.workgroupDimensionsOrder[1], modifiedKernelInfo.workgroupDimensionsOrder[2]}}, false);
+    EXPECT_EQ(0, memcmp(expectedLocalIds, ioh.getCpuBase(), expectedIohSize));
+    alignedFree(expectedLocalIds);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointer) {
     typedef typename FamilyType::BINDING_TABLE_STATE BINDING_TABLE_STATE;
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
 
     CommandQueueHw<FamilyType> cmdQ(pContext, pDevice, 0);
     std::unique_ptr<Image> dstImage(Image2dHelper<>::create(pContext));
     ASSERT_NE(nullptr, dstImage.get());
 
     MultiDispatchInfo multiDispatchInfo;
-    auto &builder = BuiltIns::getInstance().getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToImage3d,
-                                                                          cmdQ.getContext(), cmdQ.getDevice());
+    auto &builder = pDevice->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToImage3d,
+                                                                                                     cmdQ.getContext(), cmdQ.getDevice());
     ASSERT_NE(nullptr, &builder);
 
     BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
@@ -375,7 +584,10 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointer) {
 
     const size_t localWorkSizes[3]{256, 1, 1};
 
-    auto &commandStream = cmdQ.getCS();
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
     auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
     auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
     auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
@@ -394,7 +606,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointer) {
 
     // force statefull path for buffers
     const_cast<KernelInfo &>(kernelInfo).requiresSshForBuffers = true;
-
+    uint32_t interfaceDescriptorIndex = 0;
     KernelCommandsHelper<FamilyType>::sendIndirectState(
         commandStream,
         dsh,
@@ -404,9 +616,11 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointer) {
         kernel->getKernelInfo().getMaxSimdSize(),
         localWorkSizes,
         0,
-        0,
+        interfaceDescriptorIndex,
         pDevice->getPreemptionMode(),
-        nullptr);
+        pWalkerCmd,
+        nullptr,
+        true);
 
     EXPECT_EQ(0x00000000u, *(&bindingTableStatesPointers[0]));
     EXPECT_EQ(0x00000040u, *(&bindingTableStatesPointers[1]));
@@ -414,11 +628,12 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointer) {
 
 HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointersForGlobalAndConstantAndPrivateAndEventPoolAndDefaultCommandQueueSurfaces) {
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
 
     // define kernel info
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
 
-    SPatchExecutionEnvironment tokenEE;
+    SPatchExecutionEnvironment tokenEE = {};
     tokenEE.CompiledSIMD8 = false;
     tokenEE.CompiledSIMD16 = false;
     tokenEE.CompiledSIMD32 = true;
@@ -462,16 +677,16 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointersFor
 
     // create program with valid context
     MockContext context;
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
 
     // setup global memory
     char globalBuffer[16];
-    GraphicsAllocation gfxGlobalAlloc(globalBuffer, sizeof(globalBuffer));
+    GraphicsAllocation gfxGlobalAlloc(GraphicsAllocation::AllocationType::UNKNOWN, globalBuffer, castToUint64(globalBuffer), 0llu, sizeof(globalBuffer), MemoryPool::MemoryNull, false);
     program.setGlobalSurface(&gfxGlobalAlloc);
 
     // setup constant memory
     char constBuffer[16];
-    GraphicsAllocation gfxConstAlloc(constBuffer, sizeof(constBuffer));
+    GraphicsAllocation gfxConstAlloc(GraphicsAllocation::AllocationType::UNKNOWN, constBuffer, castToUint64(constBuffer), 0llu, sizeof(constBuffer), MemoryPool::MemoryNull, false);
     program.setConstantSurface(&gfxConstAlloc);
 
     // create kernel
@@ -531,7 +746,10 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointersFor
     for (uint32_t ssbaOffset : {0U, (uint32_t)sizeof(typename FamilyType::RENDER_SURFACE_STATE)}) {
         CommandQueueHw<FamilyType> cmdQ(nullptr, pDevice, 0);
 
-        auto &commandStream = cmdQ.getCS();
+        auto &commandStream = cmdQ.getCS(1024);
+        auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+        *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
         auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
         auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
         auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
@@ -548,6 +766,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointersFor
         uint32_t localSshOffset = static_cast<uint32_t>(ssh.getUsed());
 
         // push surfaces states and binding table to given ssh heap
+        uint32_t interfaceDescriptorIndex = 0;
         KernelCommandsHelper<FamilyType>::sendIndirectState(
             commandStream,
             dsh,
@@ -557,9 +776,11 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointersFor
             pKernel->getKernelInfo().getMaxSimdSize(),
             localWorkSizes,
             0,
-            0,
+            interfaceDescriptorIndex,
             pDevice->getPreemptionMode(),
-            nullptr);
+            pWalkerCmd,
+            nullptr,
+            true);
 
         bti = reinterpret_cast<typename FamilyType::BINDING_TABLE_STATE *>(reinterpret_cast<unsigned char *>(ssh.getCpuBase()) + localSshOffset + btiOffset);
         for (uint32_t i = 0; i < numSurfaces; ++i) {
@@ -576,17 +797,16 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, usedBindingTableStatePointersFor
     }
     alignedFree(surfaceStateHeap);
     delete pKernel;
-    delete pKernelInfo;
 }
 
 HWTEST_F(KernelCommandsTest, setBindingTableStatesForKernelWithBuffersNotRequiringSSHDoesNotTouchSSH) {
 
     // define kernel info
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
 
     // create program with valid context
     MockContext context;
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
 
     // create kernel
     MockKernel *pKernel = new MockKernel(&program, *pKernelInfo, *pDevice);
@@ -635,17 +855,16 @@ HWTEST_F(KernelCommandsTest, setBindingTableStatesForKernelWithBuffersNotRequiri
     EXPECT_EQ(usedAfter, ssh.getUsed());
 
     delete pKernel;
-    delete pKernelInfo;
 }
 
 HWTEST_F(KernelCommandsTest, setBindingTableStatesForNoSurfaces) {
 
     // define kernel info
-    KernelInfo *pKernelInfo = KernelInfo::create();
+    auto pKernelInfo = std::make_unique<KernelInfo>();
 
     // create program with valid context
     MockContext context;
-    MockProgram program(&context, false);
+    MockProgram program(*pDevice->getExecutionEnvironment(), &context, false);
 
     // create kernel
     MockKernel *pKernel = new MockKernel(&program, *pKernelInfo, *pDevice);
@@ -691,7 +910,6 @@ HWTEST_F(KernelCommandsTest, setBindingTableStatesForNoSurfaces) {
     pKernelInfo->patchInfo.bindingTableState = nullptr;
 
     delete pKernel;
-    delete pKernelInfo;
 }
 
 HWTEST_F(KernelCommandsTest, slmValueScenarios) {
@@ -739,12 +957,15 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, GivenKernelWithSamplersWhenIndir
     typedef typename FamilyType::RENDER_SURFACE_STATE RENDER_SURFACE_STATE;
     typedef typename FamilyType::SAMPLER_STATE SAMPLER_STATE;
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
 
     CommandQueueHw<FamilyType> cmdQ(nullptr, pDevice, 0);
-    MockKernelWithInternals kernelInternals(*pDevice);
     const size_t localWorkSizes[3]{1, 1, 1};
 
-    auto &commandStream = cmdQ.getCS();
+    auto &commandStream = cmdQ.getCS(1024);
+    auto pWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
+    *pWalkerCmd = FamilyType::cmdInitGpgpuWalker;
+
     auto &dsh = cmdQ.getIndirectHeap(IndirectHeap::DYNAMIC_STATE, 8192);
     auto &ioh = cmdQ.getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 8192);
     auto &ssh = cmdQ.getIndirectHeap(IndirectHeap::SURFACE_STATE, 8192);
@@ -764,8 +985,8 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, GivenKernelWithSamplersWhenIndir
     memset(mockDsh, 6, borderColorSize);
     memset(mockDsh + borderColorSize, 8, borderColorSize);
 
-    kernelInternals.kernelInfo.heapInfo.pDsh = mockDsh;
-    kernelInternals.kernelInfo.patchInfo.samplerStateArray = &samplerStateArray;
+    mockKernelWithInternal->kernelInfo.heapInfo.pDsh = mockDsh;
+    mockKernelWithInternal->kernelInfo.patchInfo.samplerStateArray = &samplerStateArray;
 
     uint64_t interfaceDescriptorTableOffset = dsh.getUsed();
     dsh.getSpace(sizeof(INTERFACE_DESCRIPTOR_DATA));
@@ -781,22 +1002,23 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, GivenKernelWithSamplersWhenIndir
         pSamplerState[i].setIndirectStatePointer(0);
     }
 
-    MockKernel *kernel = new MockKernel(kernelInternals.mockProgram, kernelInternals.kernelInfo, *pDevice);
-    kernel->setCrossThreadData(kernelInternals.crossThreadData, sizeof(kernelInternals.crossThreadData));
-    kernel->setSshLocal(kernelInternals.sshLocal, sizeof(kernelInternals.sshLocal));
-
+    mockKernelWithInternal->mockKernel->setCrossThreadData(mockKernelWithInternal->crossThreadData, sizeof(mockKernelWithInternal->crossThreadData));
+    mockKernelWithInternal->mockKernel->setSshLocal(mockKernelWithInternal->sshLocal, sizeof(mockKernelWithInternal->sshLocal));
+    uint32_t interfaceDescriptorIndex = 0;
     KernelCommandsHelper<FamilyType>::sendIndirectState(
         commandStream,
         dsh,
         ioh,
         ssh,
-        *kernel,
+        *mockKernelWithInternal->mockKernel,
         8,
         localWorkSizes,
         interfaceDescriptorTableOffset,
-        0,
+        interfaceDescriptorIndex,
         pDevice->getPreemptionMode(),
-        nullptr);
+        pWalkerCmd,
+        nullptr,
+        true);
 
     bool isMemorySame = memcmp(borderColorPointer, mockDsh, borderColorSize) == 0;
     EXPECT_TRUE(isMemorySame);
@@ -834,8 +1056,49 @@ HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, GivenKernelWithSamplersWhenIndir
         EXPECT_EQ(borderColorOffset, pSamplerStatesCopied[i].getIndirectStatePointer());
     }
 
-    delete kernel;
     delete[] mockDsh;
+}
+
+using KernelCommandsHelperTests = ::testing::Test;
+
+HWTEST_F(KernelCommandsHelperTests, givenCompareAddressAndDataWhenProgrammingSemaphoreWaitThenSetupAllFields) {
+    using MI_SEMAPHORE_WAIT = typename FamilyType::MI_SEMAPHORE_WAIT;
+    uint64_t compareAddress = 0x10000;
+    uint32_t compareData = 1234;
+
+    uint8_t buffer[1024] = {};
+    LinearStream cmdStream(buffer, 1024);
+
+    MI_SEMAPHORE_WAIT referenceCommand = FamilyType::cmdInitMiSemaphoreWait;
+    referenceCommand.setCompareOperation(MI_SEMAPHORE_WAIT::COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD);
+    referenceCommand.setSemaphoreDataDword(compareData);
+    referenceCommand.setSemaphoreGraphicsAddress(compareAddress);
+    referenceCommand.setWaitMode(MI_SEMAPHORE_WAIT::WAIT_MODE::WAIT_MODE_POLLING_MODE);
+
+    KernelCommandsHelper<FamilyType>::programMiSemaphoreWait(cmdStream, compareAddress, compareData);
+    EXPECT_EQ(sizeof(MI_SEMAPHORE_WAIT), cmdStream.getUsed());
+    EXPECT_EQ(0, memcmp(&referenceCommand, buffer, sizeof(MI_SEMAPHORE_WAIT)));
+}
+
+HWTEST_F(KernelCommandsHelperTests, whenProgrammingMiAtomicThenSetupAllFields) {
+    using MI_ATOMIC = typename FamilyType::MI_ATOMIC;
+    uint64_t writeAddress = 0x10000;
+    auto opcode = MI_ATOMIC::ATOMIC_OPCODES::ATOMIC_4B_DECREMENT;
+    auto dataSize = MI_ATOMIC::DATA_SIZE::DATA_SIZE_DWORD;
+
+    uint8_t buffer[1024] = {};
+    LinearStream cmdStream(buffer, 1024);
+
+    MI_ATOMIC referenceCommand = FamilyType::cmdInitAtomic;
+    referenceCommand.setAtomicOpcode(opcode);
+    referenceCommand.setDataSize(dataSize);
+    referenceCommand.setMemoryAddress(static_cast<uint32_t>(writeAddress & 0x0000FFFFFFFFULL));
+    referenceCommand.setMemoryAddressHigh(static_cast<uint32_t>(writeAddress >> 32));
+
+    auto miAtomic = KernelCommandsHelper<FamilyType>::programMiAtomic(cmdStream, writeAddress, opcode, dataSize);
+    EXPECT_EQ(sizeof(MI_ATOMIC), cmdStream.getUsed());
+    EXPECT_EQ(miAtomic, cmdStream.getCpuBase());
+    EXPECT_EQ(0, memcmp(&referenceCommand, miAtomic, sizeof(MI_ATOMIC)));
 }
 
 typedef ExecutionModelKernelFixture ParentKernelCommandsFromBinaryTest;
@@ -866,7 +1129,7 @@ HWTEST_P(ParentKernelCommandsFromBinaryTest, getSizeRequiredForExecutionModelFor
 
         totalSize += maxBindingTableCount * sizeof(BINDING_TABLE_STATE) * DeviceQueue::interfaceDescriptorEntries;
 
-        BuiltIns &builtIns = BuiltIns::getInstance();
+        BuiltIns &builtIns = *pDevice->getExecutionEnvironment()->getBuiltIns();
         auto &scheduler = builtIns.getSchedulerKernel(*pContext);
         auto schedulerSshSize = scheduler.getSurfaceStateHeapSize();
         totalSize += schedulerSshSize + ((schedulerSshSize != 0) ? BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE : 0);
@@ -883,7 +1146,7 @@ HWTEST_P(ParentKernelCommandsFromBinaryTest, getSizeRequiredForExecutionModelFor
     if (std::string(pPlatform->getDevice(0)->getDeviceInfo().clVersion).find("OpenCL 2.") != std::string::npos) {
         EXPECT_TRUE(pKernel->isParentKernel);
 
-        BuiltIns &builtIns = BuiltIns::getInstance();
+        BuiltIns &builtIns = *pDevice->getExecutionEnvironment()->getBuiltIns();
         auto &scheduler = builtIns.getSchedulerKernel(*pContext);
         size_t totalSize = KernelCommandsHelper<FamilyType>::getSizeRequiredIOH(scheduler);
 
@@ -911,3 +1174,220 @@ INSTANTIATE_TEST_CASE_P(ParentKernelCommandsFromBinaryTest,
                         ::testing::Combine(
                             ::testing::Values(binaryFile),
                             ::testing::ValuesIn(KernelNames)));
+
+HWTEST_F(KernelCommandsTest, givenEnabledPassInlineDataWhenKernelAllowsInlineThenReturnTrue) {
+    DebugManagerStateRestore restore;
+    DebugManager.flags.EnablePassInlineData.set(true);
+
+    uint32_t crossThreadData[8];
+
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->PassInlineData = 1;
+    mockKernelWithInternal->mockKernel->setCrossThreadData(crossThreadData, sizeof(crossThreadData));
+
+    EXPECT_TRUE(KernelCommandsHelper<FamilyType>::inlineDataProgrammingRequired(*mockKernelWithInternal->mockKernel));
+}
+
+HWTEST_F(KernelCommandsTest, givenEnabledPassInlineDataWhenKernelDisallowsInlineThenReturnFalse) {
+    DebugManagerStateRestore restore;
+    DebugManager.flags.EnablePassInlineData.set(true);
+
+    uint32_t crossThreadData[8];
+
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->PassInlineData = 0;
+    mockKernelWithInternal->mockKernel->setCrossThreadData(crossThreadData, sizeof(crossThreadData));
+
+    EXPECT_FALSE(KernelCommandsHelper<FamilyType>::inlineDataProgrammingRequired(*mockKernelWithInternal->mockKernel));
+}
+
+HWTEST_F(KernelCommandsTest, whenLocalIdxInXDimPresentThenExpectLocalIdsInUseIsTrue) {
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDXPresent = 1;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDYPresent = 0;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDZPresent = 0;
+
+    EXPECT_TRUE(KernelCommandsHelper<FamilyType>::kernelUsesLocalIds(*mockKernelWithInternal->mockKernel));
+}
+
+HWTEST_F(KernelCommandsTest, whenLocalIdxInYDimPresentThenExpectLocalIdsInUseIsTrue) {
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDXPresent = 0;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDYPresent = 1;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDZPresent = 0;
+
+    EXPECT_TRUE(KernelCommandsHelper<FamilyType>::kernelUsesLocalIds(*mockKernelWithInternal->mockKernel));
+}
+
+HWTEST_F(KernelCommandsTest, whenLocalIdxInZDimPresentThenExpectLocalIdsInUseIsTrue) {
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDXPresent = 0;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDYPresent = 0;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDZPresent = 1;
+
+    EXPECT_TRUE(KernelCommandsHelper<FamilyType>::kernelUsesLocalIds(*mockKernelWithInternal->mockKernel));
+}
+
+HWTEST_F(KernelCommandsTest, whenLocalIdxAreNotPresentThenExpectLocalIdsInUseIsFalse) {
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDXPresent = 0;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDYPresent = 0;
+    const_cast<SPatchThreadPayload *>(mockKernelWithInternal->kernelInfo.patchInfo.threadPayload)->LocalIDZPresent = 0;
+
+    EXPECT_FALSE(KernelCommandsHelper<FamilyType>::kernelUsesLocalIds(*mockKernelWithInternal->mockKernel));
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, givenCacheFlushAfterWalkerEnabledWhenProgramGlobalSurfacePresentThenExpectCacheFlushCommand) {
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+    using MEDIA_STATE_FLUSH = typename FamilyType::MEDIA_STATE_FLUSH;
+    using MEDIA_INTERFACE_DESCRIPTOR_LOAD = typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD;
+
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableCacheFlushAfterWalker.set(1);
+    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
+
+    CommandQueueHw<FamilyType> cmdQ(nullptr, pDevice, 0);
+    auto &commandStream = cmdQ.getCS(1024);
+
+    MockGraphicsAllocation globalAllocation;
+    mockKernelWithInternal->mockProgram->setGlobalSurface(&globalAllocation);
+
+    Kernel::CacheFlushAllocationsVec allocs;
+    mockKernelWithInternal->mockKernel->getAllocationsForCacheFlush(allocs);
+    EXPECT_NE(allocs.end(), std::find(allocs.begin(), allocs.end(), &globalAllocation));
+
+    size_t expectedSize = sizeof(PIPE_CONTROL);
+    size_t actualSize = KernelCommandsHelper<FamilyType>::getSizeRequiredForCacheFlush(cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+    EXPECT_EQ(expectedSize, actualSize);
+
+    KernelCommandsHelper<FamilyType>::programCacheFlushAfterWalkerCommand(&commandStream, cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+
+    HardwareParse hwParse;
+    hwParse.parseCommands<FamilyType>(commandStream);
+    PIPE_CONTROL *pipeControl = hwParse.getCommand<PIPE_CONTROL>();
+    ASSERT_NE(nullptr, pipeControl);
+    EXPECT_TRUE(pipeControl->getCommandStreamerStallEnable());
+    EXPECT_TRUE(pipeControl->getDcFlushEnable());
+
+    mockKernelWithInternal->mockProgram->setGlobalSurface(nullptr);
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, givenCacheFlushAfterWalkerEnabledWhenSvmAllocationsSetAsCacheFlushRequiringThenExpectCacheFlushCommand) {
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+    using MEDIA_STATE_FLUSH = typename FamilyType::MEDIA_STATE_FLUSH;
+    using MEDIA_INTERFACE_DESCRIPTOR_LOAD = typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD;
+
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableCacheFlushAfterWalker.set(1);
+    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
+
+    CommandQueueHw<FamilyType> cmdQ(nullptr, pDevice, 0);
+    auto &commandStream = cmdQ.getCS(1024);
+
+    char buff[MemoryConstants::pageSize * 2];
+    MockGraphicsAllocation svmAllocation1{alignUp(buff, MemoryConstants::pageSize), MemoryConstants::pageSize};
+    svmAllocation1.setFlushL3Required(true);
+    mockKernelWithInternal->mockKernel->kernelSvmGfxAllocations.push_back(&svmAllocation1);
+    MockGraphicsAllocation svmAllocation2{alignUp(buff, MemoryConstants::pageSize), MemoryConstants::pageSize};
+    mockKernelWithInternal->mockKernel->kernelSvmGfxAllocations.push_back(&svmAllocation2);
+    mockKernelWithInternal->mockKernel->svmAllocationsRequireCacheFlush = true;
+
+    Kernel::CacheFlushAllocationsVec allocs;
+    mockKernelWithInternal->mockKernel->getAllocationsForCacheFlush(allocs);
+    EXPECT_NE(allocs.end(), std::find(allocs.begin(), allocs.end(), &svmAllocation1));
+    EXPECT_EQ(allocs.end(), std::find(allocs.begin(), allocs.end(), &svmAllocation2));
+
+    size_t expectedSize = sizeof(PIPE_CONTROL);
+    size_t actualSize = KernelCommandsHelper<FamilyType>::getSizeRequiredForCacheFlush(cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+    EXPECT_EQ(expectedSize, actualSize);
+
+    KernelCommandsHelper<FamilyType>::programCacheFlushAfterWalkerCommand(&commandStream, cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+
+    HardwareParse hwParse;
+    hwParse.parseCommands<FamilyType>(commandStream);
+    PIPE_CONTROL *pipeControl = hwParse.getCommand<PIPE_CONTROL>();
+    ASSERT_NE(nullptr, pipeControl);
+    EXPECT_TRUE(pipeControl->getCommandStreamerStallEnable());
+    EXPECT_TRUE(pipeControl->getDcFlushEnable());
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, KernelCommandsTest, givenCacheFlushAfterWalkerEnabledWhenKernelArgIsSetAsCacheFlushRequiredThenExpectCacheFlushCommand) {
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+    using MEDIA_STATE_FLUSH = typename FamilyType::MEDIA_STATE_FLUSH;
+    using MEDIA_INTERFACE_DESCRIPTOR_LOAD = typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD;
+
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableCacheFlushAfterWalker.set(1);
+    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
+
+    CommandQueueHw<FamilyType> cmdQ(nullptr, pDevice, 0);
+    auto &commandStream = cmdQ.getCS(1024);
+
+    addSpaceForSingleKernelArg();
+    MockGraphicsAllocation cacheRequiringAllocation;
+    mockKernelWithInternal->mockKernel->kernelArgRequiresCacheFlush.resize(2);
+    mockKernelWithInternal->mockKernel->kernelArgRequiresCacheFlush[0] = &cacheRequiringAllocation;
+
+    Kernel::CacheFlushAllocationsVec allocs;
+    mockKernelWithInternal->mockKernel->getAllocationsForCacheFlush(allocs);
+    EXPECT_NE(allocs.end(), std::find(allocs.begin(), allocs.end(), &cacheRequiringAllocation));
+
+    size_t expectedSize = sizeof(PIPE_CONTROL);
+    size_t actualSize = KernelCommandsHelper<FamilyType>::getSizeRequiredForCacheFlush(cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+    EXPECT_EQ(expectedSize, actualSize);
+
+    KernelCommandsHelper<FamilyType>::programCacheFlushAfterWalkerCommand(&commandStream, cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+
+    HardwareParse hwParse;
+    hwParse.parseCommands<FamilyType>(commandStream);
+    PIPE_CONTROL *pipeControl = hwParse.getCommand<PIPE_CONTROL>();
+    ASSERT_NE(nullptr, pipeControl);
+    EXPECT_TRUE(pipeControl->getCommandStreamerStallEnable());
+    EXPECT_TRUE(pipeControl->getDcFlushEnable());
+}
+HWTEST_F(KernelCommandsTest, givenCacheFlushAfterWalkerDisabledWhenGettingRequiredCacheFlushSizeThenReturnZero) {
+    using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
+
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableCacheFlushAfterWalker.set(0);
+    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
+
+    CommandQueueHw<FamilyType> cmdQ(nullptr, pDevice, 0);
+
+    size_t expectedSize = 0U;
+    size_t actualSize = KernelCommandsHelper<FamilyType>::getSizeRequiredForCacheFlush(cmdQ, mockKernelWithInternal->mockKernel, 0U, 0U);
+    EXPECT_EQ(expectedSize, actualSize);
+}
+
+TEST_F(KernelCommandsTest, givenCacheFlushAfterWalkerEnabledWhenPlatformNotSupportFlushThenExpectNoCacheAllocationForFlush) {
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableCacheFlushAfterWalker.set(-1);
+    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
+    hwInfoHelper.capabilityTable.supportCacheFlushAfterWalker = false;
+
+    StackVec<GraphicsAllocation *, 32> allocationsForCacheFlush;
+    mockKernelWithInternal->mockKernel->getAllocationsForCacheFlush(allocationsForCacheFlush);
+    EXPECT_EQ(0U, allocationsForCacheFlush.size());
+}
+
+using KernelCacheFlushTests = Test<HelloWorldFixture<HelloWorldFixtureFactory>>;
+
+HWTEST_F(KernelCacheFlushTests, givenLocallyUncachedBufferWhenGettingAllocationsForFlushThenEmptyVectorIsReturned) {
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableCacheFlushAfterWalker.set(-1);
+
+    auto kernel = clUniquePtr(Kernel::create(pProgram, *pProgram->getKernelInfo("CopyBuffer"), &retVal));
+
+    cl_mem_properties_intel bufferPropertiesUncachedResource[] = {CL_MEM_FLAGS_INTEL, CL_MEM_LOCALLY_UNCACHED_RESOURCE, 0};
+    auto bufferLocallyUncached = clCreateBufferWithPropertiesINTEL(context, bufferPropertiesUncachedResource, 1, nullptr, nullptr);
+    kernel->setArg(0, sizeof(bufferLocallyUncached), &bufferLocallyUncached);
+
+    using CacheFlushAllocationsVec = StackVec<GraphicsAllocation *, 32>;
+    CacheFlushAllocationsVec cacheFlushVec;
+    kernel->getAllocationsForCacheFlush(cacheFlushVec);
+    EXPECT_EQ(0u, cacheFlushVec.size());
+
+    auto bufferRegular = clCreateBufferWithPropertiesINTEL(context, nullptr, 1, nullptr, nullptr);
+    kernel->setArg(1, sizeof(bufferRegular), &bufferRegular);
+
+    kernel->getAllocationsForCacheFlush(cacheFlushVec);
+    size_t expectedCacheFlushVecSize = (hwInfoHelper.capabilityTable.supportCacheFlushAfterWalker ? 1u : 0u);
+    EXPECT_EQ(expectedCacheFlushVecSize, cacheFlushVec.size());
+
+    clReleaseMemObject(bufferLocallyUncached);
+    clReleaseMemObject(bufferRegular);
+}

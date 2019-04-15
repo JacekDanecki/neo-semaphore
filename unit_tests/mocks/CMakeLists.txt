@@ -1,28 +1,20 @@
-# Copyright (c) 2018, Intel Corporation
 #
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
+# Copyright (C) 2018-2019 Intel Corporation
 #
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
+# SPDX-License-Identifier: MIT
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
 
 set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_32bitAllocator.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_allocation_properties.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_async_event_handler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_async_event_handler.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_aub_center.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_aub_csr.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_aub_file_stream.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_aub_manager.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_aub_stream.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_aub_subcapture_manager.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_block_kernel_manager.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_buffer.h
@@ -44,7 +36,10 @@ set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_device.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_device.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_event.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_execution_environment.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_experimental_command_buffer.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_partition.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_gfx_partition.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_client_context_base.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_client_context_base.h
@@ -54,12 +49,17 @@ set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}${IGDRCL__INSTRUMENTATION_DIR_SUFFIX}/mock_instrumentation.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/mock_gmm_client_context.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/mock_gmm_client_context.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_host_ptr_manager.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_internal_allocation_storage.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_image.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_kernel.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_kernel.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_lrca_helper.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_memory_manager.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_memory_manager.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_os_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_ostime.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_physical_address_allocator.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_program.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_program.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_sampler.h
@@ -67,6 +67,9 @@ set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_sip.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_source_level_debugger.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_submissions_aggregator.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_svm_manager.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_tbx_csr.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_tbx_stream.h
 )
 
 if(WIN32)
@@ -79,7 +82,16 @@ if(WIN32)
     ${CMAKE_CURRENT_SOURCE_DIR}/gmm_memory${BRANCH_DIR_SUFFIX}/mock_gmm_memory.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_page_table_mngr.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_page_table_mngr.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm_interface23.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm.cpp
     ${IGDRCL_SRC_tests_mock_wddm}
+  )
+else()
+  list(APPEND IGDRCL_SRCS_tests_mocks
+    ${CMAKE_CURRENT_SOURCE_DIR}/linux/mock_drm_allocation.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/linux/mock_drm_memory_manager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/linux/mock_drm_command_stream_receiver.h
   )
 endif()
 
@@ -102,6 +114,5 @@ target_include_directories(igdrcl_mocks PRIVATE
 target_compile_definitions(igdrcl_mocks PRIVATE MOCKABLE_VIRTUAL=virtual $<TARGET_PROPERTY:${NEO_STATIC_LIB_NAME},INTERFACE_COMPILE_DEFINITIONS>)
 
 set_target_properties(igdrcl_mocks PROPERTIES POSITION_INDEPENDENT_CODE ON)
-set_target_properties(igdrcl_mocks PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
 set_target_properties(igdrcl_mocks PROPERTIES FOLDER "test mocks")
 create_project_source_tree(igdrcl_mocks)

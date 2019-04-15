@@ -1,36 +1,22 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_stream/preemption.h"
+#include "runtime/helpers/hw_helper.h"
 #include "unit_tests/command_queue/enqueue_fixture.h"
 #include "unit_tests/fixtures/preemption_fixture.h"
 #include "unit_tests/helpers/hw_parse.h"
+#include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_csr.h"
-#include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_submissions_aggregator.h"
 
-namespace OCLRT {
+namespace NEO {
 
 template <>
 void HardwareParse::findCsrBaseAddress<CNLFamily>() {
@@ -40,9 +26,9 @@ void HardwareParse::findCsrBaseAddress<CNLFamily>() {
         cmdGpgpuCsrBaseAddress = *itorGpgpuCsrBaseAddress;
     }
 }
-} // namespace OCLRT
+} // namespace NEO
 
-using namespace OCLRT;
+using namespace NEO;
 
 using Gen10PreemptionTests = DevicePreemptionTests;
 using Gen10PreemptionEnqueueKernelTest = PreemptionEnqueueKernelTest;
@@ -60,48 +46,39 @@ PreemptionTestHwDetails GetPreemptionTestHwDetails<CNLFamily>() {
     return ret;
 }
 
-GEN10TEST_F(Gen10PreemptionTests, whenMidThreadPreemptionIsNotAvailableThenDoesNotProgramPreamble) {
+GEN10TEST_F(Gen10PreemptionTests, whenMidThreadPreemptionIsNotAvailableThenDoesNotProgramStateSip) {
     device->setPreemptionMode(PreemptionMode::ThreadGroup);
 
-    size_t requiredSize = PreemptionHelper::getRequiredPreambleSize<FamilyType>(*device);
+    size_t requiredSize = PreemptionHelper::getRequiredStateSipCmdSize<FamilyType>(*device);
     EXPECT_EQ(0U, requiredSize);
 
     LinearStream cmdStream{nullptr, 0};
-    PreemptionHelper::programPreamble<FamilyType>(cmdStream, *device, nullptr);
+    PreemptionHelper::programStateSip<FamilyType>(cmdStream, *device);
     EXPECT_EQ(0U, cmdStream.getUsed());
 }
 
-GEN10TEST_F(Gen10PreemptionTests, whenMidThreadPreemptionIsAvailableThenProgramsPreamble) {
-    using GPGPU_CSR_BASE_ADDRESS = typename FamilyType::GPGPU_CSR_BASE_ADDRESS;
+GEN10TEST_F(Gen10PreemptionTests, whenMidThreadPreemptionIsAvailableThenStateSipIsProgrammed) {
     using STATE_SIP = typename FamilyType::STATE_SIP;
 
     device->setPreemptionMode(PreemptionMode::MidThread);
     executionEnvironment->DisableMidThreadPreemption = 0;
 
-    size_t minCsrSize = device->getHardwareInfo().pSysInfo->CsrSizeInMb * MemoryConstants::megaByte;
-    uint64_t minCsrAlignment = 2 * 256 * MemoryConstants::kiloByte;
-    MockGraphicsAllocation csrSurface((void *)minCsrAlignment, minCsrSize);
+    size_t requiredCmdStreamSize = PreemptionHelper::getRequiredStateSipCmdSize<FamilyType>(*device);
+    size_t expectedPreambleSize = sizeof(STATE_SIP);
+    EXPECT_EQ(expectedPreambleSize, requiredCmdStreamSize);
 
-    // verify preamble programming
-    size_t requiredPreambleSize = PreemptionHelper::getRequiredPreambleSize<FamilyType>(*device);
-    size_t expectedPreambleSize = sizeof(GPGPU_CSR_BASE_ADDRESS) + sizeof(STATE_SIP);
-    EXPECT_EQ(expectedPreambleSize, requiredPreambleSize);
+    StackVec<char, 8192> streamStorage(requiredCmdStreamSize);
+    ASSERT_LE(requiredCmdStreamSize, streamStorage.size());
 
-    StackVec<char, 8192> preambleStorage(requiredPreambleSize);
-    ASSERT_LE(requiredPreambleSize, preambleStorage.size());
-    LinearStream preambleCmdStream{preambleStorage.begin(), preambleStorage.size()};
-    PreemptionHelper::programPreamble<FamilyType>(preambleCmdStream, *device, &csrSurface);
+    LinearStream cmdStream{streamStorage.begin(), streamStorage.size()};
+    PreemptionHelper::programStateSip<FamilyType>(cmdStream, *device);
 
     HardwareParse hwParsePreamble;
-    hwParsePreamble.parseCommands<FamilyType>(preambleCmdStream);
-
-    auto csrBaseAddressCmd = hwParsePreamble.getCommand<GPGPU_CSR_BASE_ADDRESS>();
-    ASSERT_NE(nullptr, csrBaseAddressCmd);
-    EXPECT_EQ(csrSurface.getGpuAddressToPatch(), csrBaseAddressCmd->getGpgpuCsrBaseAddress());
+    hwParsePreamble.parseCommands<FamilyType>(cmdStream);
 
     auto stateSipCmd = hwParsePreamble.getCommand<STATE_SIP>();
     ASSERT_NE(nullptr, stateSipCmd);
-    EXPECT_EQ(BuiltIns::getInstance().getSipKernel(SipKernelType::Csr, *device).getSipAllocation()->getGpuAddressToPatch(), stateSipCmd->getSystemInstructionPointer());
+    EXPECT_EQ(device->getExecutionEnvironment()->getBuiltIns()->getSipKernel(SipKernelType::Csr, *device).getSipAllocation()->getGpuAddressToPatch(), stateSipCmd->getSystemInstructionPointer());
 }
 
 GEN10TEST_F(Gen10ThreadGroupPreemptionEnqueueKernelTest, givenSecondEnqueueWithTheSamePreemptionRequestThenDontReprogram) {
@@ -111,7 +88,7 @@ GEN10TEST_F(Gen10ThreadGroupPreemptionEnqueueKernelTest, givenSecondEnqueueWithT
     pDevice->setForceWhitelistedRegs(true, &regs);
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.getMemoryManager()->setForce32BitAllocations(false);
-    csr.overrideMediaVFEStateDirty(false);
+    csr.setMediaVFEStateDirty(false);
     auto csrSurface = csr.getPreemptionCsrAllocation();
     EXPECT_EQ(nullptr, csrSurface);
     HardwareParse hwParser;
@@ -153,7 +130,7 @@ GEN10TEST_F(Gen10PreemptionEnqueueKernelTest, givenValidKernelForPreemptionWhenE
     WhitelistedRegisters regs = {};
     regs.csChicken1_0x2580 = true;
     pDevice->setForceWhitelistedRegs(true, &regs);
-    auto mockCsr = new MockCsrHw2<FamilyType>(pDevice->getHardwareInfo());
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
 
     MockKernelWithInternals mockKernel(*pDevice);
@@ -172,7 +149,7 @@ GEN10TEST_F(Gen10PreemptionEnqueueKernelTest, givenValidKernelForPreemptionWhenE
     WhitelistedRegisters regs = {};
     regs.csChicken1_0x2580 = true;
     pDevice->setForceWhitelistedRegs(true, &regs);
-    auto mockCsr = new MockCsrHw2<FamilyType>(pDevice->getHardwareInfo());
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
 
     MockKernelWithInternals mockKernel(*pDevice);
@@ -197,7 +174,7 @@ GEN10TEST_F(Gen10MidThreadPreemptionEnqueueKernelTest, givenSecondEnqueueWithThe
 
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.getMemoryManager()->setForce32BitAllocations(false);
-    csr.overrideMediaVFEStateDirty(false);
+    csr.setMediaVFEStateDirty(false);
     auto csrSurface = csr.getPreemptionCsrAllocation();
     ASSERT_NE(nullptr, csrSurface);
     HardwareParse hwParser;
@@ -247,7 +224,7 @@ GEN10TEST_F(Gen10PreemptionEnqueueKernelTest, givenDisabledPreemptionWhenEnqueue
     pDevice->setPreemptionMode(PreemptionMode::Disabled);
     WhitelistedRegisters regs = {};
     pDevice->setForceWhitelistedRegs(true, &regs);
-    auto mockCsr = new MockCsrHw2<FamilyType>(pDevice->getHardwareInfo());
+    auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment);
     pDevice->resetCommandStreamReceiver(mockCsr);
 
     MockKernelWithInternals mockKernel(*pDevice);
@@ -308,4 +285,25 @@ GEN10TEST_F(Gen10PreemptionTests, givenInterfaceDescriptorDataWhenNoMidThreadPre
 
     PreemptionHelper::programInterfaceDescriptorDataPreemption<FamilyType>(&iddArg, PreemptionMode::ThreadGroup);
     EXPECT_EQ(INTERFACE_DESCRIPTOR_DATA::THREAD_PREEMPTION_DISABLE_ENABLE, iddArg.getThreadPreemptionDisable());
+}
+
+GEN10TEST_F(Gen10PreemptionTests, givenMidThreadPreemptionModeWhenStateSipIsProgrammedThenSipEqualsSipAllocationGpuAddressToPatch) {
+    using STATE_SIP = typename FamilyType::STATE_SIP;
+    auto mockDevice = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    mockDevice->setPreemptionMode(PreemptionMode::MidThread);
+    auto cmdSizePreemptionMidThread = PreemptionHelper::getRequiredStateSipCmdSize<FamilyType>(*mockDevice);
+
+    StackVec<char, 4096> preemptionBuffer;
+    preemptionBuffer.resize(cmdSizePreemptionMidThread);
+    LinearStream preemptionStream(&*preemptionBuffer.begin(), preemptionBuffer.size());
+
+    PreemptionHelper::programStateSip<FamilyType>(preemptionStream, *mockDevice);
+
+    HardwareParse hwParserOnlyPreemption;
+    hwParserOnlyPreemption.parseCommands<FamilyType>(preemptionStream, 0);
+    auto cmd = hwParserOnlyPreemption.getCommand<STATE_SIP>();
+
+    EXPECT_NE(nullptr, cmd);
+    auto sipType = SipKernel::getSipKernelType(mockDevice->getHardwareInfo().pPlatform->eRenderCoreFamily, mockDevice->isSourceLevelDebuggerActive());
+    EXPECT_EQ(mockDevice->getExecutionEnvironment()->getBuiltIns()->getSipKernel(sipType, *mockDevice).getSipAllocation()->getGpuAddressToPatch(), cmd->getSystemInstructionPointer());
 }

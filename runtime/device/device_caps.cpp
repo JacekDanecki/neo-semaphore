@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_stream/command_stream_receiver.h"
@@ -37,7 +22,7 @@
 
 #include <algorithm>
 
-namespace OCLRT {
+namespace NEO {
 extern const char *familyName[];
 
 static std::string vendor = "Intel(R) Corporation";
@@ -56,16 +41,6 @@ static constexpr cl_device_fp_config defaultFpFlags = static_cast<cl_device_fp_c
                                                                                        CL_FP_INF_NAN |
                                                                                        CL_FP_DENORM |
                                                                                        CL_FP_FMA);
-
-bool Device::getEnabled64kbPages() {
-    if (DebugManager.flags.Enable64kbpages.get() == -1) {
-        // assign value according to os and hw configuration
-        return OSInterface::osEnabled64kbPages && hwInfo.capabilityTable.ftr64KBpages;
-    } else {
-        // force debug settings
-        return (DebugManager.flags.Enable64kbpages.get() != 0);
-    }
-};
 
 void Device::setupFp64Flags() {
     if (DebugManager.flags.OverrideDefaultFP64Settings.get() == -1) {
@@ -110,9 +85,7 @@ void Device::initializeCaps() {
         driverVersion.assign(driverInfo.get()->getVersion(driverVersion).c_str());
     }
 
-    HardwareCapabilities hwCaps = {0};
     auto &hwHelper = HwHelper::get(hwInfo.pPlatform->eRenderCoreFamily);
-    hwHelper.setupHardwareCapabilities(&hwCaps);
 
     deviceInfo.name = name.c_str();
     deviceInfo.driverVersion = driverVersion.c_str();
@@ -147,11 +120,16 @@ void Device::initializeCaps() {
     deviceInfo.platformLP = (hwInfo.capabilityTable.clVersionSupport == 12) ? true : false;
     deviceInfo.cpuCopyAllowed = true;
     deviceInfo.spirVersions = spirVersions.c_str();
+    auto supportsVme = hwInfo.capabilityTable.supportsVme;
 
     if (enabledClVersion >= 21) {
         deviceInfo.independentForwardProgress = true;
         deviceExtensions += "cl_khr_subgroups ";
         deviceExtensions += "cl_khr_il_program ";
+        deviceExtensions += "cl_intel_spirv_device_side_avc_motion_estimation ";
+        deviceExtensions += "cl_intel_spirv_media_block_io ";
+        deviceExtensions += "cl_intel_spirv_subgroups ";
+        deviceExtensions += "cl_khr_spirv_no_integer_wrap_decoration ";
     } else {
         deviceInfo.independentForwardProgress = false;
     }
@@ -168,11 +146,11 @@ void Device::initializeCaps() {
         deviceExtensions += "cl_intel_packed_yuv ";
         deviceInfo.packedYuvExtension = true;
     }
-    if (DebugManager.flags.EnableIntelVme.get()) {
+    if (DebugManager.flags.EnableIntelVme.get() && supportsVme) {
         deviceExtensions += "cl_intel_motion_estimation ";
         deviceInfo.vmeExtension = true;
     }
-    if (DebugManager.flags.EnableIntelAdvancedVme.get()) {
+    if (DebugManager.flags.EnableIntelAdvancedVme.get() && supportsVme) {
         deviceExtensions += "cl_intel_advanced_motion_estimation ";
     }
 
@@ -180,6 +158,8 @@ void Device::initializeCaps() {
 
     simultaneousInterops = {0};
     appendOSExtensions(deviceExtensions);
+
+    deviceExtensions += hwHelper.getExtensions();
 
     deviceInfo.deviceExtensions = deviceExtensions.c_str();
 
@@ -256,7 +236,7 @@ void Device::initializeCaps() {
 
     // OpenCL 1.2 requires 128MB minimum
     auto maxMemAllocSize = std::max((uint64_t)(deviceInfo.globalMemSize / 2), (uint64_t)(128 * MB));
-    deviceInfo.maxMemAllocSize = std::min(maxMemAllocSize, hwCaps.maxMemAllocSize);
+    deviceInfo.maxMemAllocSize = std::min(maxMemAllocSize, this->hardwareCapabilities.maxMemAllocSize);
 
     deviceInfo.maxConstantBufferSize = deviceInfo.maxMemAllocSize;
 
@@ -275,13 +255,10 @@ void Device::initializeCaps() {
                                           ? (systemInfo.EUCount / systemInfo.SubSliceCount)
                                           : systemInfo.EuCountPerPoolMin;
     deviceInfo.numThreadsPerEU = systemInfo.ThreadCount / systemInfo.EUCount;
-    auto maxWkgSize = DebugManager.flags.UseMaxSimdSizeToDeduceMaxWorkgroupSize.get() ? 1024u : 256u;
     auto maxWS = deviceInfo.maxNumEUsPerSubSlice * deviceInfo.numThreadsPerEU * simdSizeUsed;
 
     maxWS = Math::prevPowerOfTwo(uint32_t(maxWS));
-    deviceInfo.maxWorkGroupSize = std::min(uint32_t(maxWS), maxWkgSize);
-
-    DEBUG_BREAK_IF(!DebugManager.flags.UseMaxSimdSizeToDeduceMaxWorkgroupSize.get() && deviceInfo.maxWorkGroupSize > 256);
+    deviceInfo.maxWorkGroupSize = std::min(uint32_t(maxWS), 1024u);
 
     // calculate a maximum number of subgroups in a workgroup (for the required SIMD size)
     deviceInfo.maxNumOfSubGroups = static_cast<uint32_t>(deviceInfo.maxWorkGroupSize / simdSizeUsed);
@@ -307,13 +284,13 @@ void Device::initializeCaps() {
     printDebugString(DebugManager.flags.PrintDebugMessages.get(), stderr, "computeUnitsUsedForScratch: %d\n", deviceInfo.computeUnitsUsedForScratch);
 
     deviceInfo.localMemType = CL_LOCAL;
-    deviceInfo.localMemSize = 64 << 10;
+    deviceInfo.localMemSize = hwInfo.capabilityTable.slmSize << 10;
 
     deviceInfo.imageSupport = CL_TRUE;
     deviceInfo.image2DMaxWidth = 16384;
     deviceInfo.image2DMaxHeight = 16384;
-    deviceInfo.image3DMaxWidth = hwCaps.image3DMaxWidth;
-    deviceInfo.image3DMaxHeight = hwCaps.image3DMaxHeight;
+    deviceInfo.image3DMaxWidth = this->hardwareCapabilities.image3DMaxWidth;
+    deviceInfo.image3DMaxHeight = this->hardwareCapabilities.image3DMaxHeight;
     deviceInfo.image3DMaxDepth = 2048;
     deviceInfo.imageMaxArraySize = 2048;
 
@@ -342,7 +319,7 @@ void Device::initializeCaps() {
     deviceInfo.globalVariablePreferredTotalSize = (size_t)deviceInfo.maxMemAllocSize;
 
     deviceInfo.planarYuvMaxWidth = 16384;
-    deviceInfo.planarYuvMaxHeight = 16380;
+    deviceInfo.planarYuvMaxHeight = 16352;
 
     deviceInfo.vmeAvcSupportsPreemption = hwInfo.capabilityTable.ftrSupportsVmeAvcPreemption;
     deviceInfo.vmeAvcSupportsTextureSampler = hwInfo.capabilityTable.ftrSupportsVmeAvcTextureSampler;
@@ -361,4 +338,4 @@ void Device::initializeCaps() {
         this->preemptionMode = PreemptionMode::Disabled;
     }
 }
-} // namespace OCLRT
+} // namespace NEO

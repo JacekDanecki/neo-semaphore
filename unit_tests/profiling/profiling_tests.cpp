@@ -1,51 +1,40 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_queue/enqueue_common.h"
-#include "runtime/command_queue/enqueue_migrate_mem_objects.h"
 #include "runtime/command_queue/enqueue_kernel.h"
 #include "runtime/command_queue/enqueue_marker.h"
-#include "runtime/memory_manager/surface.h"
+#include "runtime/command_queue/enqueue_migrate_mem_objects.h"
 #include "runtime/helpers/dispatch_info.h"
+#include "runtime/memory_manager/surface.h"
 #include "runtime/os_interface/os_interface.h"
 #include "runtime/utilities/tag_allocator.h"
-
+#include "test.h"
 #include "unit_tests/command_queue/command_enqueue_fixture.h"
+#include "unit_tests/event/event_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_event.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/os_interface/mock_performance_counters.h"
-#include "test.h"
+#include "unit_tests/utilities/base_object_utils.h"
 
-namespace OCLRT {
+namespace NEO {
 
 struct ProfilingTests : public CommandEnqueueFixture,
                         public ::testing::Test {
     void SetUp() override {
         CommandEnqueueFixture::SetUp(CL_QUEUE_PROFILING_ENABLE);
+
+        program = ReleaseableObjectPtr<MockProgram>(new MockProgram(*pDevice->getExecutionEnvironment()));
 
         memset(&kernelHeader, 0, sizeof(kernelHeader));
         kernelHeader.KernelHeapSize = sizeof(kernelIsa);
@@ -74,12 +63,12 @@ struct ProfilingTests : public CommandEnqueueFixture,
         CommandEnqueueFixture::TearDown();
     }
 
-    MockProgram program;
+    ReleaseableObjectPtr<MockProgram> program;
 
-    SKernelBinaryHeaderCommon kernelHeader;
-    SPatchDataParameterStream dataParameterStream;
-    SPatchExecutionEnvironment executionEnvironment;
-    SPatchThreadPayload threadPayload;
+    SKernelBinaryHeaderCommon kernelHeader = {};
+    SPatchDataParameterStream dataParameterStream = {};
+    SPatchExecutionEnvironment executionEnvironment = {};
+    SPatchThreadPayload threadPayload = {};
     KernelInfo kernelInfo;
 
     uint32_t kernelIsa[32];
@@ -91,23 +80,25 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfilingAndFor
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + sizeof(GPGPU_WALKER) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS();
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
 
-    auto &commandStreamNDRangeKernel = getCommandStream<FamilyType, CL_COMMAND_NDRANGE_KERNEL>(*pCmdQ, true, false, nullptr);
-    auto expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_NDRANGE_KERNEL, true, false, *pCmdQ, nullptr);
+    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + sizeof(GPGPU_WALKER) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS(&kernel);
+
+    auto &commandStreamNDRangeKernel = getCommandStream<FamilyType, CL_COMMAND_NDRANGE_KERNEL>(*pCmdQ, true, false, &kernel);
+    auto expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_NDRANGE_KERNEL, true, false, *pCmdQ, &kernel);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamNDRangeKernel.getAvailableSpace(), requiredSize);
 
-    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, false, nullptr);
-    expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_TASK, true, false, *pCmdQ, nullptr);
+    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, false, &kernel);
+    expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_TASK, true, false, *pCmdQ, &kernel);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamTask.getAvailableSpace(), requiredSize);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfilingAndForWorkloadWithNoKernelWHENGetCSFromCmdQueueTHENEnoughSpaceInCS) {
+HWTEST_F(ProfilingTests, GIVENCommandQueueWithProfilingAndForWorkloadWithNoKernelWHENGetCSFromCmdQueueTHENEnoughSpaceInCS) {
     typedef typename FamilyType::MI_STORE_REGISTER_MEM MI_STORE_REGISTER_MEM;
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
-    typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
+    typedef typename FamilyType::WALKER_TYPE GPGPU_WALKER;
 
     uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM);
 
@@ -127,16 +118,18 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfilingAndFor
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS();
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+
+    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS(&kernel);
     requiredSize += 2 * sizeof(GPGPU_WALKER);
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
     DispatchInfo dispatchInfo;
     dispatchInfo.setKernel(&kernel);
-    MultiDispatchInfo multiDispatchInfo(dispatchInfo);
+    MultiDispatchInfo multiDispatchInfo;
     multiDispatchInfo.push(dispatchInfo);
-    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, false, nullptr);
-    auto expectedSizeCS = EnqueueOperation<FamilyType>::getTotalSizeRequiredCS(true, false, *pCmdQ, multiDispatchInfo);
+    multiDispatchInfo.push(dispatchInfo);
+    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, false, &kernel);
+    auto expectedSizeCS = EnqueueOperation<FamilyType>::getTotalSizeRequiredCS(CL_COMMAND_TASK, CsrDependencies(), true, false, *pCmdQ, multiDispatchInfo);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamTask.getAvailableSpace(), requiredSize);
 }
@@ -149,7 +142,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfolingWHENWa
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -190,7 +183,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfolingWHENWa
 
     EXPECT_EQ(PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_TIMESTAMP, pBeforePC->getPostSyncOperation());
 
-    EXPECT_TRUE(static_cast<Event *>(event)->calcProfilingData());
+    EXPECT_TRUE(static_cast<MockEvent<Event> *>(event)->calcProfilingData());
 
     clReleaseEvent(event);
 }
@@ -203,7 +196,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProflingWHENWal
     typedef typename FamilyType::MI_STORE_REGISTER_MEM MI_STORE_REGISTER_MEM;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -257,7 +250,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -278,7 +271,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     //rseCommands<FamilyType>(*pCmdQ);
     ASSERT_NE(nullptr, pCmdQ->virtualEvent);
     ASSERT_NE(nullptr, pCmdQ->virtualEvent->peekCommand());
-    OCLRT::LinearStream *eventCommandStream = pCmdQ->virtualEvent->peekCommand()->getCommandStream();
+    NEO::LinearStream *eventCommandStream = pCmdQ->virtualEvent->peekCommand()->getCommandStream();
     ASSERT_NE(nullptr, eventCommandStream);
     parseCommands<FamilyType>(*eventCommandStream);
 
@@ -302,6 +295,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
 
     clReleaseEvent(event);
     ((UserEvent *)ue)->release();
+    pCmdQ->isQueueBlocked();
 }
 
 /*
@@ -313,7 +307,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     typedef typename FamilyType::MI_STORE_REGISTER_MEM MI_STORE_REGISTER_MEM;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -335,7 +329,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     // parseCommands<FamilyType>(*pCmdQ);
     ASSERT_NE(nullptr, pCmdQ->virtualEvent);
     ASSERT_NE(nullptr, pCmdQ->virtualEvent->peekCommand());
-    OCLRT::LinearStream *eventCommandStream = pCmdQ->virtualEvent->peekCommand()->getCommandStream();
+    NEO::LinearStream *eventCommandStream = pCmdQ->virtualEvent->peekCommand()->getCommandStream();
     ASSERT_NE(nullptr, eventCommandStream);
     parseCommands<FamilyType>(*eventCommandStream);
 
@@ -361,6 +355,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     EXPECT_EQ(itorAfterMI, cmdList.end());
     clReleaseEvent(event);
     ((UserEvent *)ue)->release();
+    pCmdQ->isQueueBlocked();
 }
 
 HWTEST_F(ProfilingTests, givenNonKernelEnqueueWhenNonBlockedEnqueueThenSetCpuPath) {
@@ -392,11 +387,11 @@ HWTEST_F(ProfilingTests, givenNonKernelEnqueueWhenNonBlockedEnqueueThenSetCpuPat
 template <typename TagType>
 struct MockTagNode : public TagNode<TagType> {
   public:
-    using TagNode<TagType>::tag;
+    using TagNode<TagType>::tagForCpuAccess;
     using TagNode<TagType>::gfxAllocation;
     MockTagNode() {
         gfxAllocation = nullptr;
-        tag = nullptr;
+        tagForCpuAccess = nullptr;
     }
 };
 
@@ -429,7 +424,7 @@ class MyOSTime : public OSTime {
 };
 int MyOSTime::instanceNum = 0;
 TEST(EventProfilingTest, givenEventWhenCompleteIsZeroThenCalcProfilingDataSetsEndTimestampInCompleteTimestampAndDoesntCallOsTimeMethods) {
-    std::unique_ptr<MockDevice> device(DeviceHelper<>::create());
+    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MyOSTime::instanceNum = 0;
     device->setOSTime(new MyOSTime());
     EXPECT_EQ(1, MyOSTime::instanceNum);
@@ -448,7 +443,7 @@ TEST(EventProfilingTest, givenEventWhenCompleteIsZeroThenCalcProfilingDataSetsEn
     timestamp.ContextCompleteTS = 0;
 
     MockTagNode<HwTimeStamps> timestampNode;
-    timestampNode.tag = &timestamp;
+    timestampNode.tagForCpuAccess = &timestamp;
 
     MockEvent<Event> event(&cmdQ, CL_COMPLETE, 0, 0);
 
@@ -458,6 +453,60 @@ TEST(EventProfilingTest, givenEventWhenCompleteIsZeroThenCalcProfilingDataSetsEn
 
     EXPECT_EQ(timestamp.ContextEndTS, timestamp.ContextCompleteTS);
     cmdQ.device = nullptr;
+    event.timeStampNode = nullptr;
+}
+
+TEST(EventProfilingTest, givenRawTimestampsDebugModeWhenDataIsQueriedThenRawDataIsReturned) {
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.ReturnRawGpuTimestamps.set(1);
+    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    MyOSTime::instanceNum = 0;
+    device->setOSTime(new MyOSTime());
+    EXPECT_EQ(1, MyOSTime::instanceNum);
+    MockContext context;
+    cl_command_queue_properties props[5] = {0, 0, 0, 0, 0};
+    MockCommandQueue cmdQ(&context, device.get(), props);
+    cmdQ.setProfilingEnabled();
+    cmdQ.device = device.get();
+
+    HwTimeStamps timestamp;
+    timestamp.GlobalStartTS = 10;
+    timestamp.ContextStartTS = 20;
+    timestamp.GlobalEndTS = 80;
+    timestamp.ContextEndTS = 56;
+    timestamp.GlobalCompleteTS = 0;
+    timestamp.ContextCompleteTS = 70;
+
+    MockTagNode<HwTimeStamps> timestampNode;
+    timestampNode.tagForCpuAccess = &timestamp;
+
+    MockEvent<Event> event(&cmdQ, CL_COMPLETE, 0, 0);
+    cl_event clEvent = &event;
+
+    event.queueTimeStamp.CPUTimeinNS = 1;
+    event.queueTimeStamp.GPUTimeStamp = 2;
+
+    event.submitTimeStamp.CPUTimeinNS = 3;
+    event.submitTimeStamp.GPUTimeStamp = 4;
+
+    event.setCPUProfilingPath(false);
+    event.timeStampNode = &timestampNode;
+    event.calcProfilingData();
+
+    cl_ulong queued, submited, start, end, complete;
+
+    clGetEventProfilingInfo(clEvent, CL_PROFILING_COMMAND_QUEUED, sizeof(cl_ulong), &queued, nullptr);
+    clGetEventProfilingInfo(clEvent, CL_PROFILING_COMMAND_SUBMIT, sizeof(cl_ulong), &submited, nullptr);
+    clGetEventProfilingInfo(clEvent, CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &start, nullptr);
+    clGetEventProfilingInfo(clEvent, CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &end, nullptr);
+    clGetEventProfilingInfo(clEvent, CL_PROFILING_COMMAND_COMPLETE, sizeof(cl_ulong), &complete, nullptr);
+
+    EXPECT_EQ(timestamp.ContextCompleteTS, complete);
+    EXPECT_EQ(timestamp.ContextEndTS, end);
+    EXPECT_EQ(timestamp.ContextStartTS, start);
+    EXPECT_EQ(event.submitTimeStamp.GPUTimeStamp, submited);
+    EXPECT_EQ(event.queueTimeStamp.GPUTimeStamp, queued);
+    event.timeStampNode = nullptr;
 }
 
 struct ProfilingWithPerfCountersTests : public ProfilingTests,
@@ -483,19 +532,21 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
 
     pCmdQ->setPerfCountersEnabled(true, 1);
 
-    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + sizeof(GPGPU_WALKER) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS();
-    //begin perf cmds
-    requiredSize += 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + OCLRT::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
-    //end perf cmds
-    requiredSize += 2 * sizeof(PIPE_CONTROL) + 3 * sizeof(MI_STORE_REGISTER_MEM) + OCLRT::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
 
-    auto &commandStreamNDRangeKernel = getCommandStream<FamilyType, CL_COMMAND_NDRANGE_KERNEL>(*pCmdQ, true, true, nullptr);
-    auto expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_NDRANGE_KERNEL, true, true, *pCmdQ, nullptr);
+    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + sizeof(GPGPU_WALKER) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS(&kernel);
+    //begin perf cmds
+    requiredSize += 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + NEO::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
+    //end perf cmds
+    requiredSize += 2 * sizeof(PIPE_CONTROL) + 3 * sizeof(MI_STORE_REGISTER_MEM) + NEO::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
+
+    auto &commandStreamNDRangeKernel = getCommandStream<FamilyType, CL_COMMAND_NDRANGE_KERNEL>(*pCmdQ, true, true, &kernel);
+    auto expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_NDRANGE_KERNEL, true, true, *pCmdQ, &kernel);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamNDRangeKernel.getAvailableSpace(), requiredSize);
 
-    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, true, nullptr);
-    expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_TASK, true, true, *pCmdQ, nullptr);
+    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, true, &kernel);
+    expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_TASK, true, true, *pCmdQ, &kernel);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamTask.getAvailableSpace(), requiredSize);
     bool retVal = false;
@@ -505,10 +556,11 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     EXPECT_TRUE(retVal);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWithProfilingPerfCounterAndForWorkloadWithNoKernelWHENGetCSFromCmdQueueTHENEnoughSpaceInCS) {
+HWTEST_F(ProfilingWithPerfCountersTests,
+         GIVENCommandQueueWithProfilingPerfCounterAndForWorkloadWithNoKernelWHENGetCSFromCmdQueueTHENEnoughSpaceInCS) {
     typedef typename FamilyType::MI_STORE_REGISTER_MEM MI_STORE_REGISTER_MEM;
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
-    typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
+    typedef typename FamilyType::WALKER_TYPE GPGPU_WALKER;
 
     pCmdQ->setPerfCountersEnabled(true, 1);
 
@@ -533,23 +585,25 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     typedef typename FamilyType::MI_REPORT_PERF_COUNT MI_REPORT_PERF_COUNT;
 
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+
     pCmdQ->setPerfCountersEnabled(true, 1);
 
-    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS();
+    uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + KernelCommandsHelper<FamilyType>::getSizeRequiredCS(&kernel);
     requiredSize += 2 * sizeof(GPGPU_WALKER);
 
     //begin perf cmds
-    requiredSize += 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + OCLRT::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
+    requiredSize += 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + NEO::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
     //end perf cmds
-    requiredSize += 2 * sizeof(PIPE_CONTROL) + 3 * sizeof(MI_STORE_REGISTER_MEM) + OCLRT::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
+    requiredSize += 2 * sizeof(PIPE_CONTROL) + 3 * sizeof(MI_STORE_REGISTER_MEM) + NEO::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_REPORT_PERF_COUNT) + pCmdQ->getPerfCountersUserRegistersNumber() * sizeof(MI_STORE_REGISTER_MEM);
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
     DispatchInfo dispatchInfo;
     dispatchInfo.setKernel(&kernel);
-    MultiDispatchInfo multiDispatchInfo(dispatchInfo);
+    MultiDispatchInfo multiDispatchInfo;
     multiDispatchInfo.push(dispatchInfo);
-    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, true, nullptr);
-    auto expectedSizeCS = EnqueueOperation<FamilyType>::getTotalSizeRequiredCS(true, true, *pCmdQ, multiDispatchInfo);
+    multiDispatchInfo.push(dispatchInfo);
+    auto &commandStreamTask = getCommandStream<FamilyType, CL_COMMAND_TASK>(*pCmdQ, true, true, &kernel);
+    auto expectedSizeCS = EnqueueOperation<FamilyType>::getTotalSizeRequiredCS(CL_COMMAND_TASK, CsrDependencies(), true, true, *pCmdQ, multiDispatchInfo);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamTask.getAvailableSpace(), requiredSize);
 
@@ -563,7 +617,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
 
     pCmdQ->setPerfCountersEnabled(true, 1);
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -612,7 +666,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     auto itorAfterReportPerf = find<MI_REPORT_PERF_COUNT *>(itorGPGPUWalkerCmd, cmdList.end());
     ASSERT_NE(cmdList.end(), itorAfterReportPerf);
 
-    EXPECT_TRUE(static_cast<Event *>(event)->calcProfilingData());
+    EXPECT_TRUE(static_cast<MockEvent<Event> *>(event)->calcProfilingData());
 
     clReleaseEvent(event);
 
@@ -626,7 +680,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
 
     pCmdQ->setPerfCountersEnabled(true, 2);
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -675,7 +729,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     auto itorAfterReportPerf = find<MI_REPORT_PERF_COUNT *>(itorGPGPUWalkerCmd, cmdList.end());
     ASSERT_NE(cmdList.end(), itorAfterReportPerf);
 
-    EXPECT_TRUE(static_cast<Event *>(event)->calcProfilingData());
+    EXPECT_TRUE(static_cast<MockEvent<Event> *>(event)->calcProfilingData());
 
     clReleaseEvent(event);
 
@@ -689,7 +743,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueBlo
 
     pCmdQ->setPerfCountersEnabled(true, 1);
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -710,7 +764,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueBlo
     //rseCommands<FamilyType>(*pCmdQ);
     ASSERT_NE(nullptr, pCmdQ->virtualEvent);
     ASSERT_NE(nullptr, pCmdQ->virtualEvent->peekCommand());
-    OCLRT::LinearStream *eventCommandStream = pCmdQ->virtualEvent->peekCommand()->getCommandStream();
+    NEO::LinearStream *eventCommandStream = pCmdQ->virtualEvent->peekCommand()->getCommandStream();
     ASSERT_NE(nullptr, eventCommandStream);
     parseCommands<FamilyType>(*eventCommandStream);
 
@@ -742,17 +796,19 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueBlo
 
     clReleaseEvent(event);
     ((UserEvent *)ue)->release();
+    pCmdQ->isQueueBlocked();
     pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWithProfilingPerfCountersNoEventWHENWalkerIsDispatchedTHENPipeControlWithTimeStampIsNotPresentInCS) {
+HWTEST_F(ProfilingWithPerfCountersTests,
+         GIVENCommandQueueWithProfilingPerfCountersNoEventWHENWalkerIsDispatchedTHENPipeControlWithTimeStampIsNotPresentInCS) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
-    typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
+    typedef typename FamilyType::WALKER_TYPE GPGPU_WALKER;
     typedef typename FamilyType::MI_REPORT_PERF_COUNT MI_REPORT_PERF_COUNT;
 
     pCmdQ->setPerfCountersEnabled(true, 1);
 
-    MockKernel kernel(&program, kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -802,4 +858,82 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
 
     pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
-} // namespace OCLRT
+
+struct MockTimestampPacketContainer : public TimestampPacketContainer {
+    ~MockTimestampPacketContainer() override {
+        for (const auto &node : timestampPacketNodes) {
+            delete node->tagForCpuAccess;
+            delete node;
+        }
+        timestampPacketNodes.clear();
+    }
+};
+
+struct ProfilingTimestampPacketsTest : public ::testing::Test {
+    void SetUp() override {
+        DebugManager.flags.ReturnRawGpuTimestamps.set(true);
+        cmdQ->setProfilingEnabled();
+        ev->timestampPacketContainer = std::make_unique<MockTimestampPacketContainer>();
+    }
+
+    void addTimestampNode(int contextStart, int contextEnd, int globalStart) {
+        auto node = new MockTagNode<TimestampPacket>();
+        auto timestampPacket = new TimestampPacket();
+        node->tagForCpuAccess = timestampPacket;
+
+        *reinterpret_cast<uint32_t *>(ptrOffset(timestampPacket,
+                                                sizeof(uint32_t) * static_cast<uint32_t>(TimestampPacket::DataIndex::ContextStart))) = contextStart;
+        *reinterpret_cast<uint32_t *>(ptrOffset(timestampPacket,
+                                                sizeof(uint32_t) * static_cast<uint32_t>(TimestampPacket::DataIndex::ContextEnd))) = contextEnd;
+        *reinterpret_cast<uint32_t *>(ptrOffset(timestampPacket,
+                                                sizeof(uint32_t) * static_cast<uint32_t>(TimestampPacket::DataIndex::GlobalStart))) = globalStart;
+
+        ev->timestampPacketContainer->add(node);
+    }
+
+    DebugManagerStateRestore restorer;
+    MockContext context;
+    cl_command_queue_properties props[5] = {0, 0, 0, 0, 0};
+    ReleaseableObjectPtr<MockCommandQueue> cmdQ = clUniquePtr(new MockCommandQueue(&context, context.getDevice(0), props));
+    ReleaseableObjectPtr<MockEvent<MyEvent>> ev = clUniquePtr(new MockEvent<MyEvent>(cmdQ.get(), CL_COMMAND_USER, Event::eventNotReady, Event::eventNotReady));
+};
+
+TEST_F(ProfilingTimestampPacketsTest, givenTimestampsPacketContainerWithOneElementAndTimestampNodeWhenCalculatingProfilingThenTimesAreTakenFromPacket) {
+    addTimestampNode(10, 11, 12);
+
+    HwTimeStamps hwTimestamps;
+    hwTimestamps.ContextStartTS = 100;
+    hwTimestamps.ContextEndTS = 110;
+    hwTimestamps.GlobalStartTS = 120;
+    MockTagNode<HwTimeStamps> hwTimestampsNode;
+    hwTimestampsNode.tagForCpuAccess = &hwTimestamps;
+    ev->timeStampNode = &hwTimestampsNode;
+
+    ev->calcProfilingData();
+
+    EXPECT_EQ(10u, ev->getStartTimeStamp());
+    EXPECT_EQ(11u, ev->getEndTimeStamp());
+    EXPECT_EQ(12u, ev->getGlobalStartTimestamp());
+
+    ev->timeStampNode = nullptr;
+}
+
+TEST_F(ProfilingTimestampPacketsTest, givenTimestampsPacketContainerWithThreeElementsWhenCalculatingProfilingThenTimesAreTakenFromProperPacket) {
+    addTimestampNode(10, 11, 12);
+    addTimestampNode(1, 21, 22);
+    addTimestampNode(5, 31, 2);
+
+    ev->calcProfilingData();
+
+    EXPECT_EQ(1u, ev->getStartTimeStamp());
+    EXPECT_EQ(31u, ev->getEndTimeStamp());
+    EXPECT_EQ(2u, ev->getGlobalStartTimestamp());
+}
+
+TEST_F(ProfilingTimestampPacketsTest, givenTimestampsPacketContainerWithZeroElementsWhenCalculatingProfilingThenDataIsNotCalculated) {
+    EXPECT_EQ(0u, ev->timestampPacketContainer->peekNodes().size());
+    ev->calcProfilingData();
+
+    EXPECT_FALSE(ev->getDataCalcStatus());
+}
+} // namespace NEO

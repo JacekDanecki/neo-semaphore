@@ -1,40 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/api/dispatch.h"
 #include "runtime/api/api.h"
-#include "runtime/platform/platform.h"
-#include "runtime/device/device.h"
+#include "runtime/api/dispatch.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
+#include "runtime/device/device.h"
 #include "runtime/helpers/get_info.h"
-#include "runtime/sharings/d3d/d3d_buffer.h"
-#include "runtime/sharings/d3d/d3d_texture.h"
-#include "runtime/sharings/d3d/d3d_surface.h"
 #include "runtime/mem_obj/image.h"
+#include "runtime/platform/platform.h"
+#include "runtime/sharings/d3d/d3d_buffer.h"
+#include "runtime/sharings/d3d/d3d_surface.h"
+#include "runtime/sharings/d3d/d3d_texture.h"
+#include "runtime/utilities/api_intercept.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
-void OCLRT::MemObj::getOsSpecificMemObjectInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam) {
+void NEO::MemObj::getOsSpecificMemObjectInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam) {
     switch (paramName) {
     case CL_MEM_D3D10_RESOURCE_KHR:
         *srcParamSize = sizeof(ID3D10Resource *);
@@ -63,7 +49,7 @@ void OCLRT::MemObj::getOsSpecificMemObjectInfo(const cl_mem_info &paramName, siz
     }
 }
 
-void OCLRT::Image::getOsSpecificImageInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam) {
+void NEO::Image::getOsSpecificImageInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam) {
     switch (paramName) {
     case CL_IMAGE_D3D10_SUBRESOURCE_KHR:
         *srcParamSize = sizeof(unsigned int);
@@ -81,7 +67,7 @@ void OCLRT::Image::getOsSpecificImageInfo(const cl_mem_info &paramName, size_t *
     }
 }
 
-void *OCLRT::Context::getOsContextInfo(cl_context_info &paramName, size_t *srcParamSize) {
+void *NEO::Context::getOsContextInfo(cl_context_info &paramName, size_t *srcParamSize) {
     switch (paramName) {
     case CL_CONTEXT_D3D10_PREFER_SHARED_RESOURCES_KHR:
     case CL_CONTEXT_D3D11_PREFER_SHARED_RESOURCES_KHR:
@@ -97,6 +83,14 @@ cl_int CL_API_CALL clGetDeviceIDsFromDX9INTEL(cl_platform_id platform, cl_dx9_de
                                               cl_dx9_device_set_intel dx9DeviceSet, cl_uint numEntries, cl_device_id *devices, cl_uint *numDevices) {
     Platform *platformInternal = nullptr;
     auto retVal = validateObjects(WithCastToInternal(platform, &platformInternal));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("platform", platform,
+                   "dx9DeviceSource", dx9DeviceSource,
+                   "dx9Object", dx9Object,
+                   "dx9DeviceSet", dx9DeviceSet,
+                   "numEntries", numEntries,
+                   "devices", devices,
+                   "numDevices", numDevices);
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -104,11 +98,18 @@ cl_int CL_API_CALL clGetDeviceIDsFromDX9INTEL(cl_platform_id platform, cl_dx9_de
 
     GetInfoHelper::set(devices, device);
     GetInfoHelper::set(numDevices, 1u);
-    return CL_SUCCESS;
+    retVal = CL_SUCCESS;
+    return retVal;
 }
 
 cl_mem CL_API_CALL clCreateFromDX9MediaSurfaceINTEL(cl_context context, cl_mem_flags flags, IDirect3DSurface9 *resource,
                                                     HANDLE sharedHandle, UINT plane, cl_int *errcodeRet) {
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource,
+                   "sharedHandle", sharedHandle,
+                   "plane", plane);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     cl_mem_flags validFlags = CL_MEM_READ_WRITE | CL_MEM_WRITE_ONLY | CL_MEM_READ_ONLY;
     if ((flags & (~validFlags)) != 0) {
@@ -136,18 +137,32 @@ cl_int CL_API_CALL clEnqueueAcquireDX9ObjectsINTEL(cl_command_queue commandQueue
     CommandQueue *cmdQ = nullptr;
 
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
-
-    return cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
-                                             eventWaitList, event, CL_COMMAND_ACQUIRE_DX9_OBJECTS_INTEL);
+    retVal = cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
+                                               eventWaitList, event, CL_COMMAND_ACQUIRE_DX9_OBJECTS_INTEL);
+    return retVal;
 }
 
 cl_int CL_API_CALL clEnqueueReleaseDX9ObjectsINTEL(cl_command_queue commandQueue, cl_uint numObjects, cl_mem *memObjects,
                                                    cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) {
     CommandQueue *cmdQ = nullptr;
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -174,6 +189,15 @@ cl_int CL_API_CALL clGetDeviceIDsFromDX9MediaAdapterKHR(cl_platform_id platform,
                                                         cl_device_id *devices, cl_uint *numDevices) {
     Platform *platformInternal = nullptr;
     auto retVal = validateObjects(WithCastToInternal(platform, &platformInternal));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("platform", platform,
+                   "numMediaAdapters", numMediaAdapters,
+                   "mediaAdapterType", mediaAdapterType,
+                   "mediaAdapters", mediaAdapters,
+                   "mediaAdapterSet", mediaAdapterSet,
+                   "numEntries", numEntries,
+                   "devices", devices,
+                   "numDevices", numDevices);
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -181,11 +205,19 @@ cl_int CL_API_CALL clGetDeviceIDsFromDX9MediaAdapterKHR(cl_platform_id platform,
 
     GetInfoHelper::set(devices, device);
     GetInfoHelper::set(numDevices, 1u);
-    return CL_SUCCESS;
+    retVal = CL_SUCCESS;
+    return retVal;
 }
 
 cl_mem CL_API_CALL clCreateFromDX9MediaSurfaceKHR(cl_context context, cl_mem_flags flags, cl_dx9_media_adapter_type_khr adapterType,
                                                   void *surfaceInfo, cl_uint plane, cl_int *errcodeRet) {
+
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "adapterType", adapterType,
+                   "surfaceInfo", surfaceInfo,
+                   "plane", plane);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     auto localSurfaceInfo = (cl_dx9_surface_info_khr *)surfaceInfo;
     auto ctx = castToObject<Context>(context);
@@ -197,11 +229,19 @@ cl_int CL_API_CALL clEnqueueAcquireDX9MediaSurfacesKHR(cl_command_queue commandQ
                                                        cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) {
     CommandQueue *cmdQ = nullptr;
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
-    return cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
-                                             eventWaitList, event, CL_COMMAND_ACQUIRE_DX9_MEDIA_SURFACES_KHR);
+    retVal = cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
+                                               eventWaitList, event, CL_COMMAND_ACQUIRE_DX9_MEDIA_SURFACES_KHR);
+    return retVal;
 }
 
 cl_int CL_API_CALL clEnqueueReleaseDX9MediaSurfacesKHR(cl_command_queue commandQueue, cl_uint numObjects, const cl_mem *memObjects,
@@ -209,6 +249,13 @@ cl_int CL_API_CALL clEnqueueReleaseDX9MediaSurfacesKHR(cl_command_queue commandQ
     CommandQueue *cmdQ = nullptr;
 
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -220,8 +267,10 @@ cl_int CL_API_CALL clEnqueueReleaseDX9MediaSurfacesKHR(cl_command_queue commandQ
                 cmdQ->finish(true);
                 break;
             }
+
         } else {
-            return CL_INVALID_MEM_OBJECT;
+            retVal = CL_INVALID_MEM_OBJECT;
+            return retVal;
         }
     }
 
@@ -245,6 +294,14 @@ cl_int CL_API_CALL clGetDeviceIDsFromD3D10KHR(cl_platform_id platform, cl_d3d10_
 
     Platform *platformInternal = nullptr;
     auto retVal = validateObjects(WithCastToInternal(platform, &platformInternal));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("platform", platform,
+                   "d3dDeviceSource", d3dDeviceSource,
+                   "d3dObject", d3dObject,
+                   "d3dDeviceSet", d3dDeviceSet,
+                   "numEntries", numEntries,
+                   "devices", devices,
+                   "numDevices", numDevices);
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -264,14 +321,15 @@ cl_int CL_API_CALL clGetDeviceIDsFromD3D10KHR(cl_platform_id platform, cl_d3d10_
         break;
     default:
         GetInfoHelper::set(numDevices, localNumDevices);
-        return CL_INVALID_VALUE;
-        break;
+        retVal = CL_INVALID_VALUE;
+        return retVal;
     }
 
     sharingFcns.getDxgiDescFcn(&dxgiDesc, dxgiAdapter, d3dDevice);
     if (dxgiDesc.VendorId != INTEL_VENDOR_ID) {
         GetInfoHelper::set(numDevices, localNumDevices);
-        return CL_DEVICE_NOT_FOUND;
+        retVal = CL_DEVICE_NOT_FOUND;
+        return retVal;
     }
 
     switch (d3dDeviceSet) {
@@ -291,6 +349,11 @@ cl_int CL_API_CALL clGetDeviceIDsFromD3D10KHR(cl_platform_id platform, cl_d3d10_
 }
 
 cl_mem CL_API_CALL clCreateFromD3D10BufferKHR(cl_context context, cl_mem_flags flags, ID3D10Buffer *resource, cl_int *errcodeRet) {
+
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     Context *ctx = nullptr;
 
@@ -309,6 +372,11 @@ cl_mem CL_API_CALL clCreateFromD3D10BufferKHR(cl_context context, cl_mem_flags f
 
 cl_mem CL_API_CALL clCreateFromD3D10Texture2DKHR(cl_context context, cl_mem_flags flags, ID3D10Texture2D *resource,
                                                  UINT subresource, cl_int *errcodeRet) {
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource,
+                   "subresource", subresource);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     Context *ctx = nullptr;
 
@@ -327,6 +395,11 @@ cl_mem CL_API_CALL clCreateFromD3D10Texture2DKHR(cl_context context, cl_mem_flag
 
 cl_mem CL_API_CALL clCreateFromD3D10Texture3DKHR(cl_context context, cl_mem_flags flags, ID3D10Texture3D *resource,
                                                  UINT subresource, cl_int *errcodeRet) {
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource,
+                   "subresource", subresource);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     Context *ctx = nullptr;
 
@@ -348,6 +421,13 @@ cl_int CL_API_CALL clEnqueueAcquireD3D10ObjectsKHR(cl_command_queue commandQueue
     CommandQueue *cmdQ = nullptr;
 
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -360,11 +440,13 @@ cl_int CL_API_CALL clEnqueueAcquireD3D10ObjectsKHR(cl_command_queue commandQueue
     for (unsigned int object = 0; object < numObjects; object++) {
         auto memObj = castToObject<MemObj>(memObjects[object]);
         if (memObj->acquireCount >= 1) {
-            return CL_D3D10_RESOURCE_ALREADY_ACQUIRED_KHR;
+            retVal = CL_D3D10_RESOURCE_ALREADY_ACQUIRED_KHR;
+            return retVal;
         }
     }
-    return cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
-                                             eventWaitList, event, CL_COMMAND_ACQUIRE_D3D10_OBJECTS_KHR);
+    retVal = cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
+                                               eventWaitList, event, CL_COMMAND_ACQUIRE_D3D10_OBJECTS_KHR);
+    return retVal;
 }
 
 cl_int CL_API_CALL clEnqueueReleaseD3D10ObjectsKHR(cl_command_queue commandQueue, cl_uint numObjects, const cl_mem *memObjects,
@@ -372,6 +454,13 @@ cl_int CL_API_CALL clEnqueueReleaseD3D10ObjectsKHR(cl_command_queue commandQueue
     CommandQueue *cmdQ = nullptr;
 
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -384,7 +473,8 @@ cl_int CL_API_CALL clEnqueueReleaseD3D10ObjectsKHR(cl_command_queue commandQueue
     for (unsigned int object = 0; object < numObjects; object++) {
         auto memObject = castToObject<MemObj>(memObjects[object]);
         if (memObject->acquireCount == 0) {
-            return CL_D3D10_RESOURCE_NOT_ACQUIRED_KHR;
+            retVal = CL_D3D10_RESOURCE_NOT_ACQUIRED_KHR;
+            return retVal;
         }
         if (!static_cast<D3DSharing<D3DTypesHelper::D3D10> *>(memObject->peekSharingHandler())->isSharedResource()) {
             cmdQ->finish(true);
@@ -408,10 +498,17 @@ cl_int CL_API_CALL clGetDeviceIDsFromD3D11KHR(cl_platform_id platform, cl_d3d11_
     ID3D11Device *d3dDevice = nullptr;
     D3DSharingFunctions<D3DTypesHelper::D3D11> sharingFcns((ID3D11Device *)nullptr);
     cl_uint localNumDevices = 0;
-    cl_int retCode = CL_SUCCESS;
 
     Platform *platformInternal = nullptr;
     auto retVal = validateObjects(WithCastToInternal(platform, &platformInternal));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("platform", platform,
+                   "d3dDeviceSource", d3dDeviceSource,
+                   "d3dObject", d3dObject,
+                   "d3dDeviceSet", d3dDeviceSet,
+                   "numEntries", numEntries,
+                   "devices", devices,
+                   "numDevices", numDevices);
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -431,14 +528,16 @@ cl_int CL_API_CALL clGetDeviceIDsFromD3D11KHR(cl_platform_id platform, cl_d3d11_
         break;
     default:
         GetInfoHelper::set(numDevices, localNumDevices);
-        return CL_INVALID_VALUE;
+        retVal = CL_INVALID_VALUE;
+        return retVal;
         break;
     }
 
     sharingFcns.getDxgiDescFcn(&dxgiDesc, dxgiAdapter, d3dDevice);
     if (dxgiDesc.VendorId != INTEL_VENDOR_ID) {
         GetInfoHelper::set(numDevices, localNumDevices);
-        return CL_DEVICE_NOT_FOUND;
+        retVal = CL_DEVICE_NOT_FOUND;
+        return retVal;
     }
 
     switch (d3dDeviceSet) {
@@ -448,16 +547,20 @@ cl_int CL_API_CALL clGetDeviceIDsFromD3D11KHR(cl_platform_id platform, cl_d3d11_
         localNumDevices = 1;
         break;
     default:
-        retCode = CL_INVALID_VALUE;
+        retVal = CL_INVALID_VALUE;
         break;
     }
 
     GetInfoHelper::set(numDevices, localNumDevices);
 
-    return retCode;
+    return retVal;
 }
 
 cl_mem CL_API_CALL clCreateFromD3D11BufferKHR(cl_context context, cl_mem_flags flags, ID3D11Buffer *resource, cl_int *errcodeRet) {
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     Context *ctx = nullptr;
 
@@ -475,6 +578,11 @@ cl_mem CL_API_CALL clCreateFromD3D11BufferKHR(cl_context context, cl_mem_flags f
 
 cl_mem CL_API_CALL clCreateFromD3D11Texture2DKHR(cl_context context, cl_mem_flags flags, ID3D11Texture2D *resource,
                                                  UINT subresource, cl_int *errcodeRet) {
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource,
+                   "subresource", subresource);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     Context *ctx = nullptr;
 
@@ -492,6 +600,11 @@ cl_mem CL_API_CALL clCreateFromD3D11Texture2DKHR(cl_context context, cl_mem_flag
 
 cl_mem CL_API_CALL clCreateFromD3D11Texture3DKHR(cl_context context, cl_mem_flags flags, ID3D11Texture3D *resource,
                                                  UINT subresource, cl_int *errcodeRet) {
+    API_ENTER(errcodeRet);
+    DBG_LOG_INPUTS("context", context,
+                   "flags", flags,
+                   "resource", resource,
+                   "subresource", subresource);
     ErrorCodeHelper err(errcodeRet, CL_SUCCESS);
     Context *ctx = nullptr;
 
@@ -513,6 +626,13 @@ cl_int CL_API_CALL clEnqueueAcquireD3D11ObjectsKHR(cl_command_queue commandQueue
     CommandQueue *cmdQ = nullptr;
 
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -525,11 +645,13 @@ cl_int CL_API_CALL clEnqueueAcquireD3D11ObjectsKHR(cl_command_queue commandQueue
     for (unsigned int object = 0; object < numObjects; object++) {
         auto memObj = castToObject<MemObj>(memObjects[object]);
         if (memObj->acquireCount >= 1) {
-            return CL_D3D11_RESOURCE_ALREADY_ACQUIRED_KHR;
+            retVal = CL_D3D11_RESOURCE_ALREADY_ACQUIRED_KHR;
+            return retVal;
         }
     }
-    return cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
-                                             eventWaitList, event, CL_COMMAND_ACQUIRE_D3D11_OBJECTS_KHR);
+    retVal = cmdQ->enqueueAcquireSharedObjects(numObjects, memObjects, numEventsInWaitList,
+                                               eventWaitList, event, CL_COMMAND_ACQUIRE_D3D11_OBJECTS_KHR);
+    return retVal;
 }
 
 cl_int CL_API_CALL clEnqueueReleaseD3D11ObjectsKHR(cl_command_queue commandQueue, cl_uint numObjects, const cl_mem *memObjects,
@@ -537,6 +659,13 @@ cl_int CL_API_CALL clEnqueueReleaseD3D11ObjectsKHR(cl_command_queue commandQueue
     CommandQueue *cmdQ = nullptr;
 
     auto retVal = validateObjects(WithCastToInternal(commandQueue, &cmdQ));
+    API_ENTER(&retVal);
+    DBG_LOG_INPUTS("commandQueue", commandQueue,
+                   "numObjects", numObjects,
+                   "memObjects", memObjects,
+                   "numEventsInWaitList", numEventsInWaitList,
+                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -549,7 +678,8 @@ cl_int CL_API_CALL clEnqueueReleaseD3D11ObjectsKHR(cl_command_queue commandQueue
     for (unsigned int object = 0; object < numObjects; object++) {
         auto memObject = castToObject<MemObj>(memObjects[object]);
         if (memObject->acquireCount == 0) {
-            return CL_D3D11_RESOURCE_NOT_ACQUIRED_KHR;
+            retVal = CL_D3D11_RESOURCE_NOT_ACQUIRED_KHR;
+            return retVal;
         }
         if (!static_cast<D3DSharing<D3DTypesHelper::D3D11> *>(memObject->peekSharingHandler())->isSharedResource()) {
             cmdQ->finish(true);
@@ -563,4 +693,42 @@ cl_int CL_API_CALL clEnqueueReleaseD3D11ObjectsKHR(cl_command_queue commandQueue
         cmdQ->finish(true);
     }
     return retVal;
+}
+
+cl_int CL_API_CALL clGetSupportedDX9MediaSurfaceFormatsINTEL(cl_context context, cl_mem_flags flags, cl_mem_object_type imageType,
+                                                             cl_uint numEntries, D3DFORMAT *dx9Formats, cl_uint *numImageFormats) {
+
+    if (validateObject(context) != CL_SUCCESS) {
+        return CL_INVALID_CONTEXT;
+    }
+
+    if ((imageType != CL_MEM_OBJECT_BUFFER) && (imageType != CL_MEM_OBJECT_IMAGE2D) && (imageType != CL_MEM_OBJECT_IMAGE3D)) {
+        return CL_INVALID_VALUE;
+    }
+
+    if (((flags & CL_MEM_READ_WRITE) == 0) && ((flags & CL_MEM_WRITE_ONLY) == 0) && ((flags & CL_MEM_READ_ONLY) == 0)) {
+        return CL_INVALID_VALUE;
+    }
+
+    cl_uint i = 0;
+    for (auto format : D3DSurface::D3DtoClFormatConversions) {
+        if (i >= numEntries) {
+            break;
+        }
+        dx9Formats[i++] = format.first;
+    }
+
+    *numImageFormats = static_cast<cl_uint>(D3DSurface::D3DtoClFormatConversions.size());
+
+    return CL_SUCCESS;
+}
+
+cl_int CL_API_CALL clGetSupportedDX10TextureFormatsINTEL(cl_context context, cl_mem_flags flags, cl_mem_object_type imageType,
+                                                         cl_uint numEntries, DXGI_FORMAT *formats, cl_uint *numImageFormats) {
+    return getSupportedDXTextureFormats<D3DTypesHelper::D3D10>(context, imageType, numEntries, formats, numImageFormats);
+}
+
+cl_int CL_API_CALL clGetSupportedDX11TextureFormatsINTEL(cl_context context, cl_mem_flags flags, cl_mem_object_type imageType,
+                                                         cl_uint numEntries, DXGI_FORMAT *formats, cl_uint *numImageFormats) {
+    return getSupportedDXTextureFormats<D3DTypesHelper::D3D11>(context, imageType, numEntries, formats, numImageFormats);
 }

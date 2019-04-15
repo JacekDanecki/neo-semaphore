@@ -1,35 +1,21 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/array_count.h"
-#include "runtime/helpers/surface_formats.h"
 #include "runtime/helpers/aligned_memory.h"
-#include "runtime/mem_obj/image.h"
+#include "runtime/helpers/array_count.h"
 #include "runtime/helpers/convert_color.h"
+#include "runtime/helpers/surface_formats.h"
+#include "runtime/mem_obj/image.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
+
 #include "gtest/gtest.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 typedef decltype(&Image::redescribe) RedescribeMethod;
 
@@ -794,8 +780,6 @@ struct NullImage : public Image {
     void setSurfaceMemoryObjectControlStateIndexToMocsTable(void *memory, uint32_t value) override {}
     void transformImage2dArrayTo3d(void *memory) override {}
     void transformImage3dTo2dArray(void *memory) override {}
-    size_t getHostPtrRowPitchForMap(uint32_t mipLevel) override { return getHostPtrRowPitch(); }
-    size_t getHostPtrSlicePitchForMap(uint32_t mipLevel) override { return getHostPtrSlicePitch(); }
 };
 
 TEST_P(ValidParentImageFormatTest, givenParentChannelOrderWhenTestWithAllChannelOrdersThenReturnTrueForValidChannelOrder) {
@@ -809,7 +793,7 @@ TEST_P(ValidParentImageFormatTest, givenParentChannelOrderWhenTestWithAllChannel
     image.imageFormat = parentImageFormat;
 
     bool retVal;
-    for (unsigned int i = 0; i < ARRAY_COUNT(allChannelOrders); i++) {
+    for (unsigned int i = 0; i < arrayCount(allChannelOrders); i++) {
         imageFormat.image_channel_order = allChannelOrders[i];
         retVal = image.hasValidParentImageFormat(imageFormat);
         EXPECT_EQ(imageFormat.image_channel_order == validChannelOrder, retVal);

@@ -1,29 +1,17 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "CL/cl.h"
 #include "runtime/built_ins/sip.h"
+#include "runtime/helpers/debug_helpers.h"
+#include "runtime/helpers/properties_helper.h"
 #include "runtime/utilities/vec.h"
+
+#include "CL/cl.h"
 
 #include <array>
 #include <cstdint>
@@ -35,7 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 typedef std::vector<char> BuiltinResourceT;
 
 class Context;
@@ -49,7 +37,8 @@ class SchedulerKernel;
 extern const char *mediaKernelsBuildOptions;
 
 enum class EBuiltInOps : uint32_t {
-    CopyBufferToBuffer = 0,
+    AuxTranslation = 0,
+    CopyBufferToBuffer,
     CopyBufferRect,
     FillBuffer,
     CopyBufferToImage3d,
@@ -191,9 +180,9 @@ class BuiltIns {
     BuiltinDispatchInfoBuilder &getBuiltinDispatchInfoBuilder(EBuiltInOps op, Context &context, Device &device);
     std::unique_ptr<BuiltinDispatchInfoBuilder> setBuiltinDispatchInfoBuilder(EBuiltInOps op, Context &context, Device &device,
                                                                               std::unique_ptr<BuiltinDispatchInfoBuilder> newBuilder);
+    BuiltIns();
+    virtual ~BuiltIns();
 
-    static BuiltIns &getInstance();
-    static void shutDown();
     Program *createBuiltInProgram(
         Context &context,
         Device &device,
@@ -218,12 +207,6 @@ class BuiltIns {
     }
 
   protected:
-    BuiltIns();
-    virtual ~BuiltIns();
-
-    // singleton
-    static BuiltIns *pInstance;
-
     // scheduler kernel
     BuiltInKernel schedulerBuiltIn;
 
@@ -237,7 +220,19 @@ class BuiltIns {
     bool enableCacheing = true;
 };
 
+class BuiltInOwnershipWrapper : public NonCopyableOrMovableClass {
+  public:
+    BuiltInOwnershipWrapper() = default;
+    BuiltInOwnershipWrapper(BuiltinDispatchInfoBuilder &inputBuilder, Context *context);
+    ~BuiltInOwnershipWrapper();
+
+    void takeOwnership(BuiltinDispatchInfoBuilder &inputBuilder, Context *context);
+
+  protected:
+    BuiltinDispatchInfoBuilder *builder = nullptr;
+};
+
 template <typename HWFamily, EBuiltInOps OpCode>
 class BuiltInOp;
 
-} // namespace OCLRT
+} // namespace NEO

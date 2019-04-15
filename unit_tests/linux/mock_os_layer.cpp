@@ -1,26 +1,12 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "mock_os_layer.h"
+
 #include <cassert>
 #include <iostream>
 
@@ -29,9 +15,11 @@ int (*c_ioctl)(int fd, unsigned long int request, ...) = nullptr;
 
 int fakeFd = 1023;
 int haveDri = 0;                                         // index of dri to serve, -1 - none
-int deviceId = OCLRT::deviceDescriptorTable[0].deviceId; // default supported DeviceID
+int deviceId = NEO::deviceDescriptorTable[0].deviceId;   // default supported DeviceID
 int haveSoftPin = 1;
-int havePreemption = 1;
+int havePreemption = I915_SCHEDULER_CAP_ENABLED |
+                     I915_SCHEDULER_CAP_PRIORITY |
+                     I915_SCHEDULER_CAP_PREEMPTION;
 int failOnDeviceId = 0;
 int failOnRevisionId = 0;
 int failOnSoftPin = 0;
@@ -78,8 +66,8 @@ int drmGetParam(drm_i915_getparam_t *param) {
         *param->value = haveSoftPin;
         ret = failOnSoftPin;
         break;
-#if defined(I915_PARAM_HAS_PREEMPTION)
-    case I915_PARAM_HAS_PREEMPTION:
+#if defined(I915_PARAM_HAS_SCHEDULER)
+    case I915_PARAM_HAS_SCHEDULER:
         *param->value = havePreemption;
         ret = failOnPreemption;
         break;
@@ -100,7 +88,7 @@ int drmSetContextParam(drm_i915_gem_context_param *param) {
     case I915_CONTEXT_PRIVATE_PARAM_BOOST:
         ret = failOnParamBoost;
         break;
-#if defined(I915_PARAM_HAS_PREEMPTION)
+#if defined(I915_PARAM_HAS_SCHEDULER)
     case I915_CONTEXT_PARAM_PRIORITY:
         ret = failOnSetPriority;
         break;
@@ -141,7 +129,6 @@ int ioctl(int fd, unsigned long int request, ...) throw() {
     int res;
     va_list vl;
     va_start(vl, request);
-
     if (fd == fakeFd) {
         res = ioctlSeq[ioctlCnt % (sizeof(ioctlSeq) / sizeof(int))];
         ioctlCnt++;

@@ -1,48 +1,35 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 #include "runtime/api/cl_types.h"
-#include "runtime/helpers/base_object.h"
-#include <cstdint>
-#include <atomic>
-#include <vector>
-#include "runtime/helpers/task_information.h"
-#include "runtime/utilities/idlist.h"
-#include "runtime/utilities/iflist.h"
 #include "runtime/event/hw_timestamps.h"
+#include "runtime/helpers/base_object.h"
+#include "runtime/helpers/flush_stamp.h"
+#include "runtime/helpers/task_information.h"
 #include "runtime/os_interface/os_time.h"
 #include "runtime/os_interface/performance_counters.h"
-#include "runtime/helpers/flush_stamp.h"
 #include "runtime/utilities/arrayref.h"
+#include "runtime/utilities/idlist.h"
+#include "runtime/utilities/iflist.h"
+
+#include <atomic>
+#include <cstdint>
+#include <vector>
 
 #define OCLRT_NUM_TIMESTAMP_BITS (32)
 
-namespace OCLRT {
+namespace NEO {
 template <typename TagType>
 struct TagNode;
 class CommandQueue;
 class Context;
 class Device;
+class TimestampPacketContainer;
 
 template <>
 struct OpenCLObjectMapper<_cl_event> {
@@ -107,9 +94,8 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
     void updateCompletionStamp(uint32_t taskCount, uint32_t tasklevel, FlushStamp flushStamp);
     cl_ulong getDelta(cl_ulong startTime,
                       cl_ulong endTime);
-    bool calcProfilingData();
     void setCPUProfilingPath(bool isCPUPath) { this->profilingCpuPath = isCPUPath; }
-    bool isCPUProfilingPath() {
+    bool isCPUProfilingPath() const {
         return profilingCpuPath;
     }
 
@@ -118,14 +104,16 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
                                  void *paramValue,
                                  size_t *paramValueSizeRet);
 
-    bool isProfilingEnabled() { return profilingEnabled; }
+    bool isProfilingEnabled() const { return profilingEnabled; }
 
     void setProfilingEnabled(bool profilingEnabled) { this->profilingEnabled = profilingEnabled; }
 
-    HwTimeStamps *getHwTimeStamp();
-    GraphicsAllocation *getHwTimeStampAllocation();
+    TagNode<HwTimeStamps> *getHwTimeStampNode();
 
-    bool isPerfCountersEnabled() {
+    void addTimestampPacketNodes(const TimestampPacketContainer &inputTimestampPacketContainer);
+    TimestampPacketContainer *getTimestampPacketNodes() const;
+
+    bool isPerfCountersEnabled() const {
         return perfCountersEnabled;
     }
 
@@ -135,8 +123,7 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
 
     void copyPerfCounters(InstrPmRegsCfg *config);
 
-    HwPerfCounter *getHwPerfCounter();
-    GraphicsAllocation *getHwPerfCounterAllocation();
+    TagNode<HwPerfCounter> *getHwPerfCounterNode();
 
     std::unique_ptr<FlushStampTracker> flushStamp;
     std::atomic<uint32_t> taskLevel;
@@ -201,7 +188,7 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
     // Note from OCL spec :
     //      "A negative integer value causes all enqueued commands that wait on this user event
     //       to be terminated."
-    bool isStatusCompletedByTermination(const int32_t *executionStatusSnapshot = nullptr) {
+    bool isStatusCompletedByTermination(const int32_t *executionStatusSnapshot = nullptr) const {
         if (executionStatusSnapshot == nullptr) {
             return (peekExecutionStatus() < 0);
         } else {
@@ -209,12 +196,16 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
         }
     }
 
-    bool peekIsSubmitted(const int32_t *executionStatusSnapshot = nullptr) {
+    bool peekIsSubmitted(const int32_t *executionStatusSnapshot = nullptr) const {
         if (executionStatusSnapshot == nullptr) {
             return (peekExecutionStatus() == CL_SUBMITTED);
         } else {
             return (*executionStatusSnapshot == CL_SUBMITTED);
         }
+    }
+
+    bool peekIsCmdSubmitted() {
+        return submittedCmd != nullptr;
     }
 
     //commands blocked by user event depencies
@@ -231,6 +222,10 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
         return (CL_COMMAND_USER == cmdType);
     }
 
+    bool isEventWithoutCommand() const {
+        return eventWithoutCommand;
+    }
+
     Context *getContext() {
         return ctx;
     }
@@ -245,7 +240,7 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
 
     virtual uint32_t getTaskLevel();
 
-    cl_int peekExecutionStatus() {
+    cl_int peekExecutionStatus() const {
         return executionStatus;
     }
 
@@ -312,6 +307,8 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
         return false;
     }
 
+    static bool checkUserEventDependencies(cl_uint numEventsInWaitList, const cl_event *eventWaitList);
+
   protected:
     Event(Context *ctx, CommandQueue *cmdQueue, cl_command_type cmdType,
           uint32_t taskLevel, uint32_t taskCount);
@@ -333,6 +330,9 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
             return ECallbackTarget::Completed;
         }
     }
+
+    bool calcProfilingData();
+    MOCKABLE_VIRTUAL void calculateProfilingDataInternal(uint64_t contextStartTS, uint64_t contextEndTS, uint64_t *contextCompleteTS, uint64_t globalStartTS);
 
     // executes all callbacks associated with this event
     void executeCallbacks(int32_t executionStatus);
@@ -371,10 +371,11 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
     uint64_t startTimeStamp;
     uint64_t endTimeStamp;
     uint64_t completeTimeStamp;
-    TagNode<HwTimeStamps> *timeStampNode;
     bool perfCountersEnabled;
-    TagNode<HwPerfCounter> *perfCounterNode;
-    InstrPmRegsCfg *perfConfigurationData;
+    TagNode<HwTimeStamps> *timeStampNode = nullptr;
+    TagNode<HwPerfCounter> *perfCounterNode = nullptr;
+    std::unique_ptr<TimestampPacketContainer> timestampPacketContainer;
+    InstrPmRegsCfg *perfConfigurationData = nullptr;
     //number of events this event depends on
     std::atomic<int> parentCount;
     //event parents
@@ -384,4 +385,4 @@ class Event : public BaseObject<_cl_event>, public IDNode<Event> {
     // can be accessed only with updateTaskCount
     std::atomic<uint32_t> taskCount;
 };
-} // namespace OCLRT
+} // namespace NEO

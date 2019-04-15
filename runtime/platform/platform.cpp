@@ -1,48 +1,40 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "platform.h"
+
 #include "runtime/api/api.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/compiler_interface/compiler_interface.h"
-#include "CL/cl_ext.h"
 #include "runtime/device/device.h"
+#include "runtime/event/async_events_handler.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gtpin/gtpin_notify.h"
+#include "runtime/helpers/built_ins_helper.h"
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/get_info.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/string.h"
+#include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/os_interface/device_factory.h"
-#include "runtime/event/async_events_handler.h"
-#include "runtime/sharings/sharing_factory.h"
+#include "runtime/os_interface/os_interface.h"
 #include "runtime/platform/extensions.h"
+#include "runtime/sharings/sharing_factory.h"
+#include "runtime/source_level_debugger/source_level_debugger.h"
+
 #include "CL/cl_ext.h"
 
-namespace OCLRT {
+namespace NEO {
 
 std::unique_ptr<Platform> platformImpl;
 
-bool getDevices(HardwareInfo **hwInfo, size_t &numDevicesReturned);
+bool getDevices(HardwareInfo **hwInfo, size_t &numDevicesReturned, ExecutionEnvironment &executionEnvironment);
 
 Platform *platform() { return platformImpl.get(); }
 
@@ -138,18 +130,25 @@ bool Platform::initialize() {
         return true;
     }
 
-    state = OCLRT::getDevices(&hwInfo, numDevicesReturned) ? StateIniting : StateNone;
+    if (DebugManager.flags.LoopAtPlatformInitialize.get()) {
+        while (DebugManager.flags.LoopAtPlatformInitialize.get())
+            this->initializationLoopHelper();
+    }
+
+    state = NEO::getDevices(&hwInfo, numDevicesReturned, *executionEnvironment) ? StateIniting : StateNone;
 
     if (state == StateNone) {
         return false;
     }
 
+    executionEnvironment->initializeMemoryManager();
+
     DEBUG_BREAK_IF(this->platformInfo);
     this->platformInfo.reset(new PlatformInfo);
 
     this->devices.resize(numDevicesReturned);
-    for (size_t deviceOrdinal = 0; deviceOrdinal < numDevicesReturned; ++deviceOrdinal) {
-        auto pDevice = Device::create<OCLRT::Device>(&hwInfo[deviceOrdinal], executionEnvironment);
+    for (uint32_t deviceOrdinal = 0; deviceOrdinal < numDevicesReturned; ++deviceOrdinal) {
+        auto pDevice = Device::create<NEO::Device>(hwInfo, executionEnvironment, deviceOrdinal);
         DEBUG_BREAK_IF(!pDevice);
         if (pDevice) {
             this->devices[deviceOrdinal] = pDevice;
@@ -173,9 +172,22 @@ bool Platform::initialize() {
             return false;
         }
     }
+    executionEnvironment->initializeSpecialCommandStreamReceiver();
+
+    const bool sourceLevelDebuggerActive = executionEnvironment->sourceLevelDebugger && executionEnvironment->sourceLevelDebugger->isDebuggerActive();
+    if (devices[0]->getPreemptionMode() == PreemptionMode::MidThread || sourceLevelDebuggerActive) {
+        auto sipType = SipKernel::getSipKernelType(devices[0]->getHardwareInfo().pPlatform->eRenderCoreFamily, devices[0]->isSourceLevelDebuggerActive());
+        initSipKernel(sipType, *devices[0]);
+    }
+
+    CommandStreamReceiverType csrType = this->devices[0]->getDefaultEngine().commandStreamReceiver->getType();
+    if (csrType != CommandStreamReceiverType::CSR_HW) {
+        auto enableLocalMemory = HwHelper::get(hwInfo->pPlatform->eRenderCoreFamily).getEnableLocalMemory(*hwInfo);
+        executionEnvironment->initAubCenter(enableLocalMemory, "aubfile", csrType);
+    }
 
     this->fillGlobalDispatchTable();
-
+    DEBUG_BREAK_IF(DebugManager.flags.CreateMultipleDevices.get() > 1 && !this->devices[0]->getDefaultEngine().commandStreamReceiver->peekTimestampPacketWriteEnabled());
     state = StateInited;
     return true;
 }
@@ -237,4 +249,4 @@ std::unique_ptr<AsyncEventsHandler> Platform::setAsyncEventsHandler(std::unique_
     return handler;
 }
 
-} // namespace OCLRT
+} // namespace NEO

@@ -1,96 +1,89 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "hw_cmds.h"
-#include "runtime/command_stream/device_command_stream.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
-#include "runtime/helpers/aligned_memory.h"
-#include "runtime/helpers/options.h"
+#include "runtime/helpers/flush_stamp.h"
 #include "runtime/mem_obj/buffer.h"
-#include "runtime/os_interface/linux/drm_allocation.h"
+#include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/os_interface/linux/drm_buffer_object.h"
 #include "runtime/os_interface/linux/drm_command_stream.h"
-#include "runtime/os_interface/linux/drm_memory_manager.h"
+#include "runtime/os_interface/linux/os_context_linux.h"
 #include "runtime/os_interface/linux/os_interface.h"
+#include "runtime/os_interface/os_context.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
-#include "unit_tests/gen_common/gen_cmd_parse_base.h"
+#include "unit_tests/helpers/execution_environment_helper.h"
 #include "unit_tests/helpers/hw_parse.h"
+#include "unit_tests/mocks/linux/mock_drm_command_stream_receiver.h"
+#include "unit_tests/mocks/mock_host_ptr_manager.h"
 #include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/mocks/mock_submissions_aggregator.h"
 #include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
-#include "test.h"
+
 #include "drm/i915_drm.h"
 #include "gmock/gmock.h"
-#include "gtest/gtest.h"
-#include <iostream>
-#include <memory>
 
-using namespace OCLRT;
+using namespace NEO;
 
 class DrmCommandStreamFixture {
   public:
-    DeviceCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> *csr = nullptr;
-    DrmMemoryManager *mm = nullptr;
-    DrmMockImpl *mock;
-    const int mockFd = 33;
-
     void SetUp() {
 
-        this->dbgState = new DebugManagerStateRestore();
         //make sure this is disabled, we don't want test this now
         DebugManager.flags.EnableForcePin.set(false);
 
-        this->mock = new DrmMockImpl(mockFd);
+        mock = std::make_unique<::testing::NiceMock<DrmMockImpl>>(mockFd);
 
-        csr = new DrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME>(*platformDevices[0], mock, gemCloseWorkerMode::gemCloseWorkerActive);
+        executionEnvironment.setHwInfo(*platformDevices);
+        executionEnvironment.osInterface = std::make_unique<OSInterface>();
+        executionEnvironment.osInterface->get()->setDrm(mock.get());
+
+        osContext = std::make_unique<OsContextLinux>(*mock, 0u, 1, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0],
+                                                     PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
+
+        csr = new DrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME>(executionEnvironment, gemCloseWorkerMode::gemCloseWorkerActive);
         ASSERT_NE(nullptr, csr);
+        executionEnvironment.commandStreamReceivers.resize(1);
+        executionEnvironment.commandStreamReceivers[0].push_back(std::unique_ptr<CommandStreamReceiver>(csr));
+        csr->setupContext(*osContext);
 
         // Memory manager creates pinBB with ioctl, expect one call
         EXPECT_CALL(*mock, ioctl(::testing::_, ::testing::_))
             .Times(1);
-        mm = static_cast<DrmMemoryManager *>(csr->createMemoryManager(false));
-        ::testing::Mock::VerifyAndClearExpectations(mock);
+        memoryManager = new DrmMemoryManager(gemCloseWorkerActive,
+                                             DebugManager.flags.EnableForcePin.get(),
+                                             true,
+                                             executionEnvironment);
+        executionEnvironment.memoryManager.reset(memoryManager);
+        ::testing::Mock::VerifyAndClearExpectations(mock.get());
 
         //assert we have memory manager
-        ASSERT_NE(nullptr, mm);
+        ASSERT_NE(nullptr, memoryManager);
     }
 
     void TearDown() {
-        mm->waitForDeletions();
-        mm->peekGemCloseWorker()->close(true);
-        delete csr;
-        ::testing::Mock::VerifyAndClearExpectations(mock);
+        memoryManager->waitForDeletions();
+        memoryManager->peekGemCloseWorker()->close(true);
+        executionEnvironment.commandStreamReceivers.clear();
+        ::testing::Mock::VerifyAndClearExpectations(mock.get());
         // Memory manager closes pinBB with ioctl, expect one call
         EXPECT_CALL(*mock, ioctl(::testing::_, ::testing::_))
             .Times(::testing::AtLeast(1));
-        delete mm;
-        delete this->mock;
-        this->mock = 0;
-        delete dbgState;
     }
+
+    DeviceCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> *csr = nullptr;
+    DrmMemoryManager *memoryManager = nullptr;
+    std::unique_ptr<::testing::NiceMock<DrmMockImpl>> mock;
+    const int mockFd = 33;
     static const uint64_t alignment = MemoryConstants::allocationAlignment;
-    DebugManagerStateRestore *dbgState;
+    DebugManagerStateRestore dbgState;
+    ExecutionEnvironment executionEnvironment;
+    std::unique_ptr<OsContextLinux> osContext;
 };
 
 typedef Test<DrmCommandStreamFixture> DrmCommandStreamTest;
@@ -123,7 +116,7 @@ TEST_F(DrmCommandStreamTest, makeResident) {
         .Times(0);
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
-    DrmAllocation graphicsAllocation(nullptr, nullptr, 1024, MemoryPool::MemoryNull);
+    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u, false);
     csr->makeResident(graphicsAllocation);
 }
 
@@ -137,7 +130,7 @@ TEST_F(DrmCommandStreamTest, makeResidentTwiceTheSame) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
 
-    DrmAllocation graphicsAllocation(nullptr, nullptr, 1024, MemoryPool::MemoryNull);
+    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u, false);
 
     csr->makeResident(graphicsAllocation);
     csr->makeResident(graphicsAllocation);
@@ -153,7 +146,7 @@ TEST_F(DrmCommandStreamTest, makeResidentSizeZero) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
 
-    DrmAllocation graphicsAllocation(nullptr, nullptr, 0, MemoryPool::MemoryNull);
+    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 0, MemoryPool::MemoryNull, 1u, false);
 
     csr->makeResident(graphicsAllocation);
 }
@@ -168,8 +161,8 @@ TEST_F(DrmCommandStreamTest, makeResidentResized) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
 
-    DrmAllocation graphicsAllocation(nullptr, nullptr, 1024, MemoryPool::MemoryNull);
-    DrmAllocation graphicsAllocation2(nullptr, nullptr, 8192, MemoryPool::MemoryNull);
+    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u, false);
+    DrmAllocation graphicsAllocation2(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 8192, MemoryPool::MemoryNull, 1u, false);
 
     csr->makeResident(graphicsAllocation);
     csr->makeResident(graphicsAllocation2);
@@ -180,6 +173,21 @@ MATCHER_P2(BoExecFlushEq, batch_start_offset, batch_len, "") {
     drm_i915_gem_execbuffer2 *exec2 = (drm_i915_gem_execbuffer2 *)arg;
 
     return (exec2->batch_start_offset == batch_start_offset) && (exec2->batch_len == batch_len);
+}
+
+// matcher to check DrmContextId
+MATCHER_P2(BoExecFlushContextEq, drmContextId, numExecs, "") {
+    auto execBuff2 = reinterpret_cast<drm_i915_gem_execbuffer2 *>(arg);
+
+    bool allExecsWithTheSameId = (execBuff2->buffer_count == numExecs);
+    allExecsWithTheSameId &= (execBuff2->rsvd1 == drmContextId);
+
+    auto execObjects = reinterpret_cast<drm_i915_gem_exec_object2 *>(execBuff2->buffers_ptr);
+    for (uint32_t i = 0; i < execBuff2->buffer_count - 1; i++) {
+        allExecsWithTheSameId &= (execObjects[i].rsvd1 == drmContextId);
+    }
+
+    return allExecsWithTheSameId;
 }
 
 TEST_F(DrmCommandStreamTest, Flush) {
@@ -217,10 +225,53 @@ TEST_F(DrmCommandStreamTest, Flush) {
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
     auto availableSpacePriorToFlush = cs.getAvailableSpace();
-    auto flushStamp = csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    auto flushStamp = csr->flush(batchBuffer, csr->getResidencyAllocations());
     EXPECT_EQ(static_cast<uint64_t>(boHandle), flushStamp);
     EXPECT_NE(cs.getCpuBase(), nullptr);
     EXPECT_EQ(availableSpacePriorToFlush, cs.getAvailableSpace());
+}
+
+TEST_F(DrmCommandStreamTest, givenDrmContextIdWhenFlushingThenSetIdToAllExecBuffersAndObjects) {
+    uint32_t expectedDrmContextId = 321;
+    uint32_t numAllocations = 3;
+
+    auto createdContextId = [&expectedDrmContextId](unsigned long request, void *arg) {
+        auto contextCreate = static_cast<drm_i915_gem_context_create *>(arg);
+        contextCreate->ctx_id = expectedDrmContextId;
+        return 0;
+    };
+
+    auto allocation1 = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    auto allocation2 = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    csr->makeResident(*allocation1);
+    csr->makeResident(*allocation2);
+
+    EXPECT_CALL(*mock, ioctl(::testing::_, ::testing::_)).WillRepeatedly(::testing::Return(0)).RetiresOnSaturation();
+
+    EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_CONTEXT_CREATE, ::testing::_))
+        .Times(1)
+        .WillRepeatedly(::testing::Invoke(createdContextId))
+        .RetiresOnSaturation();
+
+    EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_EXECBUFFER2, BoExecFlushContextEq(expectedDrmContextId, numAllocations)))
+        .Times(1)
+        .WillRepeatedly(::testing::Return(0))
+        .RetiresOnSaturation();
+
+    osContext = std::make_unique<OsContextLinux>(*mock, 1, 1,
+                                                 HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0],
+                                                 PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
+    csr->setupContext(*osContext);
+
+    auto &cs = csr->getCS();
+
+    csr->addBatchBufferEnd(cs, nullptr);
+    csr->alignToCacheLine(cs);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
+
+    memoryManager->freeGraphicsMemory(allocation1);
+    memoryManager->freeGraphicsMemory(allocation2);
 }
 
 TEST_F(DrmCommandStreamTest, FlushWithLowPriorityContext) {
@@ -252,7 +303,7 @@ TEST_F(DrmCommandStreamTest, FlushWithLowPriorityContext) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, true, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
     EXPECT_NE(cs.getCpuBase(), nullptr);
 }
 
@@ -275,13 +326,13 @@ TEST_F(DrmCommandStreamTest, FlushInvalidAddress) {
     //allocate command buffer manually
     char *commandBuffer = new (std::nothrow) char[1024];
     ASSERT_NE(nullptr, commandBuffer);
-    DrmAllocation commandBufferAllocation(nullptr, commandBuffer, 1024, MemoryPool::MemoryNull);
+    DrmAllocation commandBufferAllocation(GraphicsAllocation::AllocationType::COMMAND_BUFFER, nullptr, commandBuffer, 1024, MemoryPool::MemoryNull, 1u, false);
     LinearStream cs(&commandBufferAllocation);
 
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
     delete[] commandBuffer;
 }
 
@@ -312,7 +363,7 @@ TEST_F(DrmCommandStreamTest, FlushNotEmptyBB) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamTest, FlushNotEmptyNotPaddedBB) {
@@ -341,7 +392,7 @@ TEST_F(DrmCommandStreamTest, FlushNotEmptyNotPaddedBB) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamTest, FlushNotAligned) {
@@ -372,7 +423,7 @@ TEST_F(DrmCommandStreamTest, FlushNotAligned) {
     csr->alignToCacheLine(cs);
 
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 4, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 ACTION_P(UserptrSetHandle, _set_handle) {
@@ -417,14 +468,14 @@ TEST_F(DrmCommandStreamTest, FlushCheckFlags) {
         .Times(1)
         .WillRepeatedly(::testing::Return(0));
 
-    DrmAllocation allocation(nullptr, (void *)0x7FFFFFFF, 1024, MemoryPool::MemoryNull);
-    DrmAllocation allocation2(nullptr, (void *)0x307FFFFFFF, 1024, MemoryPool::MemoryNull);
+    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, (void *)0x7FFFFFFF, 1024, MemoryPool::MemoryNull, 1u, false);
+    DrmAllocation allocation2(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, (void *)0x307FFFFFFF, 1024, MemoryPool::MemoryNull, 1u, false);
     csr->makeResident(allocation);
     csr->makeResident(allocation2);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamTest, CheckDrmFree) {
@@ -451,13 +502,13 @@ TEST_F(DrmCommandStreamTest, CheckDrmFree) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(2);
 
-    DrmAllocation allocation(nullptr, nullptr, 1024, MemoryPool::MemoryNull);
+    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u, false);
 
     csr->makeResident(allocation);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 4, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamTest, GIVENCSRWHENgetDMTHENNotNull) {
@@ -492,168 +543,13 @@ TEST_F(DrmCommandStreamTest, CheckDrmFreeCloseFailed) {
         .WillOnce(::testing::Return(-1));
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(2);
-    DrmAllocation allocation(nullptr, nullptr, 1024, MemoryPool::MemoryNull);
+    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u, false);
 
     csr->makeResident(allocation);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 4, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
-}
-
-struct DrmCsrVfeTests : ::testing::Test {
-    template <typename FamilyType>
-    struct MyCsr : public DrmCommandStreamReceiver<FamilyType> {
-        using CommandStreamReceiver::mediaVfeStateDirty;
-        using DrmCommandStreamReceiver<FamilyType>::mediaVfeStateLowPriorityDirty;
-        using CommandStreamReceiver::commandStream;
-
-        MyCsr() : DrmCommandStreamReceiver<FamilyType>(*platformDevices[0], nullptr, gemCloseWorkerMode::gemCloseWorkerInactive) {}
-        FlushStamp flush(BatchBuffer &batchBuffer, EngineType engineType, ResidencyContainer *allocationsForResidency) override {
-            return (FlushStamp)0;
-        }
-        bool peekDefaultMediaVfeStateDirty() {
-            return mediaVfeStateDirty;
-        }
-        bool peekLowPriorityMediaVfeStateDirty() {
-            return mediaVfeStateLowPriorityDirty;
-        }
-    };
-
-    void flushTask(CommandStreamReceiver &csr, IndirectHeap &stream, bool lowPriority) {
-        dispatchFlags.lowPriority = lowPriority;
-        csr.flushTask(stream, 0, stream, stream, stream, 0, dispatchFlags);
-    }
-
-    HardwareParse hwParser;
-    DispatchFlags dispatchFlags = {};
-    CommandStreamReceiver *oldCsr = nullptr;
-};
-
-HWCMDTEST_F(IGFX_GEN8_CORE, DrmCsrVfeTests, givenNonDirtyVfeForDefaultContextWhenLowPriorityIsFlushedThenReprogram) {
-    std::unique_ptr<MockDevice> device(DeviceHelper<>::create(nullptr));
-    auto mockCsr = new MyCsr<FamilyType>;
-
-    device->resetCommandStreamReceiver(mockCsr);
-
-    auto graphicAlloc = mockCsr->getMemoryManager()->allocateGraphicsMemory(1024);
-    IndirectHeap stream(graphicAlloc);
-
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_TRUE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-    flushTask(*mockCsr, stream, false); //default priority
-    EXPECT_FALSE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_TRUE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    auto startOffset = mockCsr->commandStream.getUsed();
-
-    flushTask(*mockCsr, stream, true); // low priority
-    EXPECT_FALSE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    hwParser.parseCommands<FamilyType>(mockCsr->commandStream, startOffset);
-    auto cmd = hwParser.getCommand<typename FamilyType::MEDIA_VFE_STATE>();
-    EXPECT_NE(nullptr, cmd);
-
-    mockCsr->getMemoryManager()->freeGraphicsMemory(graphicAlloc);
-}
-
-HWCMDTEST_F(IGFX_GEN8_CORE, DrmCsrVfeTests, givenNonDirtyVfeForLowPriorityContextWhenDefaultPriorityIsFlushedThenReprogram) {
-    std::unique_ptr<MockDevice> device(DeviceHelper<>::create(nullptr));
-    auto mockCsr = new MyCsr<FamilyType>;
-
-    device->resetCommandStreamReceiver(mockCsr);
-
-    auto graphicAlloc = mockCsr->getMemoryManager()->allocateGraphicsMemory(1024);
-    IndirectHeap stream(graphicAlloc);
-
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_TRUE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-    flushTask(*mockCsr, stream, true); //low priority
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    auto startOffset = mockCsr->commandStream.getUsed();
-
-    flushTask(*mockCsr, stream, false); // default priority
-    EXPECT_FALSE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    hwParser.parseCommands<FamilyType>(mockCsr->commandStream, startOffset);
-    auto cmd = hwParser.getCommand<typename FamilyType::MEDIA_VFE_STATE>();
-    EXPECT_NE(nullptr, cmd);
-
-    mockCsr->getMemoryManager()->freeGraphicsMemory(graphicAlloc);
-}
-
-HWCMDTEST_F(IGFX_GEN8_CORE, DrmCsrVfeTests, givenNonDirtyVfeForLowPriorityContextWhenLowPriorityIsFlushedThenDontReprogram) {
-    std::unique_ptr<MockDevice> device(DeviceHelper<>::create(nullptr));
-    auto mockCsr = new MyCsr<FamilyType>;
-
-    device->resetCommandStreamReceiver(mockCsr);
-
-    auto graphicAlloc = mockCsr->getMemoryManager()->allocateGraphicsMemory(1024);
-    IndirectHeap stream(graphicAlloc);
-
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_TRUE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-    flushTask(*mockCsr, stream, true); //low priority
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    auto startOffset = mockCsr->commandStream.getUsed();
-
-    flushTask(*mockCsr, stream, true); // low priority
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    hwParser.parseCommands<FamilyType>(mockCsr->commandStream, startOffset);
-    auto cmd = hwParser.getCommand<typename FamilyType::MEDIA_VFE_STATE>();
-    EXPECT_EQ(nullptr, cmd);
-
-    mockCsr->getMemoryManager()->freeGraphicsMemory(graphicAlloc);
-}
-
-HWTEST_F(DrmCsrVfeTests, givenNonDirtyVfeForBothPriorityContextWhenFlushedLowWithScratchRequirementThenMakeDefaultDirty) {
-    std::unique_ptr<MockDevice> device(DeviceHelper<>::create(nullptr));
-    auto mockCsr = new MyCsr<FamilyType>;
-
-    device->resetCommandStreamReceiver(mockCsr);
-
-    auto graphicAlloc = mockCsr->getMemoryManager()->allocateGraphicsMemory(1024);
-    IndirectHeap stream(graphicAlloc);
-
-    mockCsr->overrideMediaVFEStateDirty(false);
-    EXPECT_FALSE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-    mockCsr->setRequiredScratchSize(123);
-
-    flushTask(*mockCsr, stream, true); //low priority
-    EXPECT_TRUE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    mockCsr->getMemoryManager()->freeGraphicsMemory(graphicAlloc);
-}
-
-HWTEST_F(DrmCsrVfeTests, givenNonDirtyVfeForBothPriorityContextWhenFlushedDefaultWithScratchRequirementThenMakeLowDirty) {
-    std::unique_ptr<MockDevice> device(DeviceHelper<>::create(nullptr));
-    auto mockCsr = new MyCsr<FamilyType>;
-
-    device->resetCommandStreamReceiver(mockCsr);
-
-    auto graphicAlloc = mockCsr->getMemoryManager()->allocateGraphicsMemory(1024);
-    IndirectHeap stream(graphicAlloc);
-
-    mockCsr->overrideMediaVFEStateDirty(false);
-    EXPECT_FALSE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_FALSE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-    mockCsr->setRequiredScratchSize(123);
-
-    flushTask(*mockCsr, stream, false); //default priority
-    EXPECT_FALSE(mockCsr->peekDefaultMediaVfeStateDirty());
-    EXPECT_TRUE(mockCsr->peekLowPriorityMediaVfeStateDirty());
-
-    mockCsr->getMemoryManager()->freeGraphicsMemory(graphicAlloc);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 /* **** **** **** **** **** **** **** **** **** **** **** **** **** **** **** ****
@@ -663,41 +559,47 @@ class DrmCommandStreamEnhancedFixture
 
 {
   public:
-    DrmMockCustom *mock;
+    std::unique_ptr<DebugManagerStateRestore> dbgState;
+    ExecutionEnvironment *executionEnvironment;
+    std::unique_ptr<DrmMockCustom> mock;
     DeviceCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> *csr = nullptr;
-    DrmMemoryManager *mm = nullptr;
-    MockDevice *device = nullptr;
-    DebugManagerStateRestore *dbgState;
 
-    void SetUp() {
-        ExecutionEnvironment *executionEnvironment = new ExecutionEnvironment;
-        executionEnvironment->initGmm(*platformDevices);
-        this->dbgState = new DebugManagerStateRestore();
+    DrmMemoryManager *mm = nullptr;
+    std::unique_ptr<MockDevice> device;
+
+    virtual void SetUp() {
+        executionEnvironment = new ExecutionEnvironment;
+        executionEnvironment->incRefInternal();
+        executionEnvironment->setHwInfo(*platformDevices);
+        executionEnvironment->initGmm();
+        this->dbgState = std::make_unique<DebugManagerStateRestore>();
         //make sure this is disabled, we don't want test this now
         DebugManager.flags.EnableForcePin.set(false);
 
-        mock = new DrmMockCustom();
-        tCsr = new TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME>(mock);
+        mock = std::make_unique<DrmMockCustom>();
+        executionEnvironment->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->osInterface->get()->setDrm(mock.get());
+
+        tCsr = new TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME>(*executionEnvironment);
         csr = tCsr;
         ASSERT_NE(nullptr, csr);
-        mm = reinterpret_cast<DrmMemoryManager *>(csr->createMemoryManager(false));
+        mm = new DrmMemoryManager(gemCloseWorkerInactive,
+                                  DebugManager.flags.EnableForcePin.get(),
+                                  true,
+                                  *executionEnvironment);
         ASSERT_NE(nullptr, mm);
         executionEnvironment->memoryManager.reset(mm);
-        device = Device::create<MockDevice>(platformDevices[0], executionEnvironment);
+        device.reset(MockDevice::create<MockDevice>(platformDevices[0], executionEnvironment, 0u));
+        device->resetCommandStreamReceiver(tCsr);
         ASSERT_NE(nullptr, device);
-        mm->device = device;
     }
 
-    void TearDown() {
-        //And close at destruction
-        delete csr;
-        delete device;
-        delete mock;
-        delete dbgState;
+    virtual void TearDown() {
+        executionEnvironment->decRefInternal();
     }
 
     bool isResident(BufferObject *bo) {
-        return tCsr->isResident(bo) && bo->peekIsResident();
+        return tCsr->isResident(bo);
     }
 
     const BufferObject *getResident(BufferObject *bo) {
@@ -705,70 +607,6 @@ class DrmCommandStreamEnhancedFixture
     }
 
   protected:
-    template <typename GfxFamily>
-    class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily> {
-      public:
-        using CommandStreamReceiver::commandStream;
-
-        TestedDrmCommandStreamReceiver(Drm *drm, gemCloseWorkerMode mode) : DrmCommandStreamReceiver<GfxFamily>(*platformDevices[0], drm, mode) {
-        }
-        TestedDrmCommandStreamReceiver(Drm *drm) : DrmCommandStreamReceiver<GfxFamily>(*platformDevices[0], drm, gemCloseWorkerMode::gemCloseWorkerInactive) {
-        }
-
-        void overrideGemCloseWorkerOperationMode(gemCloseWorkerMode overrideValue) {
-            this->gemCloseWorkerOperationMode = overrideValue;
-        }
-
-        void overrideDispatchPolicy(DispatchMode overrideValue) {
-            this->dispatchMode = overrideValue;
-        }
-
-        bool isResident(BufferObject *bo) {
-            bool resident = false;
-            for (auto it : this->residency) {
-                if (it == bo) {
-                    resident = true;
-                    break;
-                }
-            }
-            return resident;
-        }
-
-        void makeNonResident(GraphicsAllocation &gfxAllocation) override {
-            makeNonResidentResult.called = true;
-            makeNonResidentResult.allocation = &gfxAllocation;
-            DrmCommandStreamReceiver<GfxFamily>::makeNonResident(gfxAllocation);
-        }
-
-        const BufferObject *getResident(BufferObject *bo) {
-            BufferObject *ret = nullptr;
-            for (auto it : this->residency) {
-                if (it == bo) {
-                    ret = it;
-                    break;
-                }
-            }
-            return ret;
-        }
-
-        struct MakeResidentNonResidentResult {
-            bool called;
-            GraphicsAllocation *allocation;
-        };
-
-        MakeResidentNonResidentResult makeNonResidentResult;
-        std::vector<BufferObject *> *getResidencyVector() { return &this->residency; }
-
-        SubmissionAggregator *peekSubmissionAggregator() {
-            return this->submissionAggregator.get();
-        }
-        void overrideSubmissionAggregator(SubmissionAggregator *newSubmissionsAggregator) {
-            this->submissionAggregator.reset(newSubmissionsAggregator);
-        }
-        std::vector<drm_i915_gem_exec_object2> &getExecStorage() {
-            return this->execObjectsStorage;
-        }
-    };
     TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> *tCsr = nullptr;
 
     class MockBufferObject : public BufferObject {
@@ -776,15 +614,15 @@ class DrmCommandStreamEnhancedFixture
 
       protected:
         MockBufferObject(Drm *drm, size_t size) : BufferObject(drm, 1, false) {
-            this->isSoftpin = true;
             this->size = alignUp(size, 4096);
         }
     };
 
     MockBufferObject *createBO(size_t size) {
-        return new MockBufferObject(this->mock, size);
+        return new MockBufferObject(this->mock.get(), size);
     }
 };
+
 typedef Test<DrmCommandStreamEnhancedFixture> DrmCommandStreamGemWorkerTests;
 
 TEST_F(DrmCommandStreamGemWorkerTests, givenDefaultDrmCSRWhenItIsCreatedThenGemCloseWorkerModeIsInactive) {
@@ -792,7 +630,7 @@ TEST_F(DrmCommandStreamGemWorkerTests, givenDefaultDrmCSRWhenItIsCreatedThenGemC
 }
 
 TEST_F(DrmCommandStreamGemWorkerTests, givenCommandStreamWhenItIsFlushedWithGemCloseWorkerInDefaultModeThenWorkerDecreasesTheRefCount) {
-    auto commandBuffer = mm->allocateGraphicsMemory(static_cast<size_t>(1024));
+    auto commandBuffer = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, commandBuffer);
     LinearStream cs(commandBuffer);
 
@@ -801,15 +639,12 @@ TEST_F(DrmCommandStreamGemWorkerTests, givenCommandStreamWhenItIsFlushedWithGemC
     auto storedBase = cs.getCpuBase();
     auto storedGraphicsAllocation = cs.getGraphicsAllocation();
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
     EXPECT_EQ(cs.getCpuBase(), storedBase);
     EXPECT_EQ(cs.getGraphicsAllocation(), storedGraphicsAllocation);
 
-    auto drmAllocation = (DrmAllocation *)storedGraphicsAllocation;
+    auto drmAllocation = static_cast<DrmAllocation *>(storedGraphicsAllocation);
     auto bo = drmAllocation->getBO();
-
-    //no allocations should be connected
-    EXPECT_EQ(bo->getResidency()->size(), 0u);
 
     //spin until gem close worker finishes execution
     while (bo->getRefCount() > 1)
@@ -825,31 +660,29 @@ TEST_F(DrmCommandStreamGemWorkerTests, givenTaskThatRequiresLargeResourceCountWh
     execStorage.resize(0);
 
     for (auto id = 0; id < 10; id++) {
-        auto graphicsAllocation = mm->allocateGraphicsMemory(1);
+        auto graphicsAllocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
         csr->makeResident(*graphicsAllocation);
         graphicsAllocations.push_back(graphicsAllocation);
     }
-    auto commandBuffer = mm->allocateGraphicsMemory(1024);
+    auto commandBuffer = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     LinearStream cs(commandBuffer);
 
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 
     EXPECT_EQ(11u, this->mock->execBuffer.buffer_count);
     mm->freeGraphicsMemory(commandBuffer);
     for (auto graphicsAllocation : graphicsAllocations) {
-        DrmAllocation *drmAlloc = reinterpret_cast<DrmAllocation *>(graphicsAllocation);
-        EXPECT_FALSE(drmAlloc->getBO()->peekIsResident());
         mm->freeGraphicsMemory(graphicsAllocation);
     }
     EXPECT_EQ(11u, execStorage.size());
 }
 
 TEST_F(DrmCommandStreamGemWorkerTests, givenGemCloseWorkerInactiveModeWhenMakeResidentIsCalledThenRefCountsAreNotUpdated) {
-    auto dummyAllocation = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
+    auto dummyAllocation = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
 
     auto bo = dummyAllocation->getBO();
     EXPECT_EQ(1u, bo->getRefCount());
@@ -857,7 +690,7 @@ TEST_F(DrmCommandStreamGemWorkerTests, givenGemCloseWorkerInactiveModeWhenMakeRe
     csr->makeResident(*dummyAllocation);
     EXPECT_EQ(1u, bo->getRefCount());
 
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     csr->makeNonResident(*dummyAllocation);
     EXPECT_EQ(1u, bo->getRefCount());
@@ -866,27 +699,29 @@ TEST_F(DrmCommandStreamGemWorkerTests, givenGemCloseWorkerInactiveModeWhenMakeRe
 }
 
 TEST_F(DrmCommandStreamGemWorkerTests, GivenTwoAllocationsWhenBackingStorageIsDifferentThenMakeResidentShouldAddTwoLocations) {
-    auto allocation = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
-    auto allocation2 = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
+    auto allocation = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
+    auto allocation2 = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
 
-    auto bo1 = allocation->getBO();
-    auto bo2 = allocation2->getBO();
     csr->makeResident(*allocation);
     csr->makeResident(*allocation2);
 
-    EXPECT_FALSE(bo1->peekIsResident());
-    EXPECT_FALSE(bo2->peekIsResident());
+    auto osContextId = csr->getOsContext().getContextId();
 
-    csr->processResidency(nullptr);
+    EXPECT_TRUE(allocation->isResident(osContextId));
+    EXPECT_TRUE(allocation2->isResident(osContextId));
 
-    EXPECT_TRUE(bo1->peekIsResident());
-    EXPECT_TRUE(bo2->peekIsResident());
+    csr->processResidency(csr->getResidencyAllocations());
+
+    EXPECT_TRUE(allocation->isResident(osContextId));
+    EXPECT_TRUE(allocation2->isResident(osContextId));
+
     EXPECT_EQ(tCsr->getResidencyVector()->size(), 2u);
 
     csr->makeNonResident(*allocation);
     csr->makeNonResident(*allocation2);
-    EXPECT_FALSE(bo1->peekIsResident());
-    EXPECT_FALSE(bo2->peekIsResident());
+
+    EXPECT_FALSE(allocation->isResident(osContextId));
+    EXPECT_FALSE(allocation2->isResident(osContextId));
 
     EXPECT_EQ(tCsr->getResidencyVector()->size(), 0u);
     mm->freeGraphicsMemory(allocation);
@@ -894,8 +729,8 @@ TEST_F(DrmCommandStreamGemWorkerTests, GivenTwoAllocationsWhenBackingStorageIsDi
 }
 
 TEST_F(DrmCommandStreamGemWorkerTests, givenCommandStreamWithDuplicatesWhenItIsFlushedWithGemCloseWorkerInactiveModeThenCsIsNotNulled) {
-    auto commandBuffer = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
-    auto dummyAllocation = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
+    auto commandBuffer = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
+    auto dummyAllocation = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
     ASSERT_NE(nullptr, commandBuffer);
     ASSERT_EQ(0u, reinterpret_cast<uintptr_t>(commandBuffer->getUnderlyingBuffer()) & 0xFFF);
     LinearStream cs(commandBuffer);
@@ -908,22 +743,19 @@ TEST_F(DrmCommandStreamGemWorkerTests, givenCommandStreamWithDuplicatesWhenItIsF
     auto storedBase = cs.getCpuBase();
     auto storedGraphicsAllocation = cs.getGraphicsAllocation();
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
     EXPECT_EQ(cs.getCpuBase(), storedBase);
     EXPECT_EQ(cs.getGraphicsAllocation(), storedGraphicsAllocation);
-
-    auto drmAllocation = (DrmAllocation *)storedGraphicsAllocation;
-    auto bo = drmAllocation->getBO();
-
-    //no allocations should be connected
-    EXPECT_EQ(bo->getResidency()->size(), 0u);
 
     mm->freeGraphicsMemory(dummyAllocation);
     mm->freeGraphicsMemory(commandBuffer);
 }
 
 TEST_F(DrmCommandStreamGemWorkerTests, givenDrmCsrCreatedWithInactiveGemCloseWorkerPolicyThenThreadIsNotCreated) {
-    TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> testedCsr(mock, gemCloseWorkerMode::gemCloseWorkerInactive);
+    this->executionEnvironment->osInterface = std::make_unique<OSInterface>();
+    this->executionEnvironment->osInterface->get()->setDrm(mock.get());
+    TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME> testedCsr(gemCloseWorkerMode::gemCloseWorkerInactive,
+                                                                       *this->executionEnvironment);
     EXPECT_EQ(gemCloseWorkerMode::gemCloseWorkerInactive, testedCsr.peekGemCloseWorkerOperationMode());
 }
 
@@ -936,9 +768,9 @@ class DrmCommandStreamBatchingTests : public Test<DrmCommandStreamEnhancedFixtur
         DrmCommandStreamEnhancedFixture::SetUp();
         if (PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]) == PreemptionMode::MidThread) {
             tmpAllocation = GlobalMockSipProgram::sipProgram->getAllocation();
-            GlobalMockSipProgram::sipProgram->resetAllocation(device->getMemoryManager()->allocateGraphicsMemory(1024));
+            GlobalMockSipProgram::sipProgram->resetAllocation(device->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
         }
-        tagAllocation = static_cast<DrmAllocation *>(device->getTagAllocation());
+        tagAllocation = static_cast<DrmAllocation *>(device->getDefaultEngine().commandStreamReceiver->getTagAllocation());
         preemptionAllocation = static_cast<DrmAllocation *>(device->getPreemptionAllocation());
     }
     void TearDown() override {
@@ -951,8 +783,9 @@ class DrmCommandStreamBatchingTests : public Test<DrmCommandStreamEnhancedFixtur
 };
 
 TEST_F(DrmCommandStreamBatchingTests, givenCSRWhenFlushIsCalledThenProperFlagsArePassed) {
-    auto commandBuffer = mm->allocateGraphicsMemory(1024);
-    auto dummyAllocation = mm->allocateGraphicsMemory(1024);
+    mock->reset();
+    auto commandBuffer = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    auto dummyAllocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, commandBuffer);
     ASSERT_EQ(0u, reinterpret_cast<uintptr_t>(commandBuffer->getUnderlyingBuffer()) & 0xFFF);
     LinearStream cs(commandBuffer);
@@ -962,13 +795,17 @@ TEST_F(DrmCommandStreamBatchingTests, givenCSRWhenFlushIsCalledThenProperFlagsAr
     csr->alignToCacheLine(cs);
 
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 
-    //preemption allocation + Sip Kernel
-    int ioctlExtraCnt = (PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]) == PreemptionMode::MidThread) ? 2 : 0;
+    int ioctlExecCnt = 1;
+    int ioctlUserPtrCnt = 2;
 
-    EXPECT_EQ(6 + ioctlExtraCnt, this->mock->ioctl_cnt.total);
-    uint64_t flags = I915_EXEC_RENDER | I915_EXEC_NO_RELOC;
+    auto engineFlag = static_cast<OsContextLinux &>(csr->getOsContext()).getEngineFlag();
+
+    EXPECT_EQ(ioctlExecCnt + ioctlUserPtrCnt, this->mock->ioctl_cnt.total);
+    EXPECT_EQ(ioctlExecCnt, this->mock->ioctl_cnt.execbuffer2);
+    EXPECT_EQ(ioctlUserPtrCnt, this->mock->ioctl_cnt.gemUserptr);
+    uint64_t flags = engineFlag | I915_EXEC_NO_RELOC;
     EXPECT_EQ(flags, this->mock->execBuffer.flags);
 
     mm->freeGraphicsMemory(dummyAllocation);
@@ -976,28 +813,25 @@ TEST_F(DrmCommandStreamBatchingTests, givenCSRWhenFlushIsCalledThenProperFlagsAr
 }
 
 TEST_F(DrmCommandStreamBatchingTests, givenCsrWhenDispatchPolicyIsSetToBatchingThenCommandBufferIsNotSubmitted) {
+    mock->reset();
     tCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
 
     auto mockedSubmissionsAggregator = new mockSubmissionsAggregator();
     tCsr->overrideSubmissionAggregator(mockedSubmissionsAggregator);
 
-    auto commandBuffer = mm->allocateGraphicsMemory(1024);
-    auto dummyAllocation = mm->allocateGraphicsMemory(1024);
+    auto commandBuffer = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    auto dummyAllocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, commandBuffer);
     ASSERT_EQ(0u, reinterpret_cast<uintptr_t>(commandBuffer->getUnderlyingBuffer()) & 0xFFF);
     IndirectHeap cs(commandBuffer);
 
     tCsr->makeResident(*dummyAllocation);
 
-    std::unique_ptr<Device> device(DeviceHelper<>::create(nullptr));
-
-    tCsr->getMemoryManager()->device = device.get();
-
     tCsr->setTagAllocation(tagAllocation);
     tCsr->setPreemptionCsrAllocation(preemptionAllocation);
     DispatchFlags dispatchFlags;
     dispatchFlags.preemptionMode = PreemptionHelper::getDefaultPreemptionMode(device->getHardwareInfo());
-    tCsr->flushTask(cs, 0u, cs, cs, cs, 0u, dispatchFlags);
+    tCsr->flushTask(cs, 0u, cs, cs, cs, 0u, dispatchFlags, *device);
 
     //make sure command buffer is recorded
     auto &cmdBuffers = mockedSubmissionsAggregator->peekCommandBuffers();
@@ -1005,10 +839,7 @@ TEST_F(DrmCommandStreamBatchingTests, givenCsrWhenDispatchPolicyIsSetToBatchingT
     EXPECT_NE(nullptr, cmdBuffers.peekHead());
 
     //preemption allocation
-    size_t csrSurfaceCount = (tCsr->getMemoryManager()->device->getPreemptionMode() == PreemptionMode::MidThread) ? 2 : 0;
-
-    //preemption allocation + sipKernel
-    int ioctlExtraCnt = (PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]) == PreemptionMode::MidThread) ? 2 : 0;
+    size_t csrSurfaceCount = (device->getPreemptionMode() == PreemptionMode::MidThread) ? 2 : 0;
 
     auto recordedCmdBuffer = cmdBuffers.peekHead();
     EXPECT_EQ(3u + csrSurfaceCount, recordedCmdBuffer->surfaces.size());
@@ -1025,28 +856,29 @@ TEST_F(DrmCommandStreamBatchingTests, givenCsrWhenDispatchPolicyIsSetToBatchingT
 
     EXPECT_EQ(tCsr->commandStream.getGraphicsAllocation(), recordedCmdBuffer->batchBuffer.commandBufferAllocation);
 
-    EXPECT_EQ(6 + ioctlExtraCnt, this->mock->ioctl_cnt.total);
+    int ioctlUserPtrCnt = 3;
+
+    EXPECT_EQ(ioctlUserPtrCnt, this->mock->ioctl_cnt.total);
+    EXPECT_EQ(ioctlUserPtrCnt, this->mock->ioctl_cnt.gemUserptr);
 
     EXPECT_EQ(0u, this->mock->execBuffer.flags);
 
+    tCsr->flushBatchedSubmissions();
+
     mm->freeGraphicsMemory(dummyAllocation);
     mm->freeGraphicsMemory(commandBuffer);
-    tCsr->setTagAllocation(nullptr);
-    tCsr->setPreemptionCsrAllocation(nullptr);
 }
 
 TEST_F(DrmCommandStreamBatchingTests, givenRecordedCommandBufferWhenItIsSubmittedThenFlushTaskIsProperlyCalled) {
+    mock->reset();
     tCsr->overrideDispatchPolicy(DispatchMode::BatchedDispatch);
 
     auto mockedSubmissionsAggregator = new mockSubmissionsAggregator();
     tCsr->overrideSubmissionAggregator(mockedSubmissionsAggregator);
 
-    auto commandBuffer = mm->allocateGraphicsMemory(1024);
-    auto dummyAllocation = mm->allocateGraphicsMemory(1024);
+    auto commandBuffer = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     IndirectHeap cs(commandBuffer);
-    std::unique_ptr<Device> device(DeviceHelper<>::create(nullptr));
 
-    tCsr->getMemoryManager()->device = device.get();
     tCsr->setTagAllocation(tagAllocation);
     tCsr->setPreemptionCsrAllocation(preemptionAllocation);
     auto &submittedCommandBuffer = tCsr->getCS(1024);
@@ -1056,7 +888,7 @@ TEST_F(DrmCommandStreamBatchingTests, givenRecordedCommandBufferWhenItIsSubmitte
     DispatchFlags dispatchFlags;
     dispatchFlags.guardCommandBufferWithPipeControl = true;
     dispatchFlags.preemptionMode = PreemptionHelper::getDefaultPreemptionMode(device->getHardwareInfo());
-    tCsr->flushTask(cs, 0u, cs, cs, cs, 0u, dispatchFlags);
+    tCsr->flushTask(cs, 0u, cs, cs, cs, 0u, dispatchFlags, *device);
 
     auto &cmdBuffers = mockedSubmissionsAggregator->peekCommandBuffers();
     auto storedCommandBuffer = cmdBuffers.peekHead();
@@ -1069,13 +901,10 @@ TEST_F(DrmCommandStreamBatchingTests, givenRecordedCommandBufferWhenItIsSubmitte
     EXPECT_TRUE(cmdBuffers.peekIsEmpty());
 
     auto commandBufferGraphicsAllocation = submittedCommandBuffer.getGraphicsAllocation();
-    EXPECT_FALSE(commandBufferGraphicsAllocation->isResident());
+    EXPECT_FALSE(commandBufferGraphicsAllocation->isResident(tCsr->getOsContext().getContextId()));
 
     //preemption allocation
-    size_t csrSurfaceCount = (tCsr->getMemoryManager()->device->getPreemptionMode() == PreemptionMode::MidThread) ? 2 : 0;
-
-    //preemption allocation +sip Kernel
-    int ioctlExtraCnt = (PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]) == PreemptionMode::MidThread) ? 2 : 0;
+    size_t csrSurfaceCount = (device->getPreemptionMode() == PreemptionMode::MidThread) ? 2 : 0;
 
     //validate that submited command buffer has what we want
     EXPECT_EQ(3u + csrSurfaceCount, this->mock->execBuffer.buffer_count);
@@ -1089,7 +918,7 @@ TEST_F(DrmCommandStreamBatchingTests, givenRecordedCommandBufferWhenItIsSubmitte
 
         auto handleFound = false;
         for (auto &graphicsAllocation : copyOfResidency) {
-            auto bo = ((DrmAllocation *)graphicsAllocation)->getBO();
+            auto bo = static_cast<DrmAllocation *>(graphicsAllocation)->getBO();
             if (bo->peekHandle() == handle) {
                 handleFound = true;
             }
@@ -1097,11 +926,13 @@ TEST_F(DrmCommandStreamBatchingTests, givenRecordedCommandBufferWhenItIsSubmitte
         EXPECT_TRUE(handleFound);
     }
 
-    EXPECT_EQ(7 + ioctlExtraCnt, this->mock->ioctl_cnt.total);
+    int ioctlExecCnt = 1;
+    int ioctlUserPtrCnt = 2;
+    EXPECT_EQ(ioctlExecCnt, this->mock->ioctl_cnt.execbuffer2);
+    EXPECT_EQ(ioctlUserPtrCnt, this->mock->ioctl_cnt.gemUserptr);
+    EXPECT_EQ(ioctlExecCnt + ioctlUserPtrCnt, this->mock->ioctl_cnt.total);
 
-    mm->freeGraphicsMemory(dummyAllocation);
     mm->freeGraphicsMemory(commandBuffer);
-    tCsr->setTagAllocation(nullptr);
     tCsr->setPreemptionCsrAllocation(nullptr);
 }
 
@@ -1109,11 +940,11 @@ typedef Test<DrmCommandStreamEnhancedFixture> DrmCommandStreamLeaksTest;
 
 TEST_F(DrmCommandStreamLeaksTest, makeResident) {
     auto buffer = this->createBO(1024);
-    auto allocation = new DrmAllocation(buffer, nullptr, buffer->peekSize(), MemoryPool::MemoryNull);
+    auto allocation = new DrmAllocation(GraphicsAllocation::AllocationType::UNDECIDED, buffer, nullptr, buffer->peekSize(), MemoryPool::MemoryNull, 1u, false);
     EXPECT_EQ(nullptr, allocation->getUnderlyingBuffer());
 
     csr->makeResident(*allocation);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_TRUE(isResident(buffer));
     auto bo = getResident(buffer);
@@ -1131,14 +962,14 @@ TEST_F(DrmCommandStreamLeaksTest, makeResident) {
 TEST_F(DrmCommandStreamLeaksTest, makeResidentOnly) {
     BufferObject *buffer1 = this->createBO(4096);
     BufferObject *buffer2 = this->createBO(4096);
-    auto allocation1 = new DrmAllocation(buffer1, nullptr, buffer1->peekSize(), MemoryPool::MemoryNull);
-    auto allocation2 = new DrmAllocation(buffer2, nullptr, buffer2->peekSize(), MemoryPool::MemoryNull);
+    auto allocation1 = new DrmAllocation(GraphicsAllocation::AllocationType::UNDECIDED, buffer1, nullptr, buffer1->peekSize(), MemoryPool::MemoryNull, 1u, false);
+    auto allocation2 = new DrmAllocation(GraphicsAllocation::AllocationType::UNDECIDED, buffer2, nullptr, buffer2->peekSize(), MemoryPool::MemoryNull, 1u, false);
     EXPECT_EQ(nullptr, allocation1->getUnderlyingBuffer());
     EXPECT_EQ(nullptr, allocation2->getUnderlyingBuffer());
 
     csr->makeResident(*allocation1);
     csr->makeResident(*allocation2);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_TRUE(isResident(buffer1));
     EXPECT_TRUE(isResident(buffer2));
@@ -1159,19 +990,19 @@ TEST_F(DrmCommandStreamLeaksTest, makeResidentOnly) {
 
 TEST_F(DrmCommandStreamLeaksTest, makeResidentTwice) {
     auto buffer = this->createBO(1024);
-    auto allocation = new DrmAllocation(buffer, nullptr, buffer->peekSize(), MemoryPool::MemoryNull);
+    auto allocation = new DrmAllocation(GraphicsAllocation::AllocationType::UNDECIDED, buffer, nullptr, buffer->peekSize(), MemoryPool::MemoryNull, 1u, false);
 
     csr->makeResident(*allocation);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_TRUE(isResident(buffer));
     auto bo1 = getResident(buffer);
     EXPECT_EQ(buffer, bo1);
     EXPECT_EQ(1u, bo1->getRefCount());
 
-    csr->getMemoryManager()->clearResidencyAllocations();
+    csr->getResidencyAllocations().clear();
     csr->makeResident(*allocation);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_TRUE(isResident(buffer));
     auto bo2 = getResident(buffer);
@@ -1190,18 +1021,16 @@ TEST_F(DrmCommandStreamLeaksTest, makeResidentTwice) {
 TEST_F(DrmCommandStreamLeaksTest, makeResidentTwiceWhenFragmentStorage) {
     auto ptr = (void *)0x1001;
     auto size = MemoryConstants::pageSize * 10;
-    auto reqs = HostPtrManager::getAllocationRequirements(ptr, size);
-    auto allocation = mm->allocateGraphicsMemory(size, ptr);
-    auto &hostPtrManager = mm->hostPtrManager;
+    auto reqs = MockHostPtrManager::getAllocationRequirements(ptr, size);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
 
-    EXPECT_EQ(3u, hostPtrManager.getFragmentCount());
     ASSERT_EQ(3u, allocation->fragmentsStorage.fragmentCount);
 
     csr->makeResident(*allocation);
     csr->makeResident(*allocation);
 
-    csr->processResidency(nullptr);
-    for (int i = 0; i < max_fragments_count; i++) {
+    csr->processResidency(csr->getResidencyAllocations());
+    for (int i = 0; i < maxFragmentsCount; i++) {
         ASSERT_EQ(allocation->fragmentsStorage.fragmentStorageData[i].cpuPtr,
                   reqs.AllocationFragments[i].allocationPtr);
         auto bo = allocation->fragmentsStorage.fragmentStorageData[i].osHandleStorage->bo;
@@ -1212,7 +1041,7 @@ TEST_F(DrmCommandStreamLeaksTest, makeResidentTwiceWhenFragmentStorage) {
     }
 
     csr->makeNonResident(*allocation);
-    for (int i = 0; i < max_fragments_count; i++) {
+    for (int i = 0; i < maxFragmentsCount; i++) {
         auto bo = allocation->fragmentsStorage.fragmentStorageData[i].osHandleStorage->bo;
         EXPECT_FALSE(isResident(bo));
         auto bo1 = getResident(bo);
@@ -1227,15 +1056,12 @@ TEST_F(DrmCommandStreamLeaksTest, givenFragmentedAllocationsWithResuedFragmentsW
     //3 fragments
     auto ptr = (void *)0x1001;
     auto size = MemoryConstants::pageSize * 10;
-    auto graphicsAllocation = mm->allocateGraphicsMemory(size, ptr);
+    auto graphicsAllocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
 
     auto offsetedPtr = (void *)((uintptr_t)ptr + size);
     auto size2 = MemoryConstants::pageSize - 1;
 
-    auto graphicsAllocation2 = mm->allocateGraphicsMemory(size2, offsetedPtr);
-
-    auto &hostPtrManager = mm->hostPtrManager;
-    ASSERT_EQ(3u, hostPtrManager.getFragmentCount());
+    auto graphicsAllocation2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size2}, offsetedPtr);
 
     //graphicsAllocation2 reuses one fragment from graphicsAllocation
     EXPECT_EQ(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency, graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency);
@@ -1243,47 +1069,49 @@ TEST_F(DrmCommandStreamLeaksTest, givenFragmentedAllocationsWithResuedFragmentsW
     tCsr->makeResident(*graphicsAllocation);
     tCsr->makeResident(*graphicsAllocation2);
 
-    tCsr->processResidency(nullptr);
+    tCsr->processResidency(csr->getResidencyAllocations());
 
-    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident);
-    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident);
-    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident);
-    EXPECT_TRUE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident);
+    auto &osContext = tCsr->getOsContext();
+
+    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
+    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident[osContext.getContextId()]);
+    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident[osContext.getContextId()]);
+    EXPECT_TRUE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
 
     auto residency = tCsr->getResidencyVector();
 
     EXPECT_EQ(3u, residency->size());
 
-    tCsr->makeSurfacePackNonResident(nullptr, false);
+    tCsr->makeSurfacePackNonResident(tCsr->getResidencyAllocations());
 
     //check that each packet is not resident
-    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident);
-    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident);
-    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident);
-    EXPECT_FALSE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident);
+    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
+    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident[osContext.getContextId()]);
+    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident[osContext.getContextId()]);
+    EXPECT_FALSE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
 
     EXPECT_EQ(0u, residency->size());
 
     tCsr->makeResident(*graphicsAllocation);
     tCsr->makeResident(*graphicsAllocation2);
 
-    tCsr->processResidency(nullptr);
+    tCsr->processResidency(csr->getResidencyAllocations());
 
-    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident);
-    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident);
-    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident);
-    EXPECT_TRUE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident);
+    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
+    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident[osContext.getContextId()]);
+    EXPECT_TRUE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident[osContext.getContextId()]);
+    EXPECT_TRUE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
 
     EXPECT_EQ(3u, residency->size());
 
-    tCsr->makeSurfacePackNonResident(nullptr, false);
+    tCsr->makeSurfacePackNonResident(tCsr->getResidencyAllocations());
 
     EXPECT_EQ(0u, residency->size());
 
-    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident);
-    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident);
-    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident);
-    EXPECT_FALSE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident);
+    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
+    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[1].residency->resident[osContext.getContextId()]);
+    EXPECT_FALSE(graphicsAllocation->fragmentsStorage.fragmentStorageData[2].residency->resident[osContext.getContextId()]);
+    EXPECT_FALSE(graphicsAllocation2->fragmentsStorage.fragmentStorageData[0].residency->resident[osContext.getContextId()]);
 
     mm->freeGraphicsMemory(graphicsAllocation);
     mm->freeGraphicsMemory(graphicsAllocation2);
@@ -1293,19 +1121,16 @@ TEST_F(DrmCommandStreamLeaksTest, GivenAllocationCreatedFromThreeFragmentsWhenMa
     auto ptr = (void *)0x1001;
     auto size = MemoryConstants::pageSize * 10;
 
-    auto reqs = HostPtrManager::getAllocationRequirements(ptr, size);
+    auto reqs = MockHostPtrManager::getAllocationRequirements(ptr, size);
 
-    auto allocation = mm->allocateGraphicsMemory(size, ptr);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
 
-    auto &hostPtrManager = mm->hostPtrManager;
-
-    EXPECT_EQ(3u, hostPtrManager.getFragmentCount());
     ASSERT_EQ(3u, allocation->fragmentsStorage.fragmentCount);
 
     csr->makeResident(*allocation);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
-    for (int i = 0; i < max_fragments_count; i++) {
+    for (int i = 0; i < maxFragmentsCount; i++) {
         ASSERT_EQ(allocation->fragmentsStorage.fragmentStorageData[i].cpuPtr,
                   reqs.AllocationFragments[i].allocationPtr);
         auto bo = allocation->fragmentsStorage.fragmentStorageData[i].osHandleStorage->bo;
@@ -1315,7 +1140,7 @@ TEST_F(DrmCommandStreamLeaksTest, GivenAllocationCreatedFromThreeFragmentsWhenMa
         EXPECT_EQ(1u, bo1->getRefCount());
     }
     csr->makeNonResident(*allocation);
-    for (int i = 0; i < max_fragments_count; i++) {
+    for (int i = 0; i < maxFragmentsCount; i++) {
         auto bo = allocation->fragmentsStorage.fragmentStorageData[i].osHandleStorage->bo;
         EXPECT_FALSE(isResident(bo));
         auto bo1 = getResident(bo);
@@ -1328,20 +1153,17 @@ TEST_F(DrmCommandStreamLeaksTest, GivenAllocationCreatedFromThreeFragmentsWhenMa
 TEST_F(DrmCommandStreamLeaksTest, GivenAllocationsContainingDifferentCountOfFragmentsWhenAllocationIsMadeResidentThenAllFragmentsAreMadeResident) {
     auto ptr = (void *)0x1001;
     auto size = MemoryConstants::pageSize;
-    auto size2 = 100;
+    auto size2 = 100u;
 
-    auto reqs = HostPtrManager::getAllocationRequirements(ptr, size);
+    auto reqs = MockHostPtrManager::getAllocationRequirements(ptr, size);
 
-    auto allocation = mm->allocateGraphicsMemory(size, ptr);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
 
-    auto &hostPtrManager = mm->hostPtrManager;
-
-    EXPECT_EQ(2u, hostPtrManager.getFragmentCount());
     ASSERT_EQ(2u, allocation->fragmentsStorage.fragmentCount);
     ASSERT_EQ(2u, reqs.requiredFragmentsCount);
 
     csr->makeResident(*allocation);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     for (unsigned int i = 0; i < reqs.requiredFragmentsCount; i++) {
         ASSERT_EQ(allocation->fragmentsStorage.fragmentStorageData[i].cpuPtr,
@@ -1361,19 +1183,16 @@ TEST_F(DrmCommandStreamLeaksTest, GivenAllocationsContainingDifferentCountOfFrag
         EXPECT_EQ(1u, bo->getRefCount());
     }
     mm->freeGraphicsMemory(allocation);
-    mm->clearResidencyAllocations();
+    csr->getResidencyAllocations().clear();
 
-    EXPECT_EQ(0u, hostPtrManager.getFragmentCount());
+    auto allocation2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size2}, ptr);
+    reqs = MockHostPtrManager::getAllocationRequirements(ptr, size2);
 
-    auto allocation2 = mm->allocateGraphicsMemory(size2, ptr);
-    reqs = HostPtrManager::getAllocationRequirements(ptr, size2);
-
-    EXPECT_EQ(1u, hostPtrManager.getFragmentCount());
     ASSERT_EQ(1u, allocation2->fragmentsStorage.fragmentCount);
     ASSERT_EQ(1u, reqs.requiredFragmentsCount);
 
     csr->makeResident(*allocation2);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     for (unsigned int i = 0; i < reqs.requiredFragmentsCount; i++) {
         ASSERT_EQ(allocation2->fragmentsStorage.fragmentStorageData[i].cpuPtr,
@@ -1393,7 +1212,6 @@ TEST_F(DrmCommandStreamLeaksTest, GivenAllocationsContainingDifferentCountOfFrag
         EXPECT_EQ(1u, allocation2->fragmentsStorage.fragmentStorageData[i].osHandleStorage->bo->getRefCount());
     }
     mm->freeGraphicsMemory(allocation2);
-    EXPECT_EQ(0u, hostPtrManager.getFragmentCount());
 }
 
 TEST_F(DrmCommandStreamLeaksTest, GivenTwoAllocationsWhenBackingStorageIsTheSameThenMakeResidentShouldAddOnlyOneLocation) {
@@ -1401,13 +1219,13 @@ TEST_F(DrmCommandStreamLeaksTest, GivenTwoAllocationsWhenBackingStorageIsTheSame
     auto size = MemoryConstants::pageSize;
     auto ptr2 = (void *)0x1000;
 
-    auto allocation = mm->allocateGraphicsMemory(size, ptr);
-    auto allocation2 = mm->allocateGraphicsMemory(size, ptr2);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
+    auto allocation2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr2);
 
     csr->makeResident(*allocation);
     csr->makeResident(*allocation2);
 
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_EQ(tCsr->getResidencyVector()->size(), 1u);
 
@@ -1416,7 +1234,7 @@ TEST_F(DrmCommandStreamLeaksTest, GivenTwoAllocationsWhenBackingStorageIsTheSame
 
     mm->freeGraphicsMemory(allocation);
     mm->freeGraphicsMemory(allocation2);
-    mm->clearResidencyAllocations();
+    csr->getResidencyAllocations().clear();
 }
 
 TEST_F(DrmCommandStreamLeaksTest, GivenTwoAllocationsWhenBackingStorageIsDifferentThenMakeResidentShouldAddTwoLocations) {
@@ -1424,13 +1242,13 @@ TEST_F(DrmCommandStreamLeaksTest, GivenTwoAllocationsWhenBackingStorageIsDiffere
     auto size = MemoryConstants::pageSize;
     auto ptr2 = (void *)0x3000;
 
-    auto allocation = mm->allocateGraphicsMemory(size, ptr);
-    auto allocation2 = mm->allocateGraphicsMemory(size, ptr2);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
+    auto allocation2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr2);
 
     csr->makeResident(*allocation);
     csr->makeResident(*allocation2);
 
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_EQ(tCsr->getResidencyVector()->size(), 2u);
 
@@ -1439,17 +1257,17 @@ TEST_F(DrmCommandStreamLeaksTest, GivenTwoAllocationsWhenBackingStorageIsDiffere
 
     mm->freeGraphicsMemory(allocation);
     mm->freeGraphicsMemory(allocation2);
-    mm->clearResidencyAllocations();
+    csr->getResidencyAllocations().clear();
 }
 
 TEST_F(DrmCommandStreamLeaksTest, makeResidentSizeZero) {
     std::unique_ptr<BufferObject> buffer(this->createBO(0));
-    DrmAllocation allocation(buffer.get(), nullptr, buffer->peekSize(), MemoryPool::MemoryNull);
+    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, buffer.get(), nullptr, buffer->peekSize(), MemoryPool::MemoryNull, 1u, false);
     EXPECT_EQ(nullptr, allocation.getUnderlyingBuffer());
     EXPECT_EQ(buffer->peekSize(), allocation.getUnderlyingBufferSize());
 
     csr->makeResident(allocation);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_FALSE(isResident(buffer.get()));
     auto bo = getResident(buffer.get());
@@ -1464,21 +1282,21 @@ TEST_F(DrmCommandStreamLeaksTest, Flush) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
     EXPECT_NE(cs.getCpuBase(), nullptr);
     EXPECT_NE(cs.getGraphicsAllocation(), nullptr);
 }
 
 TEST_F(DrmCommandStreamLeaksTest, ClearResidencyWhenFlushNotCalled) {
-    auto allocation1 = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
-    auto allocation2 = reinterpret_cast<DrmAllocation *>(mm->allocateGraphicsMemory(1024));
+    auto allocation1 = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
+    auto allocation2 = static_cast<DrmAllocation *>(mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
     ASSERT_NE(nullptr, allocation1);
     ASSERT_NE(nullptr, allocation2);
 
     EXPECT_EQ(tCsr->getResidencyVector()->size(), 0u);
     csr->makeResident(*allocation1);
     csr->makeResident(*allocation2);
-    csr->processResidency(nullptr);
+    csr->processResidency(csr->getResidencyAllocations());
 
     EXPECT_TRUE(isResident(allocation1->getBO()));
     EXPECT_TRUE(isResident(allocation2->getBO()));
@@ -1508,46 +1326,46 @@ TEST_F(DrmCommandStreamLeaksTest, FlushMultipleTimes) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 
     cs.replaceBuffer(commandBuffer->getUnderlyingBuffer(), commandBuffer->getUnderlyingBufferSize());
     cs.replaceGraphicsAllocation(commandBuffer);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer2{cs.getGraphicsAllocation(), 8, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer2, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer2, csr->getResidencyAllocations());
 
-    auto allocation = mm->allocateGraphicsMemory(1024);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, allocation);
-    auto allocation2 = mm->allocateGraphicsMemory(1024);
+    auto allocation2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, allocation2);
 
     csr->makeResident(*allocation);
     csr->makeResident(*allocation2);
 
-    mm->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandBuffer), REUSABLE_ALLOCATION);
+    csr->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandBuffer), REUSABLE_ALLOCATION);
 
-    auto commandBuffer2 = mm->allocateGraphicsMemory(1024);
+    auto commandBuffer2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, commandBuffer2);
     cs.replaceBuffer(commandBuffer2->getUnderlyingBuffer(), commandBuffer2->getUnderlyingBufferSize());
     cs.replaceGraphicsAllocation(commandBuffer2);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer3{cs.getGraphicsAllocation(), 16, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer3, EngineType::ENGINE_RCS, nullptr);
-    csr->makeSurfacePackNonResident(nullptr, false);
+    csr->flush(batchBuffer3, csr->getResidencyAllocations());
+    csr->makeSurfacePackNonResident(csr->getResidencyAllocations());
     mm->freeGraphicsMemory(allocation);
     mm->freeGraphicsMemory(allocation2);
 
-    mm->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandBuffer2), REUSABLE_ALLOCATION);
-    commandBuffer2 = mm->allocateGraphicsMemory(1024);
+    csr->getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandBuffer2), REUSABLE_ALLOCATION);
+    commandBuffer2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     ASSERT_NE(nullptr, commandBuffer2);
     cs.replaceBuffer(commandBuffer2->getUnderlyingBuffer(), commandBuffer2->getUnderlyingBufferSize());
     cs.replaceGraphicsAllocation(commandBuffer2);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer4{cs.getGraphicsAllocation(), 24, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer4, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer4, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamLeaksTest, FlushNotEmptyBB) {
@@ -1560,7 +1378,7 @@ TEST_F(DrmCommandStreamLeaksTest, FlushNotEmptyBB) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamLeaksTest, FlushNotEmptyNotPaddedBB) {
@@ -1573,7 +1391,7 @@ TEST_F(DrmCommandStreamLeaksTest, FlushNotEmptyNotPaddedBB) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamLeaksTest, FlushNotAligned) {
@@ -1587,7 +1405,7 @@ TEST_F(DrmCommandStreamLeaksTest, FlushNotAligned) {
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 4, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
 }
 
 TEST_F(DrmCommandStreamLeaksTest, CheckDrmFree) {
@@ -1598,57 +1416,57 @@ TEST_F(DrmCommandStreamLeaksTest, CheckDrmFree) {
     ASSERT_NE(0u, (reinterpret_cast<uintptr_t>(commandBuffer->getUnderlyingBuffer()) + 4) & 0xFFF);
     ASSERT_EQ(4u, (reinterpret_cast<uintptr_t>(commandBuffer->getUnderlyingBuffer()) + 4) & 0x7F);
 
-    auto allocation = mm->allocateGraphicsMemory(1024);
+    auto allocation = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     csr->makeResident(*allocation);
     csr->addBatchBufferEnd(cs, nullptr);
     csr->alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 4, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
-    csr->flush(batchBuffer, EngineType::ENGINE_RCS, nullptr);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
     csr->makeNonResident(*allocation);
     mm->freeGraphicsMemory(allocation);
 }
 
-TEST_F(DrmCommandStreamLeaksTest, MakeResidentClearResidencyAllocationsInMemoryManager) {
-    auto allocation1 = mm->allocateGraphicsMemory(1024);
-    auto allocation2 = mm->allocateGraphicsMemory(1024);
+TEST_F(DrmCommandStreamLeaksTest, MakeResidentClearResidencyAllocationsInCommandStreamReceiver) {
+    auto allocation1 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    auto allocation2 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     ASSERT_NE(nullptr, allocation1);
     ASSERT_NE(nullptr, allocation2);
 
     csr->makeResident(*allocation1);
     csr->makeResident(*allocation2);
-    EXPECT_NE(0u, mm->getResidencyAllocations().size());
+    EXPECT_NE(0u, csr->getResidencyAllocations().size());
 
-    csr->processResidency(nullptr);
-    csr->makeSurfacePackNonResident(nullptr, false);
-    EXPECT_EQ(0u, mm->getResidencyAllocations().size());
+    csr->processResidency(csr->getResidencyAllocations());
+    csr->makeSurfacePackNonResident(csr->getResidencyAllocations());
+    EXPECT_EQ(0u, csr->getResidencyAllocations().size());
 
     mm->freeGraphicsMemory(allocation1);
     mm->freeGraphicsMemory(allocation2);
 }
 
 TEST_F(DrmCommandStreamLeaksTest, givenMultipleMakeResidentWhenMakeNonResidentIsCalledOnlyOnceThenSurfaceIsMadeNonResident) {
-    auto allocation1 = mm->allocateGraphicsMemory(1024);
+    auto allocation1 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     ASSERT_NE(nullptr, allocation1);
 
     csr->makeResident(*allocation1);
     csr->makeResident(*allocation1);
 
-    EXPECT_NE(0u, mm->getResidencyAllocations().size());
+    EXPECT_NE(0u, csr->getResidencyAllocations().size());
 
-    csr->processResidency(nullptr);
-    csr->makeSurfacePackNonResident(nullptr, false);
+    csr->processResidency(csr->getResidencyAllocations());
+    csr->makeSurfacePackNonResident(csr->getResidencyAllocations());
 
-    EXPECT_EQ(0u, mm->getResidencyAllocations().size());
-    EXPECT_FALSE(allocation1->isResident());
+    EXPECT_EQ(0u, csr->getResidencyAllocations().size());
+    EXPECT_FALSE(allocation1->isResident(csr->getOsContext().getContextId()));
 
     mm->freeGraphicsMemory(allocation1);
 }
 
 TEST_F(DrmCommandStreamLeaksTest, makeNonResidentOnMemObjectCallsDrmCSMakeNonResidentWithGraphicsAllocation) {
-    auto allocation1 = mm->allocateGraphicsMemory(0x1000);
+    auto allocation1 = mm->allocateGraphicsMemoryWithProperties(MockAllocationProperties{0x1000});
     ASSERT_NE(nullptr, allocation1);
 
     tCsr->makeResident(*allocation1);
@@ -1660,7 +1478,7 @@ TEST_F(DrmCommandStreamLeaksTest, makeNonResidentOnMemObjectCallsDrmCSMakeNonRes
 
     EXPECT_TRUE(tCsr->makeNonResidentResult.called);
     EXPECT_EQ(allocation1, tCsr->makeNonResidentResult.allocation);
-    EXPECT_EQ(0u, mm->getEvictionAllocations().size());
+    EXPECT_EQ(0u, tCsr->getEvictionAllocations().size());
 
     mm->freeGraphicsMemory(allocation1);
 }
@@ -1669,7 +1487,7 @@ class DrmMockBuffer : public Buffer {
   public:
     static DrmMockBuffer *create() {
         char *data = static_cast<char *>(::alignedMalloc(128, 64));
-        DrmAllocation *alloc = new (std::nothrow) DrmAllocation(nullptr, &data, sizeof(data), MemoryPool::MemoryNull);
+        DrmAllocation *alloc = new (std::nothrow) DrmAllocation(GraphicsAllocation::AllocationType::UNDECIDED, nullptr, &data, sizeof(data), MemoryPool::MemoryNull, 1u, false);
         return new DrmMockBuffer(data, 128, alloc);
     }
 
@@ -1682,7 +1500,7 @@ class DrmMockBuffer : public Buffer {
                                                                    gfxAllocation(alloc) {
     }
 
-    void setArgStateful(void *memory) override {
+    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) override {
     }
 
   protected:
@@ -1693,24 +1511,24 @@ class DrmMockBuffer : public Buffer {
 TEST_F(DrmCommandStreamLeaksTest, BufferResidency) {
     std::unique_ptr<Buffer> buffer(DrmMockBuffer::create());
 
-    ASSERT_FALSE(buffer->getGraphicsAllocation()->isResident());
-    ASSERT_EQ(ObjectNotResident, buffer->getGraphicsAllocation()->residencyTaskCount);
+    auto osContextId = csr->getOsContext().getContextId();
+
+    ASSERT_FALSE(buffer->getGraphicsAllocation()->isResident(osContextId));
     ASSERT_GT(buffer->getSize(), 0u);
 
     //make it resident 8 times
     for (int c = 0; c < 8; c++) {
         csr->makeResident(*buffer->getGraphicsAllocation());
-        csr->processResidency(nullptr);
-        EXPECT_TRUE(buffer->getGraphicsAllocation()->isResident());
-        EXPECT_EQ(buffer->getGraphicsAllocation()->residencyTaskCount, (int)csr->peekTaskCount() + 1);
+        csr->processResidency(csr->getResidencyAllocations());
+        EXPECT_TRUE(buffer->getGraphicsAllocation()->isResident(osContextId));
+        EXPECT_EQ(buffer->getGraphicsAllocation()->getResidencyTaskCount(osContextId), csr->peekTaskCount() + 1);
     }
 
     csr->makeNonResident(*buffer->getGraphicsAllocation());
-    EXPECT_FALSE(buffer->getGraphicsAllocation()->isResident());
+    EXPECT_FALSE(buffer->getGraphicsAllocation()->isResident(osContextId));
 
     csr->makeNonResident(*buffer->getGraphicsAllocation());
-    EXPECT_FALSE(buffer->getGraphicsAllocation()->isResident());
-    EXPECT_EQ(ObjectNotResident, buffer->getGraphicsAllocation()->residencyTaskCount);
+    EXPECT_FALSE(buffer->getGraphicsAllocation()->isResident(osContextId));
 }
 
 typedef Test<DrmCommandStreamEnhancedFixture> DrmCommandStreamMemoryManagerTest;

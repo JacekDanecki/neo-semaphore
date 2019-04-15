@@ -1,32 +1,18 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "runtime/command_queue/command_queue_hw.h"
+#include "runtime/event/user_event.h"
 #include "runtime/mem_obj/buffer.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
-#include "test.h"
 
-using namespace OCLRT;
+using namespace NEO;
 
 struct MultipleMapBufferTest : public DeviceFixture, public ::testing::Test {
     template <typename T>
@@ -60,18 +46,21 @@ struct MultipleMapBufferTest : public DeviceFixture, public ::testing::Test {
         MockCmdQ(Context *context, Device *device) : CommandQueueHw<T>(context, device, 0) {}
 
         cl_int enqueueReadBuffer(Buffer *buffer, cl_bool blockingRead, size_t offset, size_t size, void *ptr,
-                                 cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) override {
+                                 GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList, const cl_event *eventWaitList,
+                                 cl_event *event) override {
             enqueueSize = size;
             enqueueOffset = offset;
             readBufferCalled++;
             if (failOnReadBuffer) {
                 return CL_OUT_OF_RESOURCES;
             }
-            return CommandQueueHw<T>::enqueueReadBuffer(buffer, blockingRead, offset, size, ptr, numEventsInWaitList, eventWaitList, event);
+            return CommandQueueHw<T>::enqueueReadBuffer(buffer, blockingRead, offset, size, ptr, mapAllocation,
+                                                        numEventsInWaitList, eventWaitList, event);
         }
 
         cl_int enqueueWriteBuffer(Buffer *buffer, cl_bool blockingWrite, size_t offset, size_t cb, const void *ptr,
-                                  cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) override {
+                                  GraphicsAllocation *mapAllocation, cl_uint numEventsInWaitList, const cl_event *eventWaitList,
+                                  cl_event *event) override {
             enqueueSize = cb;
             enqueueOffset = offset;
             unmapPtr = ptr;
@@ -79,7 +68,8 @@ struct MultipleMapBufferTest : public DeviceFixture, public ::testing::Test {
             if (failOnWriteBuffer) {
                 return CL_OUT_OF_RESOURCES;
             }
-            return CommandQueueHw<T>::enqueueWriteBuffer(buffer, blockingWrite, offset, cb, ptr, numEventsInWaitList, eventWaitList, event);
+            return CommandQueueHw<T>::enqueueWriteBuffer(buffer, blockingWrite, offset, cb, ptr, mapAllocation,
+                                                         numEventsInWaitList, eventWaitList, event);
         }
 
         cl_int enqueueMarkerWithWaitList(cl_uint numEventsInWaitList, const cl_event *eventWaitList, cl_event *event) override {
@@ -99,7 +89,7 @@ struct MultipleMapBufferTest : public DeviceFixture, public ::testing::Test {
 
     template <typename FamilyType>
     std::unique_ptr<MockBuffer<FamilyType>> createMockBuffer(bool mapOnGpu) {
-        auto mockAlloc = pDevice->getMemoryManager()->allocateGraphicsMemory(1024);
+        auto mockAlloc = pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
         auto buffer = new MockBuffer<FamilyType>(context, 0, 1024, mockAlloc->getUnderlyingBuffer(), mockAlloc->getUnderlyingBuffer(),
                                                  mockAlloc, false, false, false);
         if (mapOnGpu) {

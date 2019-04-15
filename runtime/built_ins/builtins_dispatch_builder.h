@@ -1,30 +1,16 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include "CL/cl.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/utilities/vec.h"
+
+#include "CL/cl.h"
 
 #include <array>
 #include <cstdint>
@@ -35,7 +21,7 @@
 #include <tuple>
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 typedef std::vector<char> BuiltinResourceT;
 
 class Context;
@@ -53,6 +39,8 @@ class BuiltinDispatchInfoBuilder {
         MemObj *dstMemObj = nullptr;
         GraphicsAllocation *srcSvmAlloc = nullptr;
         GraphicsAllocation *dstSvmAlloc = nullptr;
+        const MemObjsForAuxTranslation *memObjsForAuxTranslation = nullptr;
+        AuxTranslationDirection auxTranslationDirection = AuxTranslationDirection::None;
         Vec3<size_t> srcOffset = {0, 0, 0};
         Vec3<size_t> dstOffset = {0, 0, 0};
         Vec3<size_t> size = {0, 0, 0};
@@ -88,15 +76,17 @@ class BuiltinDispatchInfoBuilder {
         return true;
     }
 
-    void takeOwnership(Context *context);
-    void releaseOwnership();
+    std::vector<std::unique_ptr<Kernel>> &peekUsedKernels() { return usedKernels; }
 
   protected:
     template <typename KernelNameT, typename... KernelsDescArgsT>
     void grabKernels(KernelNameT &&kernelName, Kernel *&kernelDst, KernelsDescArgsT &&... kernelsDesc) {
-        const KernelInfo *ki = prog->getKernelInfo(kernelName);
+        const KernelInfo *kernelInfo = prog->getKernelInfo(kernelName);
+        if (!kernelInfo) {
+            return;
+        }
         cl_int err = 0;
-        kernelDst = Kernel::create(prog.get(), *ki, &err);
+        kernelDst = Kernel::create(prog.get(), *kernelInfo, &err);
         kernelDst->isBuiltIn = true;
         usedKernels.push_back(std::unique_ptr<Kernel>(kernelDst));
         grabKernels(std::forward<KernelsDescArgsT>(kernelsDesc)...);
@@ -109,4 +99,4 @@ class BuiltinDispatchInfoBuilder {
     BuiltIns &kernelsLib;
 };
 
-} // namespace OCLRT
+} // namespace NEO

@@ -1,27 +1,10 @@
 /*
- * Copyright (c) 2018, Intel Corporation
+ * Copyright (C) 2018-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gtpin_ocl_interface.h"
-#include "CL/cl.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
@@ -34,21 +17,26 @@
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
 #include "runtime/platform/platform.h"
+#include "runtime/program/program.h"
 #include "runtime/utilities/spinlock.h"
+
+#include "CL/cl.h"
+#include "ocl_igc_shared/gtpin/gtpin_ocl_interface.h"
+
 #include <deque>
 #include <vector>
 
 using namespace gtpin;
 
-namespace OCLRT {
+namespace NEO {
 
 extern gtpin::ocl::gtpin_events_t GTPinCallbacks;
 
-igc_init_t *pIgcInfo = nullptr;
+igc_init_t *pIgcInit = nullptr;
 std::atomic<int> sequenceCount(1);
 CommandQueue *pCmdQueueForFlushTask = nullptr;
 std::deque<gtpinkexec_t> kernelExecQueue;
-std::atomic_flag kernelExecQueueLock = ATOMIC_FLAG_INIT;
+SpinLock kernelExecQueueLock;
 
 void gtpinNotifyContextCreate(cl_context context) {
     if (isGTPinInitialized) {
@@ -59,7 +47,7 @@ void gtpinNotifyContextCreate(cl_context context) {
         GTPinHwHelper &gtpinHelper = GTPinHwHelper::get(genFamily);
         gtpinPlatformInfo.gen_version = (gtpin::GTPIN_GEN_VERSION)gtpinHelper.getGenVersion();
         gtpinPlatformInfo.device_id = static_cast<uint32_t>(pDevice->getHardwareInfo().pPlatform->usDeviceID);
-        (*GTPinCallbacks.onContextCreate)((context_handle_t)context, &gtpinPlatformInfo, &pIgcInfo);
+        (*GTPinCallbacks.onContextCreate)((context_handle_t)context, &gtpinPlatformInfo, &pIgcInit);
     }
 }
 
@@ -90,7 +78,8 @@ void gtpinNotifyKernelCreate(cl_kernel kernel) {
         Context *pContext = &(pKernel->getContext());
         cl_context context = (cl_context)pContext;
         auto &kernelInfo = pKernel->getKernelInfo();
-        instrument_params_in_t paramsIn;
+        instrument_params_in_t paramsIn = {};
+
         paramsIn.kernel_type = GTPIN_KERNEL_TYPE_CS;
         paramsIn.simd = (GTPIN_SIMD_WIDTH)kernelInfo.getMaxSimdSize();
         paramsIn.orig_kernel_binary = (uint8_t *)pKernel->getKernelHeap();
@@ -99,7 +88,9 @@ void gtpinNotifyKernelCreate(cl_kernel kernel) {
         paramsIn.buffer_desc.BTI = static_cast<uint32_t>(gtpinBTI);
         paramsIn.igc_hash_id = kernelInfo.heapInfo.pKernelHeader->ShaderHashCode;
         paramsIn.kernel_name = (char *)kernelInfo.name.c_str();
-        paramsIn.igc_info = nullptr;
+        paramsIn.igc_info = kernelInfo.igcInfoForGtpin;
+        paramsIn.debug_data = pKernel->getProgram()->getDebugData();
+        paramsIn.debug_data_size = static_cast<uint32_t>(pKernel->getProgram()->getDebugDataSize());
         instrument_params_out_t paramsOut = {0};
         (*GTPinCallbacks.onKernelCreate)((context_handle_t)(cl_context)context, &paramsIn, &paramsOut);
         // Substitute ISA of created kernel with instrumented code
@@ -132,10 +123,9 @@ void gtpinNotifyKernelSubmit(cl_kernel kernel, void *pCmdQueue) {
         kExec.gtpinResource = (cl_mem)resource;
         kExec.commandBuffer = commandBuffer;
         kExec.pCommandQueue = (CommandQueue *)pCmdQueue;
-        SpinLock lock;
-        lock.enter(kernelExecQueueLock);
+        std::unique_lock<SpinLock> lock{kernelExecQueueLock};
         kernelExecQueue.push_back(kExec);
-        lock.leave(kernelExecQueueLock);
+        lock.unlock();
         // Patch SSH[gtpinBTI] with GT-Pin resource
         if (!resource) {
             return;
@@ -148,7 +138,7 @@ void gtpinNotifyKernelSubmit(cl_kernel kernel, void *pCmdQueue) {
         void *pSurfaceState = gtpinHelper.getSurfaceState(pKernel, gtpinBTI);
         cl_mem buffer = (cl_mem)resource;
         auto pBuffer = castToObjectOrAbort<Buffer>(buffer);
-        pBuffer->setArgStateful(const_cast<void *>(pSurfaceState));
+        pBuffer->setArgStateful(pSurfaceState, false, false);
     }
 }
 
@@ -160,8 +150,7 @@ void gtpinNotifyPreFlushTask(void *pCmdQueue) {
 
 void gtpinNotifyFlushTask(uint32_t flushedTaskCount) {
     if (isGTPinInitialized) {
-        SpinLock lock;
-        lock.enter(kernelExecQueueLock);
+        std::unique_lock<SpinLock> lock{kernelExecQueueLock};
         size_t numElems = kernelExecQueue.size();
         for (size_t n = 0; n < numElems; n++) {
             if ((kernelExecQueue[n].pCommandQueue == pCmdQueueForFlushTask) && !kernelExecQueue[n].isTaskCountValid) {
@@ -171,15 +160,13 @@ void gtpinNotifyFlushTask(uint32_t flushedTaskCount) {
                 break;
             }
         }
-        lock.leave(kernelExecQueueLock);
         pCmdQueueForFlushTask = nullptr;
     }
 }
 
 void gtpinNotifyTaskCompletion(uint32_t completedTaskCount) {
     if (isGTPinInitialized) {
-        SpinLock lock;
-        lock.enter(kernelExecQueueLock);
+        std::unique_lock<SpinLock> lock{kernelExecQueueLock};
         size_t numElems = kernelExecQueue.size();
         for (size_t n = 0; n < numElems;) {
             if (kernelExecQueue[n].isTaskCountValid && (kernelExecQueue[n].taskCount <= completedTaskCount)) {
@@ -192,14 +179,12 @@ void gtpinNotifyTaskCompletion(uint32_t completedTaskCount) {
                 n++;
             }
         }
-        lock.leave(kernelExecQueueLock);
     }
 }
 
 void gtpinNotifyMakeResident(void *pKernel, void *pCSR) {
     if (isGTPinInitialized) {
-        SpinLock lock;
-        lock.enter(kernelExecQueueLock);
+        std::unique_lock<SpinLock> lock{kernelExecQueueLock};
         size_t numElems = kernelExecQueue.size();
         for (size_t n = 0; n < numElems; n++) {
             if ((kernelExecQueue[n].pKernel == pKernel) && !kernelExecQueue[n].isResourceResident && kernelExecQueue[n].gtpinResource) {
@@ -213,14 +198,12 @@ void gtpinNotifyMakeResident(void *pKernel, void *pCSR) {
                 break;
             }
         }
-        lock.leave(kernelExecQueueLock);
     }
 }
 
 void gtpinNotifyUpdateResidencyList(void *pKernel, void *pResVec) {
     if (isGTPinInitialized) {
-        SpinLock lock;
-        lock.enter(kernelExecQueueLock);
+        std::unique_lock<SpinLock> lock{kernelExecQueueLock};
         size_t numElems = kernelExecQueue.size();
         for (size_t n = 0; n < numElems; n++) {
             if ((kernelExecQueue[n].pKernel == pKernel) && !kernelExecQueue[n].isResourceResident && kernelExecQueue[n].gtpinResource) {
@@ -235,7 +218,6 @@ void gtpinNotifyUpdateResidencyList(void *pKernel, void *pResVec) {
                 break;
             }
         }
-        lock.leave(kernelExecQueueLock);
     }
 }
 
@@ -245,4 +227,7 @@ void gtpinNotifyPlatformShutdown() {
         kernelExecQueue.clear();
     }
 }
-} // namespace OCLRT
+void *gtpinGetIgcInit() {
+    return pIgcInit;
+}
+} // namespace NEO

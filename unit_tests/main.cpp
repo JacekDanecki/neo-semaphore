@@ -1,47 +1,36 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "global_environment.h"
-#include "hw_cmds.h"
+#include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/options.h"
+#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/os_interface/hw_info_config.h"
+#include "runtime/utilities/debug_settings_reader.h"
 #include "unit_tests/custom_event_listener.h"
-#include "helpers/test_files.h"
-#include "unit_tests/ult_config_listener.h"
 #include "unit_tests/memory_leak_listener.h"
 #include "unit_tests/mocks/mock_gmm.h"
 #include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/mocks/mock_sip.h"
-#include "runtime/gmm_helper/resource_info.h"
-#include "runtime/os_interface/debug_settings_manager.h"
+#include "unit_tests/tests_configuration.h"
+#include "unit_tests/ult_config_listener.h"
+
 #include "External/Common/GmmLibDllName.h"
-#include "mock_gmm_client_context.h"
+#include "global_environment.h"
 #include "gmock/gmock.h"
+#include "helpers/test_files.h"
+#include "hw_cmds.h"
+#include "mock_gmm_client_context.h"
+
 #include <algorithm>
-#include <mutex>
 #include <fstream>
+#include <limits.h>
+#include <mutex>
 #include <sstream>
 #include <thread>
-
-#include <limits.h>
 
 #ifdef WIN32
 const char *fSeparator = "\\";
@@ -49,21 +38,23 @@ const char *fSeparator = "\\";
 const char *fSeparator = "/";
 #endif
 
-namespace OCLRT {
+namespace NEO {
 extern const char *hardwarePrefix[];
 extern const HardwareInfo *hardwareInfoTable[IGFX_MAX_PRODUCT];
 
 extern const unsigned int ultIterationMaxTime;
 extern bool useMockGmm;
+extern TestMode testMode;
+extern const char *executionDirectorySuffix;
 
 std::thread::id tempThreadID;
-} // namespace OCLRT
+} // namespace NEO
 namespace Os {
 extern const char *gmmDllName;
 extern const char *gmmEntryName;
 } // namespace Os
 
-using namespace OCLRT;
+using namespace NEO;
 TestEnvironment *gEnvironment;
 
 PRODUCT_FAMILY productFamily = IGFX_SKYLAKE;
@@ -72,6 +63,7 @@ PRODUCT_FAMILY defaultProductFamily = productFamily;
 
 extern bool printMemoryOpCallStack;
 extern std::string lastTest;
+bool generateRandomInput = false;
 
 void applyWorkarounds() {
     {
@@ -103,6 +95,9 @@ void applyWorkarounds() {
             .Times(1);
         mockObj.method(2);
     }
+
+    //intialize rand
+    srand(static_cast<unsigned int>(time(nullptr)));
 
     //Create at least on thread to prevent false memory leaks in tests using threads
     std::thread t([&]() {
@@ -178,12 +173,14 @@ int main(int argc, char **argv) {
     int retVal = 0;
     bool useDefaultListener = false;
     bool enable_alarm = true;
-    bool enable_segv = true;
-    bool enable_abrt = true;
+    bool setupFeatureTable = testMode == TestMode::AubTests ? true : false;
+    bool enableMemoryDumps = false;
 
     applyWorkarounds();
 
 #if defined(__linux__)
+    bool enable_segv = true;
+    bool enable_abrt = true;
     if (getenv("IGDRCL_TEST_SELF_EXEC") == nullptr) {
         std::string wd = getRunPath(argv[0]);
         setenv("LD_LIBRARY_PATH", wd.c_str(), 1);
@@ -196,16 +193,18 @@ int main(int argc, char **argv) {
 #endif
 
     ::testing::InitGoogleMock(&argc, argv);
-
+    std::string hwInfoConfig = "default";
     auto numDevices = numPlatformDevices;
     HardwareInfo device = DEFAULT_TEST_PLATFORM::hwInfo;
+    hardwareInfoSetup[device.pPlatform->eProductFamily](const_cast<GT_SYSTEM_INFO *>(device.pSysInfo), const_cast<FeatureTable *>(device.pSkuTable), setupFeatureTable, hwInfoConfig);
     GT_SYSTEM_INFO gtSystemInfo = *device.pSysInfo;
-    hardwareInfoSetupGt[device.pPlatform->eProductFamily](&gtSystemInfo);
+    FeatureTable featureTable = *device.pSkuTable;
+
     size_t revisionId = device.pPlatform->usRevId;
     uint32_t euPerSubSlice = 0;
     uint32_t sliceCount = 0;
-    uint32_t subSliceCount = 0;
-    int dieRecovery = 1;
+    uint32_t subSlicePerSliceCount = 0;
+    int dieRecovery = 0;
     ::productFamily = device.pPlatform->eProductFamily;
 
     for (int i = 1; i < argc; ++i) {
@@ -217,6 +216,11 @@ int main(int argc, char **argv) {
             enable_alarm = false;
         } else if (!strcmp("--print_memory_op_cs", argv[i])) {
             printMemoryOpCallStack = true;
+        } else if (!strcmp("--tbx", argv[i])) {
+            if (testMode == TestMode::AubTests) {
+                testMode = TestMode::AubTestsWithTbx;
+            }
+            initialHardwareTag = 0;
         } else if (!strcmp("--devices", argv[i])) {
             ++i;
             if (i < argc) {
@@ -263,7 +267,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp("--subslices", argv[i])) {
             ++i;
             if (i < argc) {
-                subSliceCount = atoi(argv[i]);
+                subSlicePerSliceCount = atoi(argv[i]);
             }
         } else if (!strcmp("--eu_per_ss", argv[i])) {
             ++i;
@@ -275,6 +279,15 @@ int main(int argc, char **argv) {
             if (i < argc) {
                 dieRecovery = atoi(argv[i]) ? 1 : 0;
             }
+        } else if (!strcmp("--generate_random_inputs", argv[i])) {
+            generateRandomInput = true;
+        } else if (!strcmp("--read-config", argv[i]) && testMode == TestMode::AubTests) {
+            if (DebugManager.registryReadAvailable()) {
+                DebugManager.setReaderImpl(SettingsReader::create());
+                DebugManager.injectSettingsFromReader();
+            }
+        } else if (!strcmp("--enable_memory_dumps", argv[i]) && testMode == TestMode::AubTests) {
+            enableMemoryDumps = true;
         }
     }
 
@@ -282,25 +295,32 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    uint32_t threadsPerEu = 7;
+    if (enableMemoryDumps) {
+        DebugManager.flags.AUBDumpBufferFormat.set("BIN");
+        DebugManager.flags.AUBDumpImageFormat.set("TRE");
+    }
+
+    uint32_t threadsPerEu = hwInfoConfigFactory[productFamily]->threadsPerEu;
     PLATFORM platform;
     auto hardwareInfo = hardwareInfoTable[productFamily];
     if (!hardwareInfo) {
         return -1;
     }
     platform = *hardwareInfo->pPlatform;
+    featureTable = *hardwareInfo->pSkuTable;
+    gtSystemInfo = *hardwareInfo->pSysInfo;
 
     platform.usRevId = (uint16_t)revisionId;
 
-    // set Gt to initial state
-    hardwareInfoSetupGt[productFamily](&gtSystemInfo);
+    // set Gt and FeatureTable to initial state
+    hardwareInfoSetup[productFamily](&gtSystemInfo, &featureTable, setupFeatureTable, hwInfoConfig);
     // and adjust dynamic values if not secified
     sliceCount = sliceCount > 0 ? sliceCount : gtSystemInfo.SliceCount;
-    subSliceCount = subSliceCount > 0 ? subSliceCount : gtSystemInfo.SubSliceCount;
+    subSlicePerSliceCount = subSlicePerSliceCount > 0 ? subSlicePerSliceCount : (gtSystemInfo.SubSliceCount / sliceCount);
     euPerSubSlice = euPerSubSlice > 0 ? euPerSubSlice : gtSystemInfo.MaxEuPerSubSlice;
     // clang-format off
     gtSystemInfo.SliceCount             = sliceCount;
-    gtSystemInfo.SubSliceCount          = subSliceCount;
+    gtSystemInfo.SubSliceCount          = gtSystemInfo.SliceCount * subSlicePerSliceCount;
     gtSystemInfo.EUCount                = gtSystemInfo.SubSliceCount * euPerSubSlice - dieRecovery;
     gtSystemInfo.ThreadCount            = gtSystemInfo.EUCount * threadsPerEu;
     gtSystemInfo.MaxEuPerSubSlice       = std::max(gtSystemInfo.MaxEuPerSubSlice, euPerSubSlice);
@@ -314,6 +334,7 @@ int main(int argc, char **argv) {
 
     device.pPlatform = &platform;
     device.pSysInfo = &gtSystemInfo;
+    device.pSkuTable = &featureTable;
     device.capabilityTable = hardwareInfo->capabilityTable;
 
     binaryNameSuffix.append(familyName[device.pPlatform->eRenderCoreFamily]);
@@ -333,15 +354,18 @@ int main(int argc, char **argv) {
     nClFiles.append(clFiles);
     clFiles = nClFiles;
 
+    std::string executionDirectory(hardwarePrefix[productFamily]);
+    executionDirectory += NEO::executionDirectorySuffix; // _aub for aub_tests, empty otherwise
+
 #ifdef WIN32
 #include <direct.h>
-    if (_chdir(hardwarePrefix[productFamily])) {
-        std::cout << "chdir into " << hardwarePrefix[productFamily] << " directory failed.\nThis might cause test failures." << std::endl;
+    if (_chdir(executionDirectory.c_str())) {
+        std::cout << "chdir into " << executionDirectory << " directory failed.\nThis might cause test failures." << std::endl;
     }
 #elif defined(__linux__)
 #include <unistd.h>
-    if (chdir(hardwarePrefix[productFamily]) != 0) {
-        std::cout << "chdir into " << hardwarePrefix[productFamily] << " directory failed.\nThis might cause test failures." << std::endl;
+    if (chdir(executionDirectory.c_str()) != 0) {
+        std::cout << "chdir into " << executionDirectory << " directory failed.\nThis might cause test failures." << std::endl;
     }
 #endif
 
@@ -357,7 +381,7 @@ int main(int argc, char **argv) {
     if (useDefaultListener == false) {
         auto defaultListener = listeners.default_result_printer();
 
-        auto customEventListener = new CCustomEventListener(defaultListener);
+        auto customEventListener = new CCustomEventListener(defaultListener, hardwarePrefix[productFamily]);
 
         listeners.Release(defaultListener);
         listeners.Append(customEventListener);
@@ -371,8 +395,8 @@ int main(int argc, char **argv) {
     MockCompilerDebugVars fclDebugVars;
     MockCompilerDebugVars igcDebugVars;
 
-    retrieveBinaryKernelFilename(fclDebugVars.fileName, "15895692906525787409_", ".bc");
-    retrieveBinaryKernelFilename(igcDebugVars.fileName, "15895692906525787409_", ".gen");
+    retrieveBinaryKernelFilename(fclDebugVars.fileName, "6400005806705094984_", ".bc");
+    retrieveBinaryKernelFilename(igcDebugVars.fileName, "6400005806705094984_", ".gen");
 
     gEnvironment->setMockFileNames(fclDebugVars.fileName, igcDebugVars.fileName);
     gEnvironment->setDefaultDebugVars(fclDebugVars, igcDebugVars, device);
@@ -380,7 +404,7 @@ int main(int argc, char **argv) {
 #if defined(__linux__)
     //ULTs timeout
     if (enable_alarm) {
-        unsigned int alarmTime = OCLRT::ultIterationMaxTime * ::testing::GTEST_FLAG(repeat);
+        unsigned int alarmTime = NEO::ultIterationMaxTime * ::testing::GTEST_FLAG(repeat);
 
         struct sigaction sa;
         sa.sa_handler = &handle_SIGALRM;
@@ -418,7 +442,6 @@ int main(int argc, char **argv) {
 #else
     SetUnhandledExceptionFilter(&UltExceptionFilter);
 #endif
-#ifdef GMM_LIB_DLL
     if (!useMockGmm) {
         Os::gmmDllName = GMM_UMD_DLL;
         Os::gmmEntryName = GMM_ENTRY_NAME;
@@ -426,7 +449,6 @@ int main(int argc, char **argv) {
         GmmHelper::createGmmContextWrapperFunc = GmmClientContextBase::create<MockGmmClientContext>;
     }
     std::unique_ptr<OsLibrary> gmmLib(OsLibrary::load(Os::gmmDllName));
-#endif
     initializeTestHelpers();
 
     retVal = RUN_ALL_TESTS();

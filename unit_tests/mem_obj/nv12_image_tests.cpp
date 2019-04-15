@@ -1,40 +1,27 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/helpers/surface_formats.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/gmm_helper/gmm.h"
+#include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/kernel_binary_helper.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_gmm_resource_info.h"
-#include "gtest/gtest.h"
-#include "test.h"
 
-using namespace OCLRT;
+#include "gtest/gtest.h"
+
+using namespace NEO;
 
 class Nv12ImageTest : public testing::Test {
   public:
@@ -43,7 +30,7 @@ class Nv12ImageTest : public testing::Test {
         GMM_REQ_OFFSET_INFO reqOffsetInfo = {};
         SurfaceOffsets requestedOffsets = {0};
 
-        auto mockResInfo = reinterpret_cast<::testing::NiceMock<MockGmmResourceInfo> *>(image->getGraphicsAllocation()->gmm->gmmResourceInfo.get());
+        auto mockResInfo = reinterpret_cast<::testing::NiceMock<MockGmmResourceInfo> *>(image->getGraphicsAllocation()->getDefaultGmm()->gmmResourceInfo.get());
         mockResInfo->getOffset(reqOffsetInfo);
 
         if (image->getImageDesc().mem_object) {
@@ -390,7 +377,7 @@ TEST_F(Nv12ImageTest, createNV12UVPlaneImageWithOffsetOfUVPlane) {
 HWTEST_F(Nv12ImageTest, checkIfPlanesAreWritten) {
     KernelBinaryHelper kbHelper(KernelBinaryHelper::BUILT_INS);
 
-    auto device = std::unique_ptr<Device>(DeviceHelper<>::create());
+    auto device = std::unique_ptr<Device>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
     char hostPtr[16 * 16 * 16];
 
@@ -432,6 +419,23 @@ HWTEST_F(Nv12ImageTest, setImageArg) {
     EXPECT_EQ(RENDER_SURFACE_STATE::SHADER_CHANNEL_SELECT_ALPHA_ONE, surfaceState.getShaderChannelSelectAlpha());
 
     delete image;
+}
+
+HWTEST_F(Nv12ImageTest, givenNv12ImageArrayAndImageArraySizeIsZeroWhenCallingSetImageArgThenDoNotProgramSurfaceArray) {
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+    RENDER_SURFACE_STATE surfaceState;
+
+    cl_image_desc imageDesc = Image2dDefaults::imageDesc;
+    imageDesc.image_array_size = 1;
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE2D_ARRAY;
+    cl_image_format imageFormat = Image2dDefaults::imageFormat;
+    imageFormat.image_channel_order = CL_NV12_INTEL;
+    imageFormat.image_channel_data_type = CL_UNORM_INT8;
+    std::unique_ptr<Image> image{Image2dHelper<>::create(&context, &imageDesc, &imageFormat)};
+    image->setCubeFaceIndex(__GMM_NO_CUBE_MAP);
+
+    image->setImageArg(&surfaceState, false, 0);
+    EXPECT_FALSE(surfaceState.getSurfaceArray());
 }
 
 HWTEST_F(Nv12ImageTest, setImageArgUVPlaneImageSetsOffsetedSurfaceBaseAddressAndSetsCorrectTileMode) {

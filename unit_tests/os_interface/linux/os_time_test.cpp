@@ -1,32 +1,18 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
-#include "unit_tests/os_interface/linux/mock_os_time_linux.h"
 #include "runtime/os_interface/linux/drm_neo.h"
-#include "test.h"
-#include "gtest/gtest.h"
 #include "runtime/os_interface/linux/os_interface.h"
 #include "runtime/os_interface/linux/os_time_linux.h"
+#include "test.h"
+#include "unit_tests/os_interface/linux/device_command_stream_fixture.h"
+#include "unit_tests/os_interface/linux/mock_os_time_linux.h"
+
+#include "gtest/gtest.h"
 
 #include <dlfcn.h>
 
@@ -50,7 +36,7 @@ int resolutionFuncTrue(clockid_t clkId, struct timespec *res) throw() {
     return 0;
 }
 
-using namespace OCLRT;
+using namespace NEO;
 struct DrmTimeTest : public ::testing::Test {
   public:
     void SetUp() override {
@@ -148,6 +134,12 @@ TEST_F(DrmTimeTest, GIVENDrmWHENGetCpuGpuTimeTHENPassed) {
     delete pDrm;
 }
 
+TEST_F(DrmTimeTest, givenGetCpuGpuTimeWhenItIsUnavailableThenReturnFalse) {
+    TimeStampData CPUGPUTime = {0, 0};
+    auto error = osTime->getCpuGpuTime(&CPUGPUTime);
+    EXPECT_FALSE(error);
+}
+
 TEST_F(DrmTimeTest, GetCpuGpuTimeFails) {
     TimeStampData CPUGPUTime01 = {0, 0};
     auto pDrm = new DrmMockFail();
@@ -197,6 +189,7 @@ TEST_F(DrmTimeTest, detect) {
         osTime->timestampTypeDetect();
         void **p = (void **)&(osTime->getGpuTime);
         EXPECT_EQ(*p, *p2);
+        drm->ioctl_res_ext = &drm->NONE;
     }
     delete drm;
 }

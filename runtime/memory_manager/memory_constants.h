@@ -1,28 +1,23 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
+
+constexpr bool is32bit = (sizeof(void *) == 4);
+constexpr bool is64bit = (sizeof(void *) == 8);
+
+template <uint8_t N>
+constexpr uint64_t maxNBitValue = ((1ULL << N) - 1);
+static_assert(maxNBitValue<8> == std::numeric_limits<uint8_t>::max(), "");
+static_assert(maxNBitValue<16> == std::numeric_limits<uint16_t>::max(), "");
+static_assert(maxNBitValue<32> == std::numeric_limits<uint32_t>::max(), "");
 
 namespace MemoryConstants {
 static const uint64_t zoneHigh = ~(uint64_t)0xFFFFFFFF;
@@ -40,10 +35,21 @@ static const size_t slmWindowAlignment = 128 * kiloByte;
 static const size_t slmWindowSize = 64 * kiloByte;
 static const uintptr_t pageMask = (pageSize - 1);
 static const uintptr_t page64kMask = (pageSize64k - 1);
-static const uint64_t max32BitAppAddress = ((1ULL << 31) - 1);
-static const uint64_t max64BitAppAddress = ((1ULL << 47) - 1);
+static const uint64_t max32BitAppAddress = maxNBitValue<31>;
+static const uint64_t max64BitAppAddress = maxNBitValue<47>;
 static const uint32_t sizeOf4GBinPageEntities = (MemoryConstants::gigaByte * 4 - MemoryConstants::pageSize) / MemoryConstants::pageSize;
+static const uint64_t max32BitAddress = maxNBitValue<32>;
+static const uint64_t max36BitAddress = ((1ULL << 36) - 1);
+static const uint64_t max48BitAddress = maxNBitValue<48>;
+static const uintptr_t page4kEntryMask = std::numeric_limits<uintptr_t>::max() & ~MemoryConstants::pageMask;
+static const uintptr_t page64kEntryMask = std::numeric_limits<uintptr_t>::max() & ~MemoryConstants::page64kMask;
+static const int GfxAddressBits = is64bit ? 48 : 32;
+static const uint64_t maxSvmAddress = is64bit ? maxNBitValue<47> : maxNBitValue<32>;
+
 } // namespace MemoryConstants
 
-const bool is32bit = (sizeof(void *) == 4) ? true : false;
-const bool is64bit = (sizeof(void *) == 8) ? true : false;
+namespace BlitterConstants {
+static constexpr uint64_t maxBlitWidth = 0x7FFF;
+static constexpr uint64_t maxBlitHeight = 0x7FFF;
+static constexpr uint64_t max2dBlitSize = maxBlitWidth * maxBlitHeight;
+} // namespace BlitterConstants

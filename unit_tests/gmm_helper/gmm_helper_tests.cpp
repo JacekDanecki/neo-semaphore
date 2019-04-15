@@ -1,49 +1,59 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "gmm_client_context.h"
-#include "gtest/gtest.h"
-#include "igfxfmid.h"
+#include "runtime/gmm_helper/gmm.h"
+#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/ptr_math.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
-#include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/platform/platform.h"
+#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/variable_backup.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_gmm.h"
+#include "unit_tests/mocks/mock_graphics_allocation.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
+
+#include "GL/gl.h"
+#include "GL/glext.h"
+#include "gmm_client_context.h"
+#include "gtest/gtest.h"
+#include "igfxfmid.h"
 
 using namespace ::testing;
 
-namespace OCLRT {
-class GmmTests : public ::testing::Test {
+namespace NEO {
+struct GmmTests : public ::testing::Test {
     void SetUp() override {
-        executionEnvironment.initGmm(*platformDevices);
+        executionEnvironment = platformImpl->peekExecutionEnvironment();
     }
-    ExecutionEnvironment executionEnvironment;
+    ExecutionEnvironment *executionEnvironment;
 };
 
+TEST(GmmGlTests, givenGmmWhenAskedforCubeFaceIndexThenProperValueIsReturned) {
+    std::vector<std::pair<GMM_CUBE_FACE_ENUM, uint32_t>> v = {{__GMM_CUBE_FACE_NEG_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_X},
+                                                              {__GMM_CUBE_FACE_POS_X, GL_TEXTURE_CUBE_MAP_POSITIVE_X},
+                                                              {__GMM_CUBE_FACE_NEG_Y, GL_TEXTURE_CUBE_MAP_NEGATIVE_Y},
+                                                              {__GMM_CUBE_FACE_POS_Y, GL_TEXTURE_CUBE_MAP_POSITIVE_Y},
+                                                              {__GMM_CUBE_FACE_NEG_Z, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z},
+                                                              {__GMM_CUBE_FACE_POS_Z, GL_TEXTURE_CUBE_MAP_POSITIVE_Z}};
+
+    uint32_t maxVal = 0;
+    for (auto p : v) {
+        EXPECT_TRUE(p.first == NEO::GmmHelper::getCubeFaceIndex(p.second));
+        maxVal = std::max(maxVal, p.second);
+    }
+    maxVal++;
+    EXPECT_TRUE(__GMM_NO_CUBE_MAP == NEO::GmmHelper::getCubeFaceIndex(maxVal));
+}
+
 TEST_F(GmmTests, resourceCreation) {
-    std::unique_ptr<MemoryManager> mm(new OsAgnosticMemoryManager);
+    std::unique_ptr<MemoryManager> mm(new MemoryManagerCreate<OsAgnosticMemoryManager>(false, false, *executionEnvironment));
     void *pSysMem = mm->allocateSystemMemory(4096, 4096);
     std::unique_ptr<Gmm> gmm(new Gmm(pSysMem, 4096, false));
 
@@ -57,7 +67,7 @@ TEST_F(GmmTests, resourceCreation) {
 }
 
 TEST_F(GmmTests, resourceCreationUncacheable) {
-    std::unique_ptr<MemoryManager> mm(new OsAgnosticMemoryManager);
+    std::unique_ptr<MemoryManager> mm(new MemoryManagerCreate<OsAgnosticMemoryManager>(false, false, *executionEnvironment));
     void *pSysMem = mm->allocateSystemMemory(4096, 4096);
 
     std::unique_ptr<Gmm> gmm(new Gmm(pSysMem, 4096, true));
@@ -73,7 +83,7 @@ TEST_F(GmmTests, resourceCreationUncacheable) {
 }
 
 TEST_F(GmmTests, resourceCleanupOnDelete) {
-    std::unique_ptr<MemoryManager> mm(new OsAgnosticMemoryManager);
+    std::unique_ptr<MemoryManager> mm(new MemoryManagerCreate<OsAgnosticMemoryManager>(false, false, *executionEnvironment));
     void *pSysMem = mm->allocateSystemMemory(4096, 4096);
 
     std::unique_ptr<Gmm> gmm(new Gmm(pSysMem, 4096, false));
@@ -84,9 +94,9 @@ TEST_F(GmmTests, resourceCleanupOnDelete) {
 }
 
 TEST_F(GmmTests, GivenBufferSizeLargerThenMaxPitchWhenAskedForGmmCreationThenGMMResourceIsCreatedWithNoRestrictionsFlag) {
-    auto maxSize = GmmHelper::maxPossiblePitch;
+    auto maxSize = static_cast<size_t>(GmmHelper::maxPossiblePitch);
 
-    MemoryManager *mm = new OsAgnosticMemoryManager;
+    MemoryManager *mm = new MemoryManagerCreate<OsAgnosticMemoryManager>(false, false, *executionEnvironment);
     void *pSysMem = mm->allocateSystemMemory(4096, 4096);
 
     auto gmmRes = new Gmm(pSysMem, maxSize, false);
@@ -125,9 +135,7 @@ TEST_F(GmmTests, invalidImageTypeQuery) {
     imgDesc.image_type = 0; // invalid
     auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
 
-    auto queryGmm = MockGmm::queryImgParams(imgInfo);
-
-    EXPECT_EQ(0u, imgInfo.size);
+    EXPECT_THROW(MockGmm::queryImgParams(imgInfo), std::exception);
 }
 
 TEST_F(GmmTests, validImageTypeQuery) {
@@ -160,11 +168,32 @@ TEST_F(GmmTests, validImageTypeQuery) {
     EXPECT_EQ(static_cast<uint32_t>(queryGmm->resourceParams.Format),
               static_cast<uint32_t>(GMM_RESOURCE_FORMAT::GMM_FORMAT_R8G8B8A8_UNORM));
     EXPECT_EQ(queryGmm->resourceParams.Flags.Gpu.Texture, 1u);
-    EXPECT_EQ(queryGmm->resourceParams.BaseWidth, 17u);
+    EXPECT_EQ(queryGmm->resourceParams.BaseWidth64, 17u);
     EXPECT_EQ(queryGmm->resourceParams.BaseHeight, 17u);
     EXPECT_EQ(queryGmm->resourceParams.Depth, 17u);
     EXPECT_EQ(queryGmm->resourceParams.ArraySize, 1u);
     EXPECT_EQ(queryGmm->resourceParams.Flags.Wa.__ForceOtherHVALIGN4, 1u);
+}
+
+TEST_F(GmmTests, givenWidthWhenCreatingResourceThenSetWidth64Field) {
+    const void *dummyPtr = reinterpret_cast<void *>(0x123);
+    size_t allocationSize = std::numeric_limits<size_t>::max();
+    Gmm gmm(dummyPtr, allocationSize, false);
+    EXPECT_EQ(static_cast<uint64_t>(allocationSize), gmm.resourceParams.BaseWidth64);
+}
+
+TEST_F(GmmTests, givenNullptrWhenGmmConstructorIsCalledThenNoGfxMemoryIsProperlySet) {
+    void *pSysMem = nullptr;
+    std::unique_ptr<Gmm> gmm(new Gmm(pSysMem, 4096, false));
+
+    EXPECT_EQ(gmm->resourceParams.NoGfxMemory, 1u);
+}
+
+TEST_F(GmmTests, givenPtrWhenGmmConstructorIsCalledThenNoGfxMemoryIsProperlySet) {
+    void *pSysMem = reinterpret_cast<void *>(0x1111);
+    std::unique_ptr<Gmm> gmm(new Gmm(pSysMem, 4096, false));
+
+    EXPECT_EQ(gmm->resourceParams.NoGfxMemory, 0u);
 }
 
 TEST_F(GmmTests, given2DimageFromBufferParametersWhenGmmResourceIsCreatedThenItHasDesiredPitchAndSize) {
@@ -208,44 +237,94 @@ TEST_F(GmmTests, given2DimageFromBufferParametersWhenGmmResourceIsCreatedAndPitc
     EXPECT_EQ(imgDesc.image_row_pitch, queryGmm->gmmResourceInfo->getRenderPitch());
 }
 
-TEST_F(GmmTests, setTilingOnImgQuery) {
+TEST_F(GmmTests, givenTilableImageWhenEnableForceLinearImagesThenYTilingIsDisabled) {
+    DebugManagerStateRestore debugStateBackup;
     cl_image_desc imgDesc{};
     imgDesc.image_type = CL_MEM_OBJECT_IMAGE3D;
     imgDesc.image_width = 17;
     imgDesc.image_height = 17;
     imgDesc.image_depth = 17;
 
-    bool defaultTiling = DebugManager.flags.ForceLinearImages.get();
+    DebugManager.flags.ForceLinearImages.set(false);
 
     auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
 
     auto queryGmm = MockGmm::queryImgParams(imgInfo);
 
-    EXPECT_EQ(queryGmm->resourceParams.Flags.Info.Linear, 1u); // always
-    if (DebugManager.flags.ForceLinearImages.get()) {
+    auto &hwHelper = HwHelper::get(GmmHelper::getInstance()->getHardwareInfo()->pPlatform->eRenderCoreFamily);
+    bool supportsYTiling = hwHelper.supportsYTiling();
+
+    if (!supportsYTiling) {
+        EXPECT_EQ(queryGmm->resourceParams.Flags.Info.Linear, 0u);
         EXPECT_EQ(queryGmm->resourceParams.Flags.Info.TiledY, 0u);
     } else {
+        EXPECT_EQ(queryGmm->resourceParams.Flags.Info.Linear, 1u);
         EXPECT_EQ(queryGmm->resourceParams.Flags.Info.TiledY, 1u);
     }
 
-    DebugManager.flags.ForceLinearImages.set(!defaultTiling);
+    DebugManager.flags.ForceLinearImages.set(true);
 
     delete queryGmm.get();
     queryGmm.release();
     queryGmm = MockGmm::queryImgParams(imgInfo);
 
-    EXPECT_EQ(queryGmm->resourceParams.Flags.Info.Linear, 1u); // always
-    if (DebugManager.flags.ForceLinearImages.get()) {
-        EXPECT_EQ(queryGmm->resourceParams.Flags.Info.TiledY, 0u);
-    } else {
-        EXPECT_EQ(queryGmm->resourceParams.Flags.Info.TiledY, 1u);
-    }
+    EXPECT_EQ(queryGmm->resourceParams.Flags.Info.Linear, 1u);
+    EXPECT_EQ(queryGmm->resourceParams.Flags.Info.TiledY, 0u);
+}
 
-    DebugManager.flags.ForceLinearImages.set(defaultTiling);
+TEST_F(GmmTests, givenTilingModeSetToTileYWhenHwSupportsTilingThenTileYFlagIsSet) {
+    cl_image_desc imgDesc{};
+    imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    imgDesc.image_width = 4;
+    imgDesc.image_height = 4;
+    imgDesc.image_depth = 1;
+
+    auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
+    imgInfo.tilingMode = TilingMode::TILE_Y;
+    auto gmm = std::make_unique<Gmm>(imgInfo);
+
+    auto &hwHelper = HwHelper::get(GmmHelper::getInstance()->getHardwareInfo()->pPlatform->eRenderCoreFamily);
+    bool supportsYTiling = hwHelper.supportsYTiling();
+
+    if (!supportsYTiling) {
+        EXPECT_EQ(gmm->resourceParams.Flags.Info.Linear, 0u);
+        EXPECT_EQ(gmm->resourceParams.Flags.Info.TiledY, 0u);
+    } else {
+        EXPECT_EQ(gmm->resourceParams.Flags.Info.Linear, 1u);
+        EXPECT_EQ(gmm->resourceParams.Flags.Info.TiledY, 1u);
+    }
+}
+
+TEST_F(GmmTests, givenTilingModeSetToNonTiledWhenCreatingGmmThenLinearFlagIsSet) {
+    cl_image_desc imgDesc{};
+    imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    imgDesc.image_width = 4;
+    imgDesc.image_height = 4;
+    imgDesc.image_depth = 1;
+
+    auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
+    imgInfo.tilingMode = TilingMode::NON_TILED;
+    auto gmm = std::make_unique<Gmm>(imgInfo);
+
+    EXPECT_EQ(gmm->resourceParams.Flags.Info.Linear, 1u);
+    EXPECT_EQ(gmm->resourceParams.Flags.Info.TiledY, 0u);
+}
+
+TEST_F(GmmTests, givenTilingModeSetToTileXWhenCreatingGmmThenUnrecoverableIfIsCalled) {
+    cl_image_desc imgDesc{};
+    imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+    imgDesc.image_width = 4;
+    imgDesc.image_height = 4;
+    imgDesc.image_depth = 1;
+
+    auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
+    imgInfo.tilingMode = TilingMode::TILE_X;
+
+    EXPECT_THROW(new Gmm(imgInfo), std::exception);
 }
 
 TEST_F(GmmTests, givenZeroRowPitchWhenQueryImgFromBufferParamsThenCalculate) {
-    GraphicsAllocation bufferAllocation(nullptr, 4096);
+    MockGraphicsAllocation bufferAllocation(nullptr, 4096);
 
     cl_image_desc imgDesc{};
     imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
@@ -261,7 +340,7 @@ TEST_F(GmmTests, givenZeroRowPitchWhenQueryImgFromBufferParamsThenCalculate) {
 }
 
 TEST_F(GmmTests, givenNonZeroRowPitchWhenQueryImgFromBufferParamsThenUseUserValue) {
-    GraphicsAllocation bufferAllocation(nullptr, 4096);
+    MockGraphicsAllocation bufferAllocation(nullptr, 4096);
 
     cl_image_desc imgDesc{};
     imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
@@ -294,13 +373,6 @@ TEST_F(GmmTests, decanonize) {
     uint64_t addr2 = 0x7FFFFFFFFFFFFFFF;
     uint64_t addrExpected2 = 0x0000FFFFFFFFFFFF;
     EXPECT_EQ(GmmHelper::decanonize(addr2), addrExpected2);
-}
-
-TEST_F(GmmTests, returnRenderAlignment) {
-    uint32_t tileModes[4][2] = {{0, 2}, {1, 3}, {2, 1}, {3, 0}}; // {given, expected}
-    for (uint32_t i = 0; i < 4; i++) {
-        EXPECT_EQ(GmmHelper::getRenderTileMode(tileModes[i][0]), tileModes[i][1]);
-    }
 }
 
 TEST_F(GmmTests, returnRenderTileMode) {
@@ -604,35 +676,10 @@ TEST(GmmTest, givenInvalidFlagsSetWhenAskedForUnifiedAuxTranslationCapabilityThe
     EXPECT_FALSE(gmm->unifiedAuxTranslationCapable()); // RenderCompressed == 0
 }
 
-class MockGmmHelper : public GmmHelper {
-  public:
-    using GmmHelper::destroyContext;
-    using GmmHelper::initContext;
-    MockGmmHelper(const HardwareInfo *hwInfo) : GmmHelper(hwInfo) {}
-};
-
-TEST(GmmTest, whenContextIsInitializedMultipleTimesThenDontOverride) {
-    const HardwareInfo *hwinfo = *platformDevices;
-    auto gmmHelper = MockGmmHelper(hwinfo);
-    auto currentClientContext = GmmHelper::gmmClientContext;
-    auto currentClientContextHandle = GmmHelper::gmmClientContext->getHandle();
-    gmmHelper.initContext(hwinfo->pPlatform, hwinfo->pSkuTable, hwinfo->pWaTable, hwinfo->pSysInfo);
-
-    EXPECT_EQ(currentClientContext, GmmHelper::gmmClientContext);
-    EXPECT_EQ(currentClientContextHandle, GmmHelper::gmmClientContext->getHandle());
-}
-
-TEST(GmmTest, whenContextIsDestroyedMultimpleTimesThenDontCrash) {
-    const HardwareInfo *hwinfo = *platformDevices;
-    auto gmmHelper = MockGmmHelper(hwinfo);
-    gmmHelper.destroyContext();
-}
-
 TEST(GmmTest, givenHwInfoWhenDeviceIsCreatedTheSetThisHwInfoToGmmHelper) {
     HardwareInfo localHwInfo = **platformDevices;
-
     std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&localHwInfo));
-    EXPECT_EQ(&localHwInfo, GmmHelper::hwInfo);
+    EXPECT_EQ(&localHwInfo, device->getGmmHelper()->getHardwareInfo());
 }
 
 TEST(GmmTest, whenResourceIsCreatedThenHandleItsOwnership) {
@@ -646,15 +693,14 @@ TEST(GmmTest, whenResourceIsCreatedThenHandleItsOwnership) {
     GMM_RESCREATE_PARAMS gmmParams = {};
     gmmParams.Type = RESOURCE_BUFFER;
     gmmParams.Format = GMM_FORMAT_GENERIC_8BIT;
-    gmmParams.BaseWidth = 1;
+    gmmParams.BaseWidth64 = 1;
     gmmParams.BaseHeight = 1;
     gmmParams.Depth = 1;
     gmmParams.Flags.Info.Linear = 1;
     gmmParams.Flags.Info.Cacheable = 1;
     gmmParams.Flags.Gpu.Texture = 1;
     gmmParams.Usage = GMM_RESOURCE_USAGE_OCL_BUFFER;
-    ExecutionEnvironment executionEnvironment;
-    executionEnvironment.initGmm(*platformDevices);
+
     MyMockResourecInfo myMockResourceInfo1(&gmmParams);
     EXPECT_NE(nullptr, myMockResourceInfo1.resourceInfo.get());
 
@@ -664,20 +710,37 @@ TEST(GmmTest, whenResourceIsCreatedThenHandleItsOwnership) {
     EXPECT_NE(myMockResourceInfo1.resourceInfo.get(), myMockResourceInfo2.resourceInfo.get());
 }
 
+TEST(GmmTest, givenGmmWithNotSetMCSInResourceInfoGpuFlagsWhenCallHasMultisampleControlSurfaceThenReturnFalse) {
+    auto gmm = std::unique_ptr<Gmm>(new Gmm(nullptr, 1, false));
+    EXPECT_FALSE(gmm->hasMultisampleControlSurface());
+}
+
+TEST(GmmTest, givenGmmWithSetMCSInResourceInfoGpuFlagsWhenCallhasMultisampleControlSurfaceThenReturnTrue) {
+    auto gmm = std::unique_ptr<Gmm>(new Gmm(nullptr, 1, false));
+    auto mockResource = reinterpret_cast<MockGmmResourceInfo *>(gmm->gmmResourceInfo.get());
+    mockResource->setMultisampleControlSurface();
+    EXPECT_TRUE(gmm->hasMultisampleControlSurface());
+}
+
 TEST(GmmSimplifiedCacheSelectionPolicy, givenGmmInSimplifiedCacheSelectionPolicyWhenItIsAskedForUncachedIndexThen0IsReturned) {
-    GmmHelper::useSimplifiedMocsTable = true;
-    auto index = GmmHelper::getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED);
+    GmmHelper gmmHelper(*platformDevices);
+    gmmHelper.setSimplifiedMocsTableUsage(true);
+    auto index = gmmHelper.getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED);
     auto expectedIndex = GmmHelper::cacheDisabledIndex;
     EXPECT_EQ(expectedIndex, index);
-    GmmHelper::useSimplifiedMocsTable = false;
 }
 
 TEST(GmmSimplifiedCacheSelectionPolicy, givenGmmInSimplifiedCacheSelectionPolicyWhenItIsAskedForCachedIndexThen4IsReturned) {
-    GmmHelper::useSimplifiedMocsTable = true;
-    auto index = GmmHelper::getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
+    GmmHelper gmmHelper(*platformDevices);
+    gmmHelper.setSimplifiedMocsTableUsage(true);
+    auto index = gmmHelper.getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
     auto expectedIndex = GmmHelper::cacheEnabledIndex;
     EXPECT_EQ(expectedIndex, index);
-    GmmHelper::useSimplifiedMocsTable = false;
 }
 
-} // namespace OCLRT
+TEST(GmmHelperTest, whenGmmHelperIsInitializedThenClientContextIsSet) {
+    ASSERT_NE(nullptr, GmmHelper::getClientContext());
+    EXPECT_NE(nullptr, GmmHelper::getClientContext()->getHandle());
+}
+
+} // namespace NEO

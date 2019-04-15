@@ -1,35 +1,22 @@
 /*
-* Copyright (c) 2017 - 2018, Intel Corporation
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included
-* in all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-* OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE.
-*/
+ * Copyright (C) 2017-2019 Intel Corporation
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ */
 
 #include "runtime/event/async_events_handler.h"
 #include "runtime/event/event.h"
 #include "runtime/event/user_event.h"
+#include "runtime/helpers/timestamp_packet.h"
 #include "runtime/platform/platform.h"
+#include "test.h"
 #include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_async_event_handler.h"
-#include "test.h"
+
 #include "gmock/gmock.h"
 
-using namespace OCLRT;
+using namespace NEO;
 using namespace ::testing;
 
 class AsyncEventsHandlerTests : public ::testing::Test {
@@ -55,7 +42,6 @@ class AsyncEventsHandlerTests : public ::testing::Test {
     }
 
     void SetUp() override {
-        constructPlatform();
         dbgRestore.reset(new DebugManagerStateRestore());
         DebugManager.flags.EnableAsyncEventsHandler.set(false);
         handler.reset(new MockHandler());
@@ -69,7 +55,6 @@ class AsyncEventsHandlerTests : public ::testing::Test {
         event1->release();
         event2->release();
         event3->release();
-        platformImpl.reset(nullptr);
     }
 
     std::unique_ptr<DebugManagerStateRestore> dbgRestore;
@@ -223,7 +208,7 @@ TEST_F(AsyncEventsHandlerTests, givenEventsNotHandledByHandlderWhenAsyncExecutio
     EXPECT_EQ(3, event1->getRefInternalCount());
     EXPECT_EQ(3, event2->getRefInternalCount());
     handler->allowAsyncProcess.store(false);
-    MockHandler::asyncProcess(reinterpret_cast<void *>(handler.get())); // enter and exit because of allowAsyncProcess == false
+    MockHandler::asyncProcess(handler.get()); // enter and exit because of allowAsyncProcess == false
     EXPECT_EQ(2, event1->getRefInternalCount());
     EXPECT_EQ(2, event2->getRefInternalCount());
     EXPECT_TRUE(handler->peekIsListEmpty());
@@ -365,7 +350,7 @@ TEST_F(AsyncEventsHandlerTests, givenSleepCandidateWhenProcessedThenCallWaitWith
 
     EXPECT_CALL(*event1, wait(true, true)).Times(1).WillOnce(Invoke(unsetAsyncFlag));
 
-    MockHandler::asyncProcess(reinterpret_cast<void *>(handler.get()));
+    MockHandler::asyncProcess(handler.get());
 
     event1->setStatus(CL_COMPLETE);
 }
@@ -376,7 +361,7 @@ TEST_F(AsyncEventsHandlerTests, asyncProcessCallsProcessListBeforeReturning) {
     handler->registerEvent(event);
     handler->allowAsyncProcess.store(false);
 
-    MockHandler::asyncProcess(reinterpret_cast<void *>(handler.get()));
+    MockHandler::asyncProcess(handler.get());
     EXPECT_TRUE(handler->peekIsListEmpty());
     EXPECT_EQ(1, event->getRefInternalCount());
 

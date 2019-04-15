@@ -1,28 +1,14 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "runtime/command_stream/csr_definitions.h"
 #include "runtime/helpers/preamble.inl"
 
-namespace OCLRT {
+namespace NEO {
 
 template <>
 uint32_t PreambleHelper<SKLFamily>::getL3Config(const HardwareInfo &hwInfo, bool useSLM) {
@@ -42,22 +28,22 @@ uint32_t PreambleHelper<SKLFamily>::getL3Config(const HardwareInfo &hwInfo, bool
 }
 
 template <>
-void PreambleHelper<SKLFamily>::programPipelineSelect(LinearStream *pCommandStream, bool mediaSamplerRequired) {
+void PreambleHelper<SKLFamily>::programPipelineSelect(LinearStream *pCommandStream, const DispatchFlags &dispatchFlags) {
     typedef typename SKLFamily::PIPELINE_SELECT PIPELINE_SELECT;
 
     auto pCmd = (PIPELINE_SELECT *)pCommandStream->getSpace(sizeof(PIPELINE_SELECT));
-    *pCmd = PIPELINE_SELECT::sInit();
+    *pCmd = SKLFamily::cmdInitPipelineSelect;
 
     auto mask = pipelineSelectEnablePipelineSelectMaskBits | pipelineSelectMediaSamplerDopClockGateMaskBits;
     pCmd->setMaskBits(mask);
     pCmd->setPipelineSelection(PIPELINE_SELECT::PIPELINE_SELECTION_GPGPU);
-    pCmd->setMediaSamplerDopClockGateEnable(!mediaSamplerRequired);
+    pCmd->setMediaSamplerDopClockGateEnable(!dispatchFlags.mediaSamplerRequired);
 }
 
 template <>
 void PreambleHelper<SKLFamily>::addPipeControlBeforeVfeCmd(LinearStream *pCommandStream, const HardwareInfo *hwInfo) {
     auto pipeControl = pCommandStream->getSpaceForCmd<PIPE_CONTROL>();
-    *pipeControl = PIPE_CONTROL::sInit();
+    *pipeControl = SKLFamily::cmdInitPipeControl;
     pipeControl->setCommandStreamerStallEnable(true);
     if (hwInfo->pWaTable->waSendMIFLUSHBeforeVFE) {
         pipeControl->setRenderTargetCacheFlushEnable(true);
@@ -76,11 +62,11 @@ void PreambleHelper<SKLFamily>::programThreadArbitration(LinearStream *pCommandS
     UNRECOVERABLE_IF(requiredThreadArbitrationPolicy == ThreadArbitrationPolicy::NotPresent);
 
     auto pipeControl = pCommandStream->getSpaceForCmd<PIPE_CONTROL>();
-    *pipeControl = PIPE_CONTROL::sInit();
+    *pipeControl = SKLFamily::cmdInitPipeControl;
     pipeControl->setCommandStreamerStallEnable(true);
 
     auto pCmd = pCommandStream->getSpaceForCmd<MI_LOAD_REGISTER_IMM>();
-    *pCmd = MI_LOAD_REGISTER_IMM::sInit();
+    *pCmd = SKLFamily::cmdInitLoadRegisterImm;
 
     pCmd->setRegisterOffset(DebugControlReg2::address);
     pCmd->setDataDword(DebugControlReg2::getRegData(requiredThreadArbitrationPolicy));
@@ -91,12 +77,5 @@ size_t PreambleHelper<SKLFamily>::getThreadArbitrationCommandsSize() {
     return sizeof(MI_LOAD_REGISTER_IMM) + sizeof(PIPE_CONTROL);
 }
 
-template <>
-size_t PreambleHelper<SKLFamily>::getAdditionalCommandsSize(const Device &device) {
-    size_t totalSize = PreemptionHelper::getRequiredPreambleSize<SKLFamily>(device);
-    totalSize += getKernelDebuggingCommandsSize(device.isSourceLevelDebuggerActive());
-    return totalSize;
-}
-
 template struct PreambleHelper<SKLFamily>;
-} // namespace OCLRT
+} // namespace NEO

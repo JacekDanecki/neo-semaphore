@@ -1,37 +1,26 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "surface_formats.h"
-#include "runtime/helpers/array_count.h"
-#include "runtime/gmm_helper/gmm_lib.h"
-#include "runtime/api/cl_types.h"
 
-namespace OCLRT {
+#include "runtime/api/cl_types.h"
+#include "runtime/gmm_helper/gmm_lib.h"
+#include "runtime/helpers/array_count.h"
+#include "runtime/mem_obj/image.h"
+
+#include "validators.h"
+
+namespace NEO {
 
 // clang-format off
 
 //Initialize this with the required formats first.
 //Append the optional one later
-const SurfaceFormatInfo readOnlySurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::readOnlySurfaceFormats[] = {
     {{CL_RGBA,            CL_UNORM_INT8},     GMM_FORMAT_R8G8B8A8_UNORM_TYPE,      GFX3DSTATE_SURFACEFORMAT_R8G8B8A8_UNORM          , 0, 4, 1, 4},
     {{CL_RGBA,            CL_UNORM_INT16},    GMM_FORMAT_R16G16B16A16_UNORM_TYPE,  GFX3DSTATE_SURFACEFORMAT_R16G16B16A16_UNORM      , 0, 4, 2, 8},
     {{CL_RGBA,            CL_SIGNED_INT8},    GMM_FORMAT_R8G8B8A8_SINT_TYPE,       GFX3DSTATE_SURFACEFORMAT_R8G8B8A8_SINT           , 0, 4, 1, 4},
@@ -87,7 +76,7 @@ const SurfaceFormatInfo readOnlySurfaceFormats[] = {
     {{CL_RGBA,            CL_SNORM_INT16},    GMM_FORMAT_R16G16B16A16_SNORM_TYPE,  GFX3DSTATE_SURFACEFORMAT_R16G16B16A16_SNORM      , 0, 4, 2, 8},
 };
 
-const SurfaceFormatInfo writeOnlySurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::writeOnlySurfaceFormats[] = {
     {{CL_RGBA,            CL_UNORM_INT8},     GMM_FORMAT_R8G8B8A8_UNORM_TYPE,      GFX3DSTATE_SURFACEFORMAT_R8G8B8A8_UNORM          , 0, 4, 1, 4},
     {{CL_RGBA,            CL_UNORM_INT16},    GMM_FORMAT_R16G16B16A16_UNORM_TYPE,  GFX3DSTATE_SURFACEFORMAT_R16G16B16A16_UNORM      , 0, 4, 2, 8},
     {{CL_RGBA,            CL_SIGNED_INT8},    GMM_FORMAT_R8G8B8A8_SINT_TYPE,       GFX3DSTATE_SURFACEFORMAT_R8G8B8A8_SINT           , 0, 4, 1, 4},
@@ -134,7 +123,7 @@ const SurfaceFormatInfo writeOnlySurfaceFormats[] = {
     {{CL_RGBA,            CL_SNORM_INT16},    GMM_FORMAT_R16G16B16A16_SNORM_TYPE,  GFX3DSTATE_SURFACEFORMAT_R16G16B16A16_SNORM      , 0, 4, 2, 8},
 };
 
-const SurfaceFormatInfo readWriteSurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::readWriteSurfaceFormats[] = {
     {{CL_RGBA,            CL_UNORM_INT8},     GMM_FORMAT_R8G8B8A8_UNORM_TYPE,      GFX3DSTATE_SURFACEFORMAT_R8G8B8A8_UNORM          , 0, 4, 1, 4},
     {{CL_RGBA,            CL_UNORM_INT16},    GMM_FORMAT_R16G16B16A16_UNORM_TYPE,  GFX3DSTATE_SURFACEFORMAT_R16G16B16A16_UNORM      , 0, 4, 2, 8},
     {{CL_RGBA,            CL_SIGNED_INT8},    GMM_FORMAT_R8G8B8A8_SINT_TYPE,       GFX3DSTATE_SURFACEFORMAT_R8G8B8A8_SINT           , 0, 4, 1, 4},
@@ -182,40 +171,105 @@ const SurfaceFormatInfo readWriteSurfaceFormats[] = {
 };
 
 #if SUPPORT_YUV
-const SurfaceFormatInfo packedYuvSurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::packedYuvSurfaceFormats[] = {
     {{CL_YUYV_INTEL,      CL_UNORM_INT8},     GMM_FORMAT_YUY2,                     GFX3DSTATE_SURFACEFORMAT_YCRCB_NORMAL            , 0, 2, 1, 2},
     {{CL_UYVY_INTEL,      CL_UNORM_INT8},     GMM_FORMAT_UYVY,                     GFX3DSTATE_SURFACEFORMAT_YCRCB_SWAPY             , 0, 2, 1, 2},
     {{CL_YVYU_INTEL,      CL_UNORM_INT8},     GMM_FORMAT_YVYU,                     GFX3DSTATE_SURFACEFORMAT_YCRCB_SWAPUV            , 0, 2, 1, 2},
     {{CL_VYUY_INTEL,      CL_UNORM_INT8},     GMM_FORMAT_VYUY,                     GFX3DSTATE_SURFACEFORMAT_YCRCB_SWAPUVY           , 0, 2, 1, 2}
 };
 
-const SurfaceFormatInfo planarYuvSurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::planarYuvSurfaceFormats[] = {
     {{CL_NV12_INTEL,      CL_UNORM_INT8},     GMM_FORMAT_NV12,                     GFX3DSTATE_SURFACEFORMAT_NV12                    , 0, 1, 1, 1}
 };
 
-const size_t numPackedYuvSurfaceFormats = ARRAY_COUNT(packedYuvSurfaceFormats);
-const size_t numPlanarYuvSurfaceFormats = ARRAY_COUNT(planarYuvSurfaceFormats);
+
 #endif
 
-const SurfaceFormatInfo readOnlyDepthSurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::readOnlyDepthSurfaceFormats[] = {
     {{ CL_DEPTH,          CL_FLOAT},         GMM_FORMAT_R32_FLOAT_TYPE,           GFX3DSTATE_SURFACEFORMAT_R32_FLOAT               , 0, 1, 4, 4},
     {{ CL_DEPTH,          CL_UNORM_INT16},   GMM_FORMAT_R16_UNORM_TYPE,           GFX3DSTATE_SURFACEFORMAT_R16_UNORM               , 0, 1, 2, 2},
     {{ CL_DEPTH_STENCIL,  CL_UNORM_INT24},   GMM_FORMAT_GENERIC_32BIT,            GFX3DSTATE_SURFACEFORMAT_R24_UNORM_X8_TYPELESS   , 0, 1, 4, 4},
     {{ CL_DEPTH_STENCIL,  CL_FLOAT},         GMM_FORMAT_R32G32_FLOAT_TYPE,        GFX3DSTATE_SURFACEFORMAT_R32_FLOAT_X8X24_TYPELESS, 0, 2, 4, 8}
 };
 
-const SurfaceFormatInfo readWriteDepthSurfaceFormats[] = {
+const SurfaceFormatInfo SurfaceFormats::readWriteDepthSurfaceFormats[] = {
     {{ CL_DEPTH,          CL_FLOAT},         GMM_FORMAT_R32_FLOAT_TYPE,           GFX3DSTATE_SURFACEFORMAT_R32_FLOAT               , 0, 1, 4, 4},
     {{ CL_DEPTH,          CL_UNORM_INT16},   GMM_FORMAT_R16_UNORM_TYPE,           GFX3DSTATE_SURFACEFORMAT_R16_UNORM               , 0, 1, 2, 2}
 };
 
-const size_t numReadOnlyDepthSurfaceFormats  = ARRAY_COUNT(readOnlyDepthSurfaceFormats);
-const size_t numReadWriteDepthSurfaceFormats = ARRAY_COUNT(readWriteDepthSurfaceFormats);
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::readOnly() noexcept {
+    return ArrayRef<const SurfaceFormatInfo>(readOnlySurfaceFormats);
+}
 
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::writeOnly() noexcept {
+    return ArrayRef<const SurfaceFormatInfo>(writeOnlySurfaceFormats);
+}
 
-const size_t numReadOnlySurfaceFormats = ARRAY_COUNT(readOnlySurfaceFormats);
-const size_t numWriteOnlySurfaceFormats = ARRAY_COUNT(writeOnlySurfaceFormats);
-const size_t numReadWriteSurfaceFormats = ARRAY_COUNT(readWriteSurfaceFormats);
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::readWrite() noexcept {
+    return ArrayRef<const SurfaceFormatInfo>(readWriteSurfaceFormats);
+}
+
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::packedYuv() noexcept {
+#if SUPPORT_YUV
+    return ArrayRef<const SurfaceFormatInfo>(packedYuvSurfaceFormats);
+#else
+    return ArrayRef<const SurfaceFormatInfo>();
+#endif
+}
+
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::planarYuv() noexcept {
+#if SUPPORT_YUV
+    return ArrayRef<const SurfaceFormatInfo>(planarYuvSurfaceFormats);
+#else
+    return ArrayRef<const SurfaceFormatInfo>();
+#endif
+}
+
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::readOnlyDepth() noexcept {
+    return ArrayRef<const SurfaceFormatInfo>(readOnlyDepthSurfaceFormats);
+}
+
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::readWriteDepth() noexcept {
+    return ArrayRef<const SurfaceFormatInfo>(readWriteDepthSurfaceFormats);
+}
+
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::surfaceFormats(cl_mem_flags flags) noexcept {
+    if (flags & CL_MEM_READ_ONLY) {
+        return readOnly();
+    }
+    else if (flags & CL_MEM_WRITE_ONLY) {
+        return writeOnly();
+    }
+    else {
+        return readWrite();
+    }
+}
+
+ArrayRef<const SurfaceFormatInfo> SurfaceFormats::surfaceFormats(cl_mem_flags flags, const cl_image_format *imageFormat) noexcept {
+    if (NEO::IsNV12Image(imageFormat)) {
+        return planarYuv();
+    }
+    else if (IsPackedYuvImage(imageFormat)) {
+        return packedYuv();
+    }
+    else if (Image::isDepthFormat(*imageFormat)) {
+        if (flags & CL_MEM_READ_ONLY) {
+            return readOnlyDepth();
+        }
+        else {
+            return readWriteDepth();
+        }
+    }
+    else if (flags & CL_MEM_READ_ONLY) {
+        return readOnly();
+    }
+    else if (flags & CL_MEM_WRITE_ONLY) {
+        return writeOnly();
+    }
+    else {
+        return readWrite();
+    }
+}
 
 // clang-format on
-} // namespace OCLRT
+} // namespace NEO

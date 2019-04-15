@@ -1,23 +1,8 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
@@ -25,20 +10,24 @@
 #include "runtime/device/device_info_map.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/base_object.h"
+#include "runtime/helpers/engine_control.h"
 #include "runtime/helpers/hw_info.h"
-#include "runtime/helpers/engine_node.h"
+#include "runtime/memory_manager/memory_constants.h"
 #include "runtime/os_interface/performance_counters.h"
+
+#include "engine_node.h"
+
 #include <vector>
 
-namespace OCLRT {
+namespace NEO {
 
-class CommandStreamReceiver;
 class GraphicsAllocation;
 class MemoryManager;
 class OSTime;
 class DriverInfo;
 struct HardwareInfo;
 class SourceLevelDebugger;
+class OsContext;
 
 template <>
 struct OpenCLObjectMapper<_cl_device_id> {
@@ -50,9 +39,9 @@ class Device : public BaseObject<_cl_device_id> {
     static const cl_ulong objectMagic = 0x8055832341AC8D08LL;
 
     template <typename T>
-    static T *create(const HardwareInfo *pHwInfo, ExecutionEnvironment *execEnv) {
+    static T *create(const HardwareInfo *pHwInfo, ExecutionEnvironment *execEnv, uint32_t deviceIndex) {
         pHwInfo = getDeviceInitHwInfo(pHwInfo);
-        T *device = new T(*pHwInfo, execEnv);
+        T *device = new T(*pHwInfo, execEnv, deviceIndex);
         return createDeviceInternals(pHwInfo, device);
     }
 
@@ -75,20 +64,16 @@ class Device : public BaseObject<_cl_device_id> {
     const DeviceInfo &getDeviceInfo() const;
     DeviceInfo *getMutableDeviceInfo();
     MOCKABLE_VIRTUAL const WorkaroundTable *getWaTable() const;
-    EngineType getEngineType() const {
-        return engineType;
-    }
 
+    void initMaxPowerSavingMode();
     void *getSLMWindowStartAddress();
     void prepareSLMWindow();
     void setForce32BitAddressing(bool value) {
         deviceInfo.force32BitAddressess = value;
     }
 
-    CommandStreamReceiver &getCommandStreamReceiver();
-    CommandStreamReceiver *peekCommandStreamReceiver();
-
-    volatile uint32_t *getTagAddress() const;
+    EngineControl &getEngine(aub_stream::EngineType engineType, bool lowPriority);
+    EngineControl &getDefaultEngine();
 
     const char *getProductAbbrev() const;
     const std::string getFamilyNameWithType() const;
@@ -105,14 +90,13 @@ class Device : public BaseObject<_cl_device_id> {
                 size_t &retSize);
 
     MemoryManager *getMemoryManager() const;
+    GmmHelper *getGmmHelper() const;
 
     /* We hide the retain and release function of BaseObject. */
     void retain() override;
     unique_ptr_if_unused<Device> release() override;
     OSTime *getOSTime() const { return osTime.get(); };
     double getProfilingTimerResolution();
-    void increaseProgramCount() { programCount++; }
-    uint64_t getProgramCount() { return programCount; }
     unsigned int getEnabledClVersion() const { return enabledClVersion; };
     unsigned int getSupportedClVersion() const;
     double getPlatformHostTimerResolution() const;
@@ -127,48 +111,56 @@ class Device : public BaseObject<_cl_device_id> {
     std::vector<unsigned int> simultaneousInterops;
     std::string deviceExtensions;
     std::string name;
-    bool getEnabled64kbPages();
     bool isSourceLevelDebuggerActive() const;
     SourceLevelDebugger *getSourceLevelDebugger() { return executionEnvironment->sourceLevelDebugger.get(); }
+    ExecutionEnvironment *getExecutionEnvironment() const { return executionEnvironment; }
+    const HardwareCapabilities &getHardwareCapabilities() const { return hardwareCapabilities; }
+    uint32_t getDeviceIndex() const { return deviceIndex; }
+    bool isFullRangeSvm() const {
+        return getHardwareInfo().capabilityTable.gpuAddressSpace == MemoryConstants::max48BitAddress;
+    }
 
   protected:
     Device() = delete;
-    Device(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment);
+    Device(const HardwareInfo &hwInfo, ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex);
 
     template <typename T>
     static T *createDeviceInternals(const HardwareInfo *pHwInfo, T *device) {
-        if (false == createDeviceImpl(pHwInfo, *device)) {
+        if (false == device->createDeviceImpl(pHwInfo)) {
             delete device;
             return nullptr;
         }
         return device;
     }
 
-    static bool createDeviceImpl(const HardwareInfo *pHwInfo, Device &outDevice);
+    bool createDeviceImpl(const HardwareInfo *pHwInfo);
+    bool createEngines(const HardwareInfo *pHwInfo);
     static const HardwareInfo *getDeviceInitHwInfo(const HardwareInfo *pHwInfoIn);
     MOCKABLE_VIRTUAL void initializeCaps();
     void setupFp64Flags();
     void appendOSExtensions(std::string &deviceExtensions);
 
-    unsigned int enabledClVersion;
+    unsigned int enabledClVersion = 0u;
 
     const HardwareInfo &hwInfo;
+    HardwareCapabilities hardwareCapabilities = {};
     DeviceInfo deviceInfo;
 
-    volatile uint32_t *tagAddress;
-    GraphicsAllocation *preemptionAllocation;
+    GraphicsAllocation *preemptionAllocation = nullptr;
     std::unique_ptr<OSTime> osTime;
     std::unique_ptr<DriverInfo> driverInfo;
     std::unique_ptr<PerformanceCounters> performanceCounters;
-    uint64_t programCount = 0u;
 
-    void *slmWindowStartAddress;
+    std::vector<EngineControl> engines;
+
+    void *slmWindowStartAddress = nullptr;
 
     std::string exposedBuiltinKernels = "";
 
     PreemptionMode preemptionMode;
-    EngineType engineType;
     ExecutionEnvironment *executionEnvironment = nullptr;
+    const uint32_t deviceIndex;
+    uint32_t defaultEngineIndex = 0;
 };
 
 template <cl_device_info Param>
@@ -179,19 +171,16 @@ inline void Device::getCap(const void *&src,
     retSize = size = DeviceInfoTable::Map<Param>::size;
 }
 
-inline CommandStreamReceiver &Device::getCommandStreamReceiver() {
-    return *executionEnvironment->commandStreamReceiver;
-}
-
-inline CommandStreamReceiver *Device::peekCommandStreamReceiver() {
-    return executionEnvironment->commandStreamReceiver.get();
-}
-
-inline volatile uint32_t *Device::getTagAddress() const {
-    return tagAddress;
+inline EngineControl &Device::getDefaultEngine() {
+    return engines[defaultEngineIndex];
 }
 
 inline MemoryManager *Device::getMemoryManager() const {
     return executionEnvironment->memoryManager.get();
 }
-} // namespace OCLRT
+
+inline GmmHelper *Device::getGmmHelper() const {
+    return executionEnvironment->getGmmHelper();
+}
+
+} // namespace NEO

@@ -1,43 +1,34 @@
 /*
- * Copyright (c) 2017 - 2018, Intel Corporation
+ * Copyright (C) 2017-2019 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
+ * SPDX-License-Identifier: MIT
  *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #pragma once
 
-#include "runtime/helpers/options.h"
 #include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/options.h"
 #include "runtime/os_interface/linux/drm_neo.h"
-#include "drm/i915_drm.h"
 
+#include "drm/i915_drm.h"
 #include "gtest/gtest.h"
 
 #include <cstdio>
 #include <fstream>
 
-using namespace OCLRT;
+using namespace NEO;
 
-static const int mockFd = 33;
+#if !defined(I915_PARAM_HAS_PREEMPTION)
+#define I915_PARAM_HAS_PREEMPTION 0x806
+#endif
+
 // Mock DRM class that responds to DRM_IOCTL_I915_GETPARAMs
 class DrmMock : public Drm {
   public:
+    using Drm::memoryInfo;
+    using Drm::preemptionSupported;
+
     DrmMock() : Drm(mockFd) {
         sysFsDefaultGpuPathToRestore = nullptr;
     }
@@ -47,7 +38,9 @@ class DrmMock : public Drm {
             sysFsDefaultGpuPath = sysFsDefaultGpuPathToRestore;
         }
     }
-    virtual inline int ioctl(unsigned long request, void *arg) {
+    int ioctl(unsigned long request, void *arg) override {
+        ioctlCallsCount++;
+
         if ((request == DRM_IOCTL_I915_GETPARAM) && (arg != nullptr)) {
             drm_i915_getparam_t *gp = (drm_i915_getparam_t *)arg;
             if (false
@@ -113,12 +106,10 @@ class DrmMock : public Drm {
                 }
                 return this->StoredRetValForMinEUinPool;
             }
-#if defined(I915_PARAM_HAS_PREEMPTION)
-            if (gp->param == I915_PARAM_HAS_PREEMPTION) {
+            if (gp->param == I915_PARAM_HAS_SCHEDULER) {
                 *((int *)(gp->value)) = this->StoredPreemptionSupport;
                 return this->StoredRetVal;
             }
-#endif
             if (gp->param == I915_PARAM_HAS_ALIASING_PPGTT) {
                 *((int *)(gp->value)) = this->StoredPPGTT;
                 return this->StoredRetVal;
@@ -128,56 +119,77 @@ class DrmMock : public Drm {
                 return this->StoredRetVal;
             }
         }
-#if defined(I915_PARAM_HAS_PREEMPTION)
+
         if ((request == DRM_IOCTL_I915_GEM_CONTEXT_CREATE) && (arg != nullptr)) {
             drm_i915_gem_context_create *create = (drm_i915_gem_context_create *)arg;
             create->ctx_id = this->StoredCtxId;
             return this->StoredRetVal;
         }
 
+        if ((request == DRM_IOCTL_I915_GEM_CONTEXT_DESTROY) && (arg != nullptr)) {
+            drm_i915_gem_context_destroy *destroy = (drm_i915_gem_context_destroy *)arg;
+            this->receivedDestroyContextId = destroy->ctx_id;
+            return this->StoredRetVal;
+        }
+
         if ((request == DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM) && (arg != nullptr)) {
-            drm_i915_gem_context_param *gp = (drm_i915_gem_context_param *)arg;
-            if ((gp->param == I915_CONTEXT_PARAM_PRIORITY) && (gp->ctx_id == this->StoredCtxId)) {
-                EXPECT_EQ(0u, gp->size);
+            receivedContextParamRequestCount++;
+            receivedContextParamRequest = *reinterpret_cast<drm_i915_gem_context_param *>(arg);
+            if (receivedContextParamRequest.param == I915_CONTEXT_PARAM_PRIORITY) {
                 return this->StoredRetVal;
             }
-            if ((gp->param == I915_CONTEXT_PRIVATE_PARAM_BOOST) && (gp->value == 1)) {
+            if ((receivedContextParamRequest.param == I915_CONTEXT_PRIVATE_PARAM_BOOST) && (receivedContextParamRequest.value == 1)) {
                 return this->StoredRetVal;
             }
         }
-#endif
+
         if (request == DRM_IOCTL_I915_GEM_EXECBUFFER2) {
             drm_i915_gem_execbuffer2 *execbuf = (drm_i915_gem_execbuffer2 *)arg;
             this->execBuffer = *execbuf;
+            return 0;
         }
         if (request == DRM_IOCTL_I915_GEM_USERPTR) {
             auto *userPtrParams = (drm_i915_gem_userptr *)arg;
             userPtrParams->handle = returnHandle;
             returnHandle++;
+            return 0;
         }
         if (request == DRM_IOCTL_I915_GEM_CREATE) {
             auto *createParams = (drm_i915_gem_create *)arg;
             this->createParamsSize = createParams->size;
             this->createParamsHandle = createParams->handle = 1u;
+            return 0;
         }
         if (request == DRM_IOCTL_I915_GEM_SET_TILING) {
             auto *setTilingParams = (drm_i915_gem_set_tiling *)arg;
             setTilingMode = setTilingParams->tiling_mode;
             setTilingHandle = setTilingParams->handle;
             setTilingStride = setTilingParams->stride;
+            return 0;
         }
         if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE) {
             auto *primeToHandleParams = (drm_prime_handle *)arg;
             //return BO
             primeToHandleParams->handle = outputHandle;
             inputFd = primeToHandleParams->fd;
+            return 0;
         }
         if (request == DRM_IOCTL_I915_GEM_GET_APERTURE) {
             auto aperture = (drm_i915_gem_get_aperture *)arg;
             aperture->aper_available_size = gpuMemSize;
             aperture->aper_size = gpuMemSize;
+            return 0;
         }
-        return 0;
+        if (request == DRM_IOCTL_I915_GEM_MMAP) {
+            auto mmap_arg = static_cast<drm_i915_gem_mmap *>(arg);
+            mmap_arg->addr_ptr = reinterpret_cast<__u64>(lockedPtr);
+            return 0;
+        }
+        if (request == DRM_IOCTL_I915_GEM_WAIT) {
+            return 0;
+        }
+
+        return handleRemainingRequests(request, arg);
     }
 
     void setSysFsDefaultGpuPath(const char *path) {
@@ -209,21 +221,7 @@ class DrmMock : public Drm {
     void setDeviceID(int deviceId) { this->deviceId = deviceId; }
     void setDeviceRevID(int revisionId) { this->revisionId = revisionId; }
 
-    bool hasPreemption() {
-#if defined(I915_PARAM_HAS_PREEMPTION)
-        drm_i915_getparam_t gp;
-        int value = 0;
-        gp.value = &value;
-        gp.param = I915_PARAM_HAS_PREEMPTION;
-        int ret = ioctl(DRM_IOCTL_I915_GETPARAM, &gp);
-        if (ret == 0 && *gp.value == 1) {
-            return contextCreate() && setLowPriority();
-        }
-        return false;
-#else
-        return this->StoredMockPreemptionSupport == 1 ? true : false;
-#endif
-    }
+    static const int mockFd = 33;
 
     int StoredEUVal = -1;
     int StoredSSVal = -1;
@@ -239,10 +237,17 @@ class DrmMock : public Drm {
     int StoredRetValForPooledEU = 0;
     int StoredRetValForMinEUinPool = 0;
     int StoredPPGTT = 3;
-    int StoredPreemptionSupport = 1;
-    int StoredMockPreemptionSupport = 0;
+    int StoredPreemptionSupport =
+        I915_SCHEDULER_CAP_ENABLED |
+        I915_SCHEDULER_CAP_PRIORITY |
+        I915_SCHEDULER_CAP_PREEMPTION;
     int StoredExecSoftPin = 0;
     uint32_t StoredCtxId = 1;
+    uint32_t receivedDestroyContextId = 0;
+    uint32_t ioctlCallsCount = 0;
+
+    uint32_t receivedContextParamRequestCount = 0;
+    drm_i915_gem_context_param receivedContextParamRequest = {};
 
     //DRM_IOCTL_I915_GEM_EXECBUFFER2
     drm_i915_gem_execbuffer2 execBuffer = {0};
@@ -260,6 +265,10 @@ class DrmMock : public Drm {
     //DRM_IOCTL_I915_GEM_USERPTR
     __u32 returnHandle = 0;
     __u64 gpuMemSize = 3u * MemoryConstants::gigaByte;
+    //DRM_IOCTL_I915_GEM_MMAP
+    uint64_t lockedPtr[4];
+
+    virtual int handleRemainingRequests(unsigned long request, void *arg);
 
   private:
     const char *sysFsDefaultGpuPathToRestore;
