@@ -37,9 +37,9 @@ class MemoryManager;
 class OsContext;
 class OSInterface;
 class ScratchSpaceController;
-class TimestampPacket;
 struct HwPerfCounter;
 struct HwTimeStamps;
+struct TimestampPacketStorage;
 
 template <typename T1>
 class TagAllocator;
@@ -71,14 +71,12 @@ class CommandStreamReceiver {
 
     virtual void flushBatchedSubmissions() = 0;
 
-    virtual void makeCoherent(GraphicsAllocation &gfxAllocation){};
     virtual void makeResident(GraphicsAllocation &gfxAllocation);
     virtual void makeNonResident(GraphicsAllocation &gfxAllocation);
-    void makeSurfacePackNonResident(ResidencyContainer &allocationsForResidency);
+    MOCKABLE_VIRTUAL void makeSurfacePackNonResident(ResidencyContainer &allocationsForResidency);
     virtual void processResidency(ResidencyContainer &allocationsForResidency) {}
     virtual void processEviction();
     void makeResidentHostPtrAllocation(GraphicsAllocation *gfxAllocation);
-    virtual void waitBeforeMakingNonResidentWhenRequired() {}
 
     void ensureCommandBufferAllocation(LinearStream &commandStream, size_t minimumRequiredSize, size_t additionalAllocationSize);
 
@@ -148,10 +146,6 @@ class CommandStreamReceiver {
     bool initializeTagAllocation();
     MOCKABLE_VIRTUAL std::unique_lock<MutexType> obtainUniqueOwnership();
 
-    KmdNotifyHelper *peekKmdNotifyHelper() {
-        return kmdNotifyHelper.get();
-    }
-
     bool peekTimestampPacketWriteEnabled() const { return timestampPacketWriteEnabled; }
 
     size_t defaultSshSize;
@@ -160,14 +154,14 @@ class CommandStreamReceiver {
     AllocationsList &getTemporaryAllocations();
     AllocationsList &getAllocationsForReuse();
     InternalAllocationStorage *getInternalAllocationStorage() const { return internalAllocationStorage.get(); }
-    bool createAllocationForHostSurface(HostPtrSurface &surface, bool requiresL3Flush);
+    MOCKABLE_VIRTUAL bool createAllocationForHostSurface(HostPtrSurface &surface, bool requiresL3Flush);
     virtual size_t getPreferredTagPoolSize() const { return 512; }
     virtual void setupContext(OsContext &osContext) { this->osContext = &osContext; }
     OsContext &getOsContext() const { return *osContext; }
 
     TagAllocator<HwTimeStamps> *getEventTsAllocator();
     TagAllocator<HwPerfCounter> *getEventPerfCountAllocator();
-    TagAllocator<TimestampPacket> *getTimestampPacketAllocator();
+    TagAllocator<TimestampPacketStorage> *getTimestampPacketAllocator();
 
     virtual cl_int expectMemory(const void *gfxAddress, const void *srcAddress, size_t length, uint32_t compareOperation);
 
@@ -180,7 +174,13 @@ class CommandStreamReceiver {
         this->latestSentTaskCount = latestSentTaskCount;
     }
 
-    virtual void blitFromHostPtr(MemObj &destinationMemObj, void *sourceHostPtr, uint64_t sourceSize) = 0;
+    void blitWithHostPtr(Buffer &buffer, void *hostPtr, uint64_t hostPtrSize,
+                         BlitterConstants::BlitWithHostPtrDirection copyDirection, CsrDependencies &csrDependencies);
+    virtual void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, uint64_t sourceSize, CsrDependencies &csrDependencies) = 0;
+
+    ScratchSpaceController *getScratchSpaceController() const {
+        return scratchSpaceController.get();
+    }
 
   protected:
     void cleanupResources();
@@ -194,7 +194,7 @@ class CommandStreamReceiver {
     std::unique_ptr<ScratchSpaceController> scratchSpaceController;
     std::unique_ptr<TagAllocator<HwTimeStamps>> profilingTimeStampAllocator;
     std::unique_ptr<TagAllocator<HwPerfCounter>> perfCounterAllocator;
-    std::unique_ptr<TagAllocator<TimestampPacket>> timestampPacketAllocator;
+    std::unique_ptr<TagAllocator<TimestampPacketStorage>> timestampPacketAllocator;
 
     ResidencyContainer residencyAllocations;
     ResidencyContainer evictionAllocations;
@@ -240,6 +240,7 @@ class CommandStreamReceiver {
     bool isPreambleSent = false;
     bool isStateSipSent = false;
     bool GSBAFor32BitProgrammed = false;
+    bool bindingTableBaseAddressRequired = false;
     bool mediaVfeStateDirty = true;
     bool lastVmeSubslicesConfig = false;
     bool disableL3Cache = false;

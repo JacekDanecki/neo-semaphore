@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/aub/aub_center.h"
 #include "runtime/aub/aub_helper.h"
 #include "runtime/aub_mem_dump/page_table_entry_bits.h"
@@ -15,7 +16,6 @@
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/hardware_context_controller.h"
 #include "runtime/helpers/hw_helper.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/memory_banks.h"
 #include "runtime/memory_manager/memory_constants.h"
@@ -150,7 +150,7 @@ CommandStreamReceiver *TbxCommandStreamReceiverHw<GfxFamily>::create(const std::
     TbxCommandStreamReceiverHw<GfxFamily> *csr;
     if (withAubDump) {
         auto hwInfo = executionEnvironment.getHardwareInfo();
-        auto &hwHelper = HwHelper::get(hwInfo->pPlatform->eRenderCoreFamily);
+        auto &hwHelper = HwHelper::get(hwInfo->platform.eRenderCoreFamily);
         auto localMemoryEnabled = hwHelper.getEnableLocalMemory(*hwInfo);
         auto fullName = AUBCommandStreamReceiver::createFullFilePath(*hwInfo, baseName);
         executionEnvironment.initAubCenter(localMemoryEnabled, fullName, CommandStreamReceiverType::CSR_TBX_WITH_AUB);
@@ -270,7 +270,7 @@ void TbxCommandStreamReceiverHw<GfxFamily>::submitBatchBuffer(uint64_t batchBuff
 
         // Add our BBS
         auto bbs = GfxFamily::cmdInitBatchBufferStart;
-        bbs.setBatchBufferStartAddressGraphicsaddress472(AUB::ptrToPPGTT(batchBuffer));
+        bbs.setBatchBufferStartAddressGraphicsaddress472(static_cast<uint64_t>(batchBufferGpuAddress));
         bbs.setAddressSpaceIndicator(MI_BATCH_BUFFER_START::ADDRESS_SPACE_INDICATOR_PPGTT);
         *(MI_BATCH_BUFFER_START *)pTail = bbs;
         pTail = ((MI_BATCH_BUFFER_START *)pTail) + 1;
@@ -365,6 +365,10 @@ void TbxCommandStreamReceiverHw<GfxFamily>::writeMemory(uint64_t gpuAddress, voi
 
 template <typename GfxFamily>
 bool TbxCommandStreamReceiverHw<GfxFamily>::writeMemory(GraphicsAllocation &gfxAllocation) {
+    if (!gfxAllocation.isTbxWritable()) {
+        return false;
+    }
+
     uint64_t gpuAddress;
     void *cpuAddress;
     size_t size;
@@ -378,21 +382,47 @@ bool TbxCommandStreamReceiverHw<GfxFamily>::writeMemory(GraphicsAllocation &gfxA
         writeMemory(gpuAddress, cpuAddress, size, this->getMemoryBank(&gfxAllocation), this->getPPGTTAdditionalBits(&gfxAllocation));
     }
 
+    if (AubHelper::isOneTimeAubWritableAllocationType(gfxAllocation.getAllocationType())) {
+        gfxAllocation.setTbxWritable(false);
+    }
+
     return true;
+}
+
+template <typename GfxFamily>
+void TbxCommandStreamReceiverHw<GfxFamily>::waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool forcePowerSavingMode) {
+    this->flushBatchedSubmissions();
+
+    while (*this->getTagAddress() < this->latestFlushedTaskCount) {
+        downloadAllocation(*this->getTagAllocation());
+    }
+
+    for (GraphicsAllocation *graphicsAllocation : this->allocationsForDownload) {
+        downloadAllocation(*graphicsAllocation);
+    }
+    this->allocationsForDownload.clear();
+
+    BaseClass::waitForTaskCountWithKmdNotifyFallback(taskCountToWait, flushStampToWait, useQuickKmdSleep, forcePowerSavingMode);
+}
+
+template <typename GfxFamily>
+void TbxCommandStreamReceiverHw<GfxFamily>::processEviction() {
+    this->allocationsForDownload.insert(this->getEvictionAllocations().begin(), this->getEvictionAllocations().end());
+    BaseClass::processEviction();
 }
 
 template <typename GfxFamily>
 void TbxCommandStreamReceiverHw<GfxFamily>::processResidency(ResidencyContainer &allocationsForResidency) {
     for (auto &gfxAllocation : allocationsForResidency) {
         if (!writeMemory(*gfxAllocation)) {
-            DEBUG_BREAK_IF(!(gfxAllocation->getUnderlyingBufferSize() == 0));
+            DEBUG_BREAK_IF(!((gfxAllocation->getUnderlyingBufferSize() == 0) || !gfxAllocation->isTbxWritable()));
         }
         gfxAllocation->updateResidencyTaskCount(this->taskCount + 1, this->osContext->getContextId());
     }
 }
 
 template <typename GfxFamily>
-void TbxCommandStreamReceiverHw<GfxFamily>::makeCoherent(GraphicsAllocation &gfxAllocation) {
+void TbxCommandStreamReceiverHw<GfxFamily>::downloadAllocation(GraphicsAllocation &gfxAllocation) {
     if (hardwareContextController) {
         hardwareContextController->readMemory(gfxAllocation.getGpuAddress(), gfxAllocation.getUnderlyingBuffer(), gfxAllocation.getUnderlyingBufferSize(),
                                               this->getMemoryBank(&gfxAllocation), MemoryConstants::pageSize64k);
@@ -409,16 +439,6 @@ void TbxCommandStreamReceiverHw<GfxFamily>::makeCoherent(GraphicsAllocation &gfx
             tbxStream.readMemory(physAddress, ptrOffset(cpuAddress, offset), size);
         };
         ppgtt->pageWalk(static_cast<uintptr_t>(gpuAddress), length, 0, 0, walker, this->getMemoryBank(&gfxAllocation));
-    }
-}
-
-template <typename GfxFamily>
-void TbxCommandStreamReceiverHw<GfxFamily>::waitBeforeMakingNonResidentWhenRequired() {
-    auto allocation = this->getTagAllocation();
-    UNRECOVERABLE_IF(allocation == nullptr);
-
-    while (*this->getTagAddress() < this->latestFlushedTaskCount) {
-        this->makeCoherent(*allocation);
     }
 }
 

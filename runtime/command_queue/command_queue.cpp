@@ -7,6 +7,7 @@
 
 #include "runtime/command_queue/command_queue.h"
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
@@ -22,7 +23,6 @@
 #include "runtime/helpers/kernel_commands.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/options.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/queue_helpers.h"
 #include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
@@ -333,7 +333,7 @@ cl_int CommandQueue::enqueueWriteMemObjForUnmap(MemObj *memObj, void *mappedPtr,
             UNRECOVERABLE_IF(mipIdx >= 4);
             writeOrigin[mipIdx] = unmapInfo.mipLevel;
             retVal = enqueueWriteImage(image, CL_FALSE, writeOrigin, &unmapInfo.size[0],
-                                       image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(), mappedPtr,
+                                       image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(), mappedPtr, memObj->getMapAllocation(),
                                        eventsRequest.numEventsInWaitList, eventsRequest.eventWaitList, eventsRequest.outEvent);
             bool mustCallFinish = true;
             if (!(image->getFlags() & CL_MEM_USE_HOST_PTR)) {
@@ -385,7 +385,8 @@ void *CommandQueue::enqueueReadMemObjForMap(TransferProperties &transferProperti
         UNRECOVERABLE_IF(mipIdx >= 4);
         readOrigin[mipIdx] = transferProperties.mipLevel;
         errcodeRet = enqueueReadImage(image, transferProperties.blocking, readOrigin, &transferProperties.size[0],
-                                      image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(), returnPtr, eventsRequest.numEventsInWaitList,
+                                      image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(),
+                                      returnPtr, transferProperties.memObj->getMapAllocation(), eventsRequest.numEventsInWaitList,
                                       eventsRequest.eventWaitList, eventsRequest.outEvent);
     }
 
@@ -550,11 +551,11 @@ void CommandQueue::dispatchAuxTranslation(MultiDispatchInfo &multiDispatchInfo, 
     multiDispatchInfo.rbegin()->setPipeControlRequired(true);
 }
 
-void CommandQueue::obtainNewTimestampPacketNodes(size_t numberOfNodes, TimestampPacketContainer &previousNodes) {
+void CommandQueue::obtainNewTimestampPacketNodes(size_t numberOfNodes, TimestampPacketContainer &previousNodes, bool clearAllDependencies) {
     auto allocator = getCommandStreamReceiver().getTimestampPacketAllocator();
 
     previousNodes.swapNodes(*timestampPacketContainer);
-    previousNodes.resolveDependencies(isOOQEnabled());
+    previousNodes.resolveDependencies(clearAllDependencies);
 
     DEBUG_BREAK_IF(timestampPacketContainer->peekNodes().size() > 0);
 

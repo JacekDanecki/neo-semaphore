@@ -8,6 +8,8 @@
 #include "runtime/mem_obj/image.h"
 
 #include "common/compiler_support.h"
+#include "core/helpers/basic_math.h"
+#include "core/helpers/ptr_math.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
@@ -15,12 +17,10 @@
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/aligned_memory.h"
-#include "runtime/helpers/basic_math.h"
 #include "runtime/helpers/get_info.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/mipmap.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/buffer.h"
@@ -180,7 +180,7 @@ Image *Image::create(Context *context,
 
         auto hostPtrRowPitch = imageDesc->image_row_pitch ? imageDesc->image_row_pitch : imageWidth * surfaceFormat->ImageElementSizeInBytes;
         auto hostPtrSlicePitch = imageDesc->image_slice_pitch ? imageDesc->image_slice_pitch : hostPtrRowPitch * imageHeight;
-        auto isTilingAllowed = context->isSharedContext ? false : GmmHelper::allowTiling(*imageDesc);
+        auto isTilingAllowed = context->isSharedContext ? false : GmmHelper::allowTiling(*imageDesc) && !MemObjHelper::isLinearStorageForced(flags);
         imgInfo.preferRenderCompression = MemObjHelper::isSuitableForRenderCompression(isTilingAllowed, flags,
                                                                                        context->peekContextType(), true);
 
@@ -188,7 +188,7 @@ Image *Image::create(Context *context,
         bool transferNeeded = false;
         if (((imageDesc->image_type == CL_MEM_OBJECT_IMAGE1D_BUFFER) || (imageDesc->image_type == CL_MEM_OBJECT_IMAGE2D)) && (parentBuffer != nullptr)) {
 
-            HwHelper::get(context->getDevice(0)->getHardwareInfo().pPlatform->eRenderCoreFamily).checkResourceCompatibility(parentBuffer, errcodeRet);
+            HwHelper::get(context->getDevice(0)->getHardwareInfo().platform.eRenderCoreFamily).checkResourceCompatibility(parentBuffer, errcodeRet);
 
             if (errcodeRet != CL_SUCCESS) {
                 return nullptr;
@@ -237,7 +237,7 @@ Image *Image::create(Context *context,
                     }
                 } else {
                     gmm = new Gmm(imgInfo);
-                    memory = memoryManager->allocateGraphicsMemoryWithProperties({false, imgInfo.size, GraphicsAllocation::AllocationType::UNDECIDED}, hostPtr);
+                    memory = memoryManager->allocateGraphicsMemoryWithProperties({false, imgInfo.size, GraphicsAllocation::AllocationType::SHARED_CONTEXT_IMAGE}, hostPtr);
                     memory->setDefaultGmm(gmm);
                     zeroCopy = true;
                 }
@@ -350,7 +350,7 @@ Image *Image::create(Context *context,
                 } else {
                     errcodeRet = cmdQ->enqueueWriteImage(image, CL_TRUE, &copyOrigin[0], &copyRegion[0],
                                                          hostPtrRowPitch, hostPtrSlicePitch,
-                                                         hostPtr, 0, nullptr, nullptr);
+                                                         hostPtr, nullptr, 0, nullptr, nullptr);
                 }
             } else {
                 image->transferData(memory->getUnderlyingBuffer(), imgInfo.rowPitch, imgInfo.slicePitch,
@@ -378,7 +378,7 @@ Image *Image::createImageHw(Context *context, cl_mem_flags flags, size_t size, v
     const auto device = context->getDevice(0);
     const auto &hwInfo = device->getHardwareInfo();
 
-    auto funcCreate = imageFactory[hwInfo.pPlatform->eRenderCoreFamily].createImageFunction;
+    auto funcCreate = imageFactory[hwInfo.platform.eRenderCoreFamily].createImageFunction;
     DEBUG_BREAK_IF(nullptr == funcCreate);
     auto image = funcCreate(context, flags, size, hostPtr, imageFormat, imageDesc,
                             zeroCopy, graphicsAllocation, isObjectRedescribed, createTiledImage, baseMipLevel, mipCount, surfaceFormatInfo, nullptr);
@@ -945,7 +945,7 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
         nullptr,
         retVal));
 
-    retVal = cmdQ->enqueueWriteImage(imageYPlane.get(), CL_TRUE, origin, region, hostPtrRowPitch, 0, hostPtr, 0, nullptr, nullptr);
+    retVal = cmdQ->enqueueWriteImage(imageYPlane.get(), CL_TRUE, origin, region, hostPtrRowPitch, 0, hostPtr, nullptr, 0, nullptr, nullptr);
 
     // UV Plane is two times smaller than Plane Y
     region[0] = region[0] / 2;
@@ -967,7 +967,7 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
         nullptr,
         retVal));
 
-    retVal = cmdQ->enqueueWriteImage(imageUVPlane.get(), CL_TRUE, origin, region, hostPtrRowPitch, 0, hostPtr, 0, nullptr, nullptr);
+    retVal = cmdQ->enqueueWriteImage(imageUVPlane.get(), CL_TRUE, origin, region, hostPtrRowPitch, 0, hostPtr, nullptr, 0, nullptr, nullptr);
 
     return retVal;
 }

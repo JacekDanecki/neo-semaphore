@@ -385,96 +385,6 @@ TEST_F(KernelFromBinaryTests, BuiltInIsSetToFalseForRegularKernels) {
     EXPECT_FALSE(isBuiltIn);
 
     delete pKernel;
-    pKernel = nullptr;
-
-    pKernelInfo = pProgram->getKernelInfo("simple_kernel_3");
-
-    pKernel = Kernel::create(
-        pProgram,
-        *pKernelInfo,
-        &retVal);
-
-    ASSERT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, pKernel);
-
-    // get builtIn property
-    isBuiltIn = pKernel->isBuiltIn;
-
-    EXPECT_FALSE(isBuiltIn);
-
-    delete pKernel;
-    pKernel = nullptr;
-
-    pKernelInfo = pProgram->getKernelInfo("simple_kernel_4");
-
-    pKernel = Kernel::create(
-        pProgram,
-        *pKernelInfo,
-        &retVal);
-
-    ASSERT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, pKernel);
-
-    // get builtIn property
-    isBuiltIn = pKernel->isBuiltIn;
-
-    EXPECT_FALSE(isBuiltIn);
-
-    delete pKernel;
-    pKernel = nullptr;
-
-    pKernelInfo = pProgram->getKernelInfo("simple_kernel_5");
-
-    pKernel = Kernel::create(
-        pProgram,
-        *pKernelInfo,
-        &retVal);
-
-    ASSERT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, pKernel);
-
-    // get builtIn property
-    isBuiltIn = pKernel->isBuiltIn;
-
-    EXPECT_FALSE(isBuiltIn);
-
-    delete pKernel;
-    pKernel = nullptr;
-
-    pKernelInfo = pProgram->getKernelInfo("simple_kernel_6");
-
-    pKernel = Kernel::create(
-        pProgram,
-        *pKernelInfo,
-        &retVal);
-
-    ASSERT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, pKernel);
-
-    // get builtIn property
-    isBuiltIn = pKernel->isBuiltIn;
-
-    EXPECT_FALSE(isBuiltIn);
-
-    delete pKernel;
-    pKernel = nullptr;
-    pKernelInfo = pProgram->getKernelInfo("simple_kernel_7");
-
-    pKernel = Kernel::create(
-        pProgram,
-        *pKernelInfo,
-        &retVal);
-
-    ASSERT_EQ(CL_SUCCESS, retVal);
-    ASSERT_NE(nullptr, pKernel);
-
-    // get builtIn property
-    isBuiltIn = pKernel->isBuiltIn;
-
-    EXPECT_FALSE(isBuiltIn);
-
-    delete pKernel;
-    pKernel = nullptr;
 }
 
 TEST(PatchInfo, Constructor) {
@@ -544,7 +454,7 @@ class CommandStreamReceiverMock : public CommandStreamReceiver {
 
     void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool quickKmdSleep, bool forcePowerSavingMode) override {
     }
-    void blitFromHostPtr(MemObj &destinationMemObj, void *sourceHostPtr, uint64_t sourceSize) override{};
+    void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, uint64_t sourceSize, CsrDependencies &csrDependencies) override{};
 
     CompletionStamp flushTask(
         LinearStream &commandStream,
@@ -2288,10 +2198,8 @@ TEST(KernelTest, givenKernelWhenDebugFlagToUseMaxSimdForCalculationsIsUsedThenMa
     DebugManagerStateRestore dbgStateRestore;
     DebugManager.flags.UseMaxSimdSizeToDeduceMaxWorkgroupSize.set(true);
 
-    GT_SYSTEM_INFO mySysInfo = *platformDevices[0]->pSysInfo;
-    FeatureTable mySkuTable = *platformDevices[0]->pSkuTable;
-    HardwareInfo myHwInfo = {platformDevices[0]->pPlatform, &mySkuTable, platformDevices[0]->pWaTable,
-                             &mySysInfo, platformDevices[0]->capabilityTable};
+    HardwareInfo myHwInfo = *platformDevices[0];
+    GT_SYSTEM_INFO &mySysInfo = myHwInfo.gtSystemInfo;
 
     mySysInfo.EUCount = 24;
     mySysInfo.SubSliceCount = 3;
@@ -2337,16 +2245,16 @@ TEST(KernelTest, givenKernelWithKernelInfoWith64bitPointerSizeThenReport64bit) {
 }
 
 TEST(KernelTest, givenFtrRenderCompressedBuffersWhenInitializingArgsWithNonStatefulAccessThenMarkKernelForAuxTranslation) {
-    HardwareInfo localHwInfo = *platformDevices[0];
-
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&localHwInfo));
+    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto hwInfo = device->getExecutionEnvironment()->getMutableHardwareInfo();
+    auto &capabilityTable = hwInfo->capabilityTable;
     auto context = clUniquePtr(new MockContext(device.get()));
     context->setContextType(ContextType::CONTEXT_TYPE_UNRESTRICTIVE);
     MockKernelWithInternals kernel(*device, context.get());
     kernel.kernelInfo.kernelArgInfo.resize(1);
     kernel.kernelInfo.kernelArgInfo.at(0).typeStr = "char *";
 
-    localHwInfo.capabilityTable.ftrRenderCompressedBuffers = false;
+    capabilityTable.ftrRenderCompressedBuffers = false;
     kernel.kernelInfo.kernelArgInfo.at(0).pureStatefulBufferAccess = true;
     kernel.mockKernel->initialize();
     EXPECT_FALSE(kernel.mockKernel->isAuxTranslationRequired());
@@ -2355,7 +2263,7 @@ TEST(KernelTest, givenFtrRenderCompressedBuffersWhenInitializingArgsWithNonState
     kernel.mockKernel->initialize();
     EXPECT_FALSE(kernel.mockKernel->isAuxTranslationRequired());
 
-    localHwInfo.capabilityTable.ftrRenderCompressedBuffers = true;
+    capabilityTable.ftrRenderCompressedBuffers = true;
     kernel.mockKernel->initialize();
     EXPECT_TRUE(kernel.mockKernel->isAuxTranslationRequired());
 }
@@ -2402,7 +2310,7 @@ TEST(KernelTest, whenAllocationRequiringCacheFlushThenAssignAllocationPointerToC
     EXPECT_EQ(&mockAllocation, kernel.mockKernel->kernelArgRequiresCacheFlush[0]);
 }
 
-TEST(KernelTest, whenCacheFlushEnabledForAllQueuesAndKernelRequireCacheFlushAfterWalkerThenRequireCacheFlushAfterWalker) {
+TEST(KernelTest, whenKernelRequireCacheFlushAfterWalkerThenRequireCacheFlushAfterWalker) {
     MockGraphicsAllocation mockAllocation;
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockKernelWithInternals kernel(*device);
@@ -2411,7 +2319,6 @@ TEST(KernelTest, whenCacheFlushEnabledForAllQueuesAndKernelRequireCacheFlushAfte
     MockCommandQueue queue;
 
     DebugManagerStateRestore debugRestore;
-    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(true);
     DebugManager.flags.EnableCacheFlushAfterWalker.set(true);
 
     queue.requiresCacheFlushAfterWalker = true;

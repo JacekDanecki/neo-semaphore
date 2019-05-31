@@ -5,14 +5,14 @@
  *
  */
 
+#include "core/helpers/basic_math.h"
+#include "core/helpers/ptr_math.h"
 #include "runtime/command_queue/local_id_gen.h"
 #include "runtime/command_stream/csr_definitions.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/helpers/address_patch.h"
 #include "runtime/helpers/aligned_memory.h"
-#include "runtime/helpers/basic_math.h"
 #include "runtime/helpers/dispatch_info.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
 #include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/kernel.h"
@@ -90,9 +90,10 @@ size_t getSizeRequired(const MultiDispatchInfo &multiDispatchInfo, SizeGetterT &
     size_t totalSize = 0;
     auto it = multiDispatchInfo.begin();
     for (auto e = multiDispatchInfo.end(); it != e; ++it) {
-        totalSize = alignUp(totalSize, MemoryConstants::pageSize);
+        totalSize = alignUp(totalSize, MemoryConstants::cacheLineSize);
         totalSize += getSize(*it, std::forward<ArgsT>(args)...);
     }
+    totalSize = alignUp(totalSize, MemoryConstants::pageSize);
     return totalSize;
 }
 

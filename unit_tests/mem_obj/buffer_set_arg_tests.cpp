@@ -5,8 +5,8 @@
  *
  */
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/gmm_helper/gmm.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/memory_manager/surface.h"
 #include "runtime/memory_manager/svm_memory_manager.h"
@@ -261,7 +261,10 @@ TEST_F(BufferSetArgTest, clSetKernelArgBuffer) {
 }
 
 TEST_F(BufferSetArgTest, clSetKernelArgSVMPointer) {
-    void *ptrSVM = pContext->getSVMAllocsManager()->createSVMAlloc(256, 0);
+    if (!pDevice->getHardwareInfo().capabilityTable.ftrSvm) {
+        GTEST_SKIP();
+    }
+    void *ptrSVM = pContext->getSVMAllocsManager()->createSVMAlloc(256, {});
     EXPECT_NE(nullptr, ptrSVM);
 
     auto svmData = pContext->getSVMAllocsManager()->getSVMAlloc(ptrSVM);

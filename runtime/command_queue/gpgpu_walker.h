@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "core/helpers/vec.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/linear_stream.h"
@@ -23,7 +24,6 @@
 #include "runtime/kernel/kernel.h"
 #include "runtime/program/kernel_info.h"
 #include "runtime/utilities/tag_allocator.h"
-#include "runtime/utilities/vec.h"
 
 namespace NEO {
 
@@ -114,15 +114,6 @@ inline cl_uint computeDimensions(const size_t workItems[3]) {
 template <typename GfxFamily>
 class GpgpuWalkerHelper {
   public:
-    using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
-    using INTERFACE_DESCRIPTOR_DATA = typename GfxFamily::INTERFACE_DESCRIPTOR_DATA;
-
-    static void addAluReadModifyWriteRegister(
-        LinearStream *pCommandStream,
-        uint32_t aluRegister,
-        uint32_t operation,
-        uint32_t mask);
-
     static void applyWADisableLSQCROPERFforOCL(LinearStream *pCommandStream,
                                                const Kernel &kernel,
                                                bool disablePerfMode);
@@ -143,56 +134,27 @@ class GpgpuWalkerHelper {
 
     static void dispatchProfilingCommandsStart(
         TagNode<HwTimeStamps> &hwTimeStamps,
-        NEO::LinearStream *commandStream);
+        LinearStream *commandStream);
 
     static void dispatchProfilingCommandsEnd(
         TagNode<HwTimeStamps> &hwTimeStamps,
-        NEO::LinearStream *commandStream);
-
-    static void dispatchPerfCountersNoopidRegisterCommands(
-        CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream,
-        bool start);
-
-    static void dispatchPerfCountersReadFreqRegisterCommands(
-        CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream,
-        bool start);
-
-    static void dispatchPerfCountersGeneralPurposeCounterCommands(
-        CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream,
-        bool start);
-
-    static void dispatchPerfCountersUserCounterCommands(
-        CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream,
-        bool start);
-
-    static void dispatchPerfCountersOABufferStateCommands(
-        CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream);
+        LinearStream *commandStream);
 
     static void dispatchPerfCountersCommandsStart(
         CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream);
+        TagNode<HwPerfCounter> &hwPerfCounter,
+        LinearStream *commandStream);
 
     static void dispatchPerfCountersCommandsEnd(
         CommandQueue &commandQueue,
-        NEO::HwPerfCounter &hwPerfCounter,
-        NEO::LinearStream *commandStream);
+        TagNode<HwPerfCounter> &hwPerfCounter,
+        LinearStream *commandStream);
 
     static void setupTimestampPacket(
         LinearStream *cmdStream,
         WALKER_TYPE<GfxFamily> *walkerCmd,
-        TagNode<TimestampPacket> *timestampPacketNode,
-        TimestampPacket::WriteOperationType writeOperationType);
+        TagNode<TimestampPacketStorage> *timestampPacketNode,
+        TimestampPacketStorage::WriteOperationType writeOperationType);
 
     static void dispatchScheduler(
         LinearStream &commandStream,
@@ -203,6 +165,33 @@ class GpgpuWalkerHelper {
         IndirectHeap *dsh);
 
     static void adjustMiStoreRegMemMode(MI_STORE_REG_MEM<GfxFamily> *storeCmd);
+
+  private:
+    using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
+
+    static void addAluReadModifyWriteRegister(
+        LinearStream *pCommandStream,
+        uint32_t aluRegister,
+        uint32_t operation,
+        uint32_t mask);
+
+    static void dispatchStoreRegisterCommand(
+        LinearStream *commandStream,
+        uint64_t memoryAddress,
+        uint32_t registerAddress);
+
+    static void dispatchPerfCountersGeneralPurposeCounterCommands(
+        LinearStream *commandStream,
+        uint64_t baseAddress);
+
+    static void dispatchPerfCountersUserCounterCommands(
+        CommandQueue &commandQueue,
+        LinearStream *commandStream,
+        uint64_t baseAddress);
+
+    static void dispatchPerfCountersOABufferStateCommands(
+        TagNode<HwPerfCounter> &hwPerfCounter,
+        LinearStream *commandStream);
 };
 
 template <typename GfxFamily>

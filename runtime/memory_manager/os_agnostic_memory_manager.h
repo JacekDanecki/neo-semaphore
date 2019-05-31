@@ -6,7 +6,7 @@
  */
 
 #pragma once
-#include "runtime/helpers/basic_math.h"
+#include "core/helpers/basic_math.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -60,6 +60,7 @@ class OsAgnosticMemoryManager : public MemoryManager {
     uint64_t getSystemSharedMemory() override;
     uint64_t getMaxApplicationAddress() override;
     uint64_t getInternalHeapBaseAddress() override;
+    uint64_t getExternalHeapBaseAddress() override;
 
     void turnOnFakingBigAllocations();
 

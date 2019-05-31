@@ -49,6 +49,7 @@ const RuntimeCapabilityTable LKF::capabilityTable{
     CmdServicesMemTraceVersion::DeviceValues::Lkf, // aubDeviceId
     1,                                             // extraQuantityThreadsPerEU
     64,                                            // slmSize
+    false,                                         // blitterOperationsSupported
     false,                                         // ftrSupportsFP64
     false,                                         // ftrSupports64BitMath
     false,                                         // ftrSvm
@@ -66,15 +67,54 @@ const RuntimeCapabilityTable LKF::capabilityTable{
     false                                          // supportCacheFlushAfterWalker
 };
 
+WorkaroundTable LKF::workaroundTable = {};
+FeatureTable LKF::featureTable = {};
+
+void LKF::setupFeatureAndWorkaroundTable(HardwareInfo *hwInfo) {
+    FeatureTable *featureTable = &hwInfo->featureTable;
+    WorkaroundTable *workaroundTable = &hwInfo->workaroundTable;
+
+    featureTable->ftrL3IACoherency = true;
+    featureTable->ftrPPGTT = true;
+    featureTable->ftrSVM = true;
+    featureTable->ftrIA32eGfxPTEs = true;
+    featureTable->ftrStandardMipTailFormat = true;
+
+    featureTable->ftrDisplayYTiling = true;
+    featureTable->ftrTranslationTable = true;
+    featureTable->ftrUserModeTranslationTable = true;
+    featureTable->ftrTileMappedResource = true;
+    featureTable->ftrEnableGuC = true;
+
+    featureTable->ftrFbc = true;
+    featureTable->ftrFbc2AddressTranslation = true;
+    featureTable->ftrFbcBlitterTracking = true;
+    featureTable->ftrFbcCpuTracking = true;
+    featureTable->ftrTileY = true;
+
+    featureTable->ftrAstcHdr2D = true;
+    featureTable->ftrAstcLdr2D = true;
+
+    featureTable->ftr3dMidBatchPreempt = true;
+    featureTable->ftrGpGpuMidBatchPreempt = true;
+    featureTable->ftrGpGpuMidThreadLevelPreempt = true;
+    featureTable->ftrGpGpuThreadGroupLevelPreempt = true;
+    featureTable->ftrPerCtxtPreemptionGranularityControl = true;
+
+    workaroundTable->wa4kAlignUVOffsetNV12LinearSurface = true;
+    workaroundTable->waReportPerfCountUseGlobalContextID = true;
+};
+
 const HardwareInfo LKF_1x8x8::hwInfo = {
     &LKF::platform,
-    &emptySkuTable,
-    &emptyWaTable,
+    &LKF::featureTable,
+    &LKF::workaroundTable,
     &LKF_1x8x8::gtSystemInfo,
     LKF::capabilityTable,
 };
 GT_SYSTEM_INFO LKF_1x8x8::gtSystemInfo = {0};
-void LKF_1x8x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable) {
+void LKF_1x8x8::setupHardwareInfo(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable) {
+    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
     gtSysInfo->EUCount = 64;
     gtSysInfo->ThreadCount = 64 * LKF::threadsPerEu;
     gtSysInfo->SliceCount = 1;
@@ -93,20 +133,23 @@ void LKF_1x8x8::setupHardwareInfo(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featu
     gtSysInfo->MaxSubSlicesSupported = LKF::maxSubslicesSupported;
     gtSysInfo->IsL3HashModeEnabled = false;
     gtSysInfo->IsDynamicallyPopulated = false;
+    if (setupFeatureTableAndWorkaroundTable) {
+        setupFeatureAndWorkaroundTable(hwInfo);
+    }
 };
 
 const HardwareInfo LKF::hwInfo = LKF_1x8x8::hwInfo;
 
-void setupLKFHardwareInfoImpl(GT_SYSTEM_INFO *gtSysInfo, FeatureTable *featureTable, bool setupFeatureTable, const std::string &hwInfoConfig) {
+void setupLKFHardwareInfoImpl(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const std::string &hwInfoConfig) {
     if (hwInfoConfig == "1x8x8") {
-        LKF_1x8x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+        LKF_1x8x8::setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable);
     } else if (hwInfoConfig == "default") {
         // Default config
-        LKF_1x8x8::setupHardwareInfo(gtSysInfo, featureTable, setupFeatureTable);
+        LKF_1x8x8::setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable);
     } else {
         UNRECOVERABLE_IF(true);
     }
-} // namespace NEO
+}
 
-void (*LKF::setupHardwareInfo)(GT_SYSTEM_INFO *, FeatureTable *, bool, const std::string &) = setupLKFHardwareInfoImpl;
+void (*LKF::setupHardwareInfo)(HardwareInfo *, bool, const std::string &) = setupLKFHardwareInfoImpl;
 } // namespace NEO

@@ -7,6 +7,7 @@
 
 #include "runtime/context/context.h"
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/command_stream_receiver.h"
@@ -15,7 +16,6 @@
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/get_info.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
@@ -166,12 +166,11 @@ bool Context::createImpl(const cl_context_properties *properties,
     if (devices.size() > 0) {
         auto device = this->getDevice(0);
         this->memoryManager = device->getMemoryManager();
-        this->svmAllocsManager = new SVMAllocsManager(this->memoryManager);
+        if (device->getHardwareInfo().capabilityTable.ftrSvm) {
+            this->svmAllocsManager = new SVMAllocsManager(this->memoryManager);
+        }
         if (memoryManager->isAsyncDeleterEnabled()) {
             memoryManager->getDeferredDeleter()->addClient();
-        }
-        if (this->sharingFunctions[SharingType::VA_SHARING]) {
-            device->initMaxPowerSavingMode();
         }
     }
 

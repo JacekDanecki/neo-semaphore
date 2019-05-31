@@ -55,6 +55,12 @@ bool stringsAreEqual(const char *string1, const char *string2) {
     return (strcmp(string1, string2) == 0);
 }
 
+bool stringsAreEqual(std::string string1, std::string string2) {
+    if (string2.empty())
+        return false;
+    return (string1 == string2);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // convertToPascalCase
 ////////////////////////////////////////////////////////////////////////////////
@@ -91,12 +97,12 @@ OfflineCompiler::~OfflineCompiler() {
 ////////////////////////////////////////////////////////////////////////////////
 // Create
 ////////////////////////////////////////////////////////////////////////////////
-OfflineCompiler *OfflineCompiler::create(size_t numArgs, const char *const *argv, int &retVal) {
+OfflineCompiler *OfflineCompiler::create(size_t numArgs, const std::vector<std::string> &allArgs, int &retVal) {
     retVal = CL_SUCCESS;
     auto pOffCompiler = new OfflineCompiler();
 
     if (pOffCompiler) {
-        retVal = pOffCompiler->initialize(numArgs, argv);
+        retVal = pOffCompiler->initialize(numArgs, allArgs);
     }
 
     if (retVal != CL_SUCCESS) {
@@ -166,7 +172,7 @@ int OfflineCompiler::buildSourceCode() {
 
         } else {
             auto igcSrc = CIF::Builtins::CreateConstBuffer(igcMain.get(), sourceCode.c_str(), sourceCode.size());
-            auto igcOptions = CIF::Builtins::CreateConstBuffer(igcMain.get(), nullptr, 0);
+            auto igcOptions = CIF::Builtins::CreateConstBuffer(igcMain.get(), options.c_str(), options.size());
             auto igcInternalOptions = CIF::Builtins::CreateConstBuffer(igcMain.get(), internalOptions.c_str(), internalOptions.size());
             auto igcTranslationCtx = igcDeviceCtx->CreateTranslationCtx(inputFileSpirV ? IGC::CodeType::spirV : IGC::CodeType::llvmBc, IGC::CodeType::oclGenBin);
             igcOutput = igcTranslationCtx->Translate(igcSrc.get(), igcOptions.get(), igcInternalOptions.get(), nullptr, 0);
@@ -237,7 +243,7 @@ int OfflineCompiler::getHardwareInfo(const char *pDeviceName) {
             if (hardwareInfoTable[productId]) {
                 hwInfo = hardwareInfoTable[productId];
                 familyNameWithType.clear();
-                familyNameWithType.append(familyName[hwInfo->pPlatform->eRenderCoreFamily]);
+                familyNameWithType.append(familyName[hwInfo->platform.eRenderCoreFamily]);
                 familyNameWithType.append(getPlatformType(*hwInfo));
                 retVal = CL_SUCCESS;
                 break;
@@ -270,13 +276,13 @@ std::string OfflineCompiler::getStringWithinDelimiters(const std::string &src) {
 ////////////////////////////////////////////////////////////////////////////////
 // Initialize
 ////////////////////////////////////////////////////////////////////////////////
-int OfflineCompiler::initialize(size_t numArgs, const char *const *argv) {
+int OfflineCompiler::initialize(size_t numArgs, const std::vector<std::string> &allArgs) {
     int retVal = CL_SUCCESS;
     const char *pSource = nullptr;
     void *pSourceFromFile = nullptr;
     size_t sourceFromFileSize = 0;
 
-    retVal = parseCommandLine(numArgs, argv);
+    retVal = parseCommandLine(numArgs, allArgs);
     if (retVal != CL_SUCCESS) {
         return retVal;
     }
@@ -394,39 +400,39 @@ int OfflineCompiler::initialize(size_t numArgs, const char *const *argv) {
     if ((igcPlatform == nullptr) || (igcGtSystemInfo == nullptr) || (igcFeWa == nullptr)) {
         return CL_OUT_OF_HOST_MEMORY;
     }
-    IGC::PlatformHelper::PopulateInterfaceWith(*igcPlatform.get(), *hwInfo->pPlatform);
-    IGC::GtSysInfoHelper::PopulateInterfaceWith(*igcGtSystemInfo.get(), *hwInfo->pSysInfo);
+    IGC::PlatformHelper::PopulateInterfaceWith(*igcPlatform.get(), hwInfo->platform);
+    IGC::GtSysInfoHelper::PopulateInterfaceWith(*igcGtSystemInfo.get(), hwInfo->gtSystemInfo);
     // populate with features
-    igcFeWa.get()->SetFtrDesktop(hwInfo->pSkuTable->ftrDesktop);
-    igcFeWa.get()->SetFtrChannelSwizzlingXOREnabled(hwInfo->pSkuTable->ftrChannelSwizzlingXOREnabled);
+    igcFeWa.get()->SetFtrDesktop(hwInfo->featureTable.ftrDesktop);
+    igcFeWa.get()->SetFtrChannelSwizzlingXOREnabled(hwInfo->featureTable.ftrChannelSwizzlingXOREnabled);
 
-    igcFeWa.get()->SetFtrGtBigDie(hwInfo->pSkuTable->ftrGtBigDie);
-    igcFeWa.get()->SetFtrGtMediumDie(hwInfo->pSkuTable->ftrGtMediumDie);
-    igcFeWa.get()->SetFtrGtSmallDie(hwInfo->pSkuTable->ftrGtSmallDie);
+    igcFeWa.get()->SetFtrGtBigDie(hwInfo->featureTable.ftrGtBigDie);
+    igcFeWa.get()->SetFtrGtMediumDie(hwInfo->featureTable.ftrGtMediumDie);
+    igcFeWa.get()->SetFtrGtSmallDie(hwInfo->featureTable.ftrGtSmallDie);
 
-    igcFeWa.get()->SetFtrGT1(hwInfo->pSkuTable->ftrGT1);
-    igcFeWa.get()->SetFtrGT1_5(hwInfo->pSkuTable->ftrGT1_5);
-    igcFeWa.get()->SetFtrGT2(hwInfo->pSkuTable->ftrGT2);
-    igcFeWa.get()->SetFtrGT3(hwInfo->pSkuTable->ftrGT3);
-    igcFeWa.get()->SetFtrGT4(hwInfo->pSkuTable->ftrGT4);
+    igcFeWa.get()->SetFtrGT1(hwInfo->featureTable.ftrGT1);
+    igcFeWa.get()->SetFtrGT1_5(hwInfo->featureTable.ftrGT1_5);
+    igcFeWa.get()->SetFtrGT2(hwInfo->featureTable.ftrGT2);
+    igcFeWa.get()->SetFtrGT3(hwInfo->featureTable.ftrGT3);
+    igcFeWa.get()->SetFtrGT4(hwInfo->featureTable.ftrGT4);
 
-    igcFeWa.get()->SetFtrIVBM0M1Platform(hwInfo->pSkuTable->ftrIVBM0M1Platform);
-    igcFeWa.get()->SetFtrGTL(hwInfo->pSkuTable->ftrGT1);
-    igcFeWa.get()->SetFtrGTM(hwInfo->pSkuTable->ftrGT2);
-    igcFeWa.get()->SetFtrGTH(hwInfo->pSkuTable->ftrGT3);
+    igcFeWa.get()->SetFtrIVBM0M1Platform(hwInfo->featureTable.ftrIVBM0M1Platform);
+    igcFeWa.get()->SetFtrGTL(hwInfo->featureTable.ftrGT1);
+    igcFeWa.get()->SetFtrGTM(hwInfo->featureTable.ftrGT2);
+    igcFeWa.get()->SetFtrGTH(hwInfo->featureTable.ftrGT3);
 
-    igcFeWa.get()->SetFtrSGTPVSKUStrapPresent(hwInfo->pSkuTable->ftrSGTPVSKUStrapPresent);
-    igcFeWa.get()->SetFtrGTA(hwInfo->pSkuTable->ftrGTA);
-    igcFeWa.get()->SetFtrGTC(hwInfo->pSkuTable->ftrGTC);
-    igcFeWa.get()->SetFtrGTX(hwInfo->pSkuTable->ftrGTX);
-    igcFeWa.get()->SetFtr5Slice(hwInfo->pSkuTable->ftr5Slice);
+    igcFeWa.get()->SetFtrSGTPVSKUStrapPresent(hwInfo->featureTable.ftrSGTPVSKUStrapPresent);
+    igcFeWa.get()->SetFtrGTA(hwInfo->featureTable.ftrGTA);
+    igcFeWa.get()->SetFtrGTC(hwInfo->featureTable.ftrGTC);
+    igcFeWa.get()->SetFtrGTX(hwInfo->featureTable.ftrGTX);
+    igcFeWa.get()->SetFtr5Slice(hwInfo->featureTable.ftr5Slice);
 
-    igcFeWa.get()->SetFtrGpGpuMidThreadLevelPreempt(hwInfo->pSkuTable->ftrGpGpuMidThreadLevelPreempt);
-    igcFeWa.get()->SetFtrIoMmuPageFaulting(hwInfo->pSkuTable->ftrIoMmuPageFaulting);
-    igcFeWa.get()->SetFtrWddm2Svm(hwInfo->pSkuTable->ftrWddm2Svm);
-    igcFeWa.get()->SetFtrPooledEuEnabled(hwInfo->pSkuTable->ftrPooledEuEnabled);
+    igcFeWa.get()->SetFtrGpGpuMidThreadLevelPreempt(hwInfo->featureTable.ftrGpGpuMidThreadLevelPreempt);
+    igcFeWa.get()->SetFtrIoMmuPageFaulting(hwInfo->featureTable.ftrIoMmuPageFaulting);
+    igcFeWa.get()->SetFtrWddm2Svm(hwInfo->featureTable.ftrWddm2Svm);
+    igcFeWa.get()->SetFtrPooledEuEnabled(hwInfo->featureTable.ftrPooledEuEnabled);
 
-    igcFeWa.get()->SetFtrResourceStreamer(hwInfo->pSkuTable->ftrResourceStreamer);
+    igcFeWa.get()->SetFtrResourceStreamer(hwInfo->featureTable.ftrResourceStreamer);
 
     return retVal;
 }
@@ -434,7 +440,7 @@ int OfflineCompiler::initialize(size_t numArgs, const char *const *argv) {
 ////////////////////////////////////////////////////////////////////////////////
 // ParseCommandLine
 ////////////////////////////////////////////////////////////////////////////////
-int OfflineCompiler::parseCommandLine(size_t numArgs, const char *const *argv) {
+int OfflineCompiler::parseCommandLine(size_t numArgs, const std::vector<std::string> &argv) {
     int retVal = CL_SUCCESS;
     bool compile32 = false;
     bool compile64 = false;
@@ -493,7 +499,7 @@ int OfflineCompiler::parseCommandLine(size_t numArgs, const char *const *argv) {
             printUsage();
             retVal = PRINT_USAGE;
         } else {
-            printf("Invalid option (arg %d): %s\n", argIndex, argv[argIndex]);
+            printf("Invalid option (arg %d): %s\n", argIndex, argv[argIndex].c_str());
             retVal = INVALID_COMMAND_LINE;
             break;
         }
@@ -641,6 +647,13 @@ void OfflineCompiler::printUsage() {
     printf("  -file <filename>             Indicates the CL kernel file to be compiled.\n");
     printf("  -device <device_type>        Indicates which device for which we will compile.\n");
     printf("                               <device_type> can be: %s\n", getDevicesTypes().c_str());
+    printf("\n");
+    printf("  -multi <filename>            Indicates the txt file with multi commands\n");
+    printf("                               where each line is a single build in format:\n");
+    printf("                               '-file <filename> -device <device_type> [OPTIONS]'\n");
+    printf("                               Argument '-multi' must be first argument. \n");
+    printf("                               Result of builds will be output in directory named \n");
+    printf("                               like .txt file with build commands.\n");
     printf("\n");
     printf("  -output <filename>           Indicates output files core name.\n");
     printf("  -out_dir <output_dir>        Indicates the directory into which the compiled files\n");

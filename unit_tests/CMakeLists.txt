@@ -15,7 +15,9 @@ if(UNIX)
   #disable fortify source as this requires optimization to be on
   string(REPLACE "-D_FORTIFY_SOURCE=2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O0")
+  set(CMAKE_CXX_FLAGS_RELEASEINTERNAL "${CMAKE_CXX_FLAGS_RELEASEINTERNAL} -O0")
   set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O0")
+  set(CMAKE_C_FLAGS_RELEASEINTERNAL "${CMAKE_C_FLAGS_RELEASEINTERNAL} -O0")
 endif()
 
 if(WIN32)
@@ -451,14 +453,15 @@ apply_macro_for_each_gen("TESTED")
 add_subdirectories()
 create_project_source_tree(igdrcl_tests ${IGDRCL_SOURCE_DIR}/runtime)
 
-if(MSVC)
-  set(UltPchHeader "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.h")
-  set(UltPchSource "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.cpp")
+set(UltPchHeader "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.h")
+set(UltPchSource "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.cpp")
+get_target_property(UltSources igdrcl_tests SOURCES)
+
+if(MSVC AND NOT DISABLE_ULT_PCH_WIN)
   set(UltPchBinary "${CMAKE_CURRENT_BINARY_DIR}/igdrcl_tests_pch.pch")
 
   set(IGDRCL_SRCS_ult_pch ${UltPchSource} ${UltPchHeader})
-
-  get_target_property(UltSources igdrcl_tests SOURCES)
+  target_sources(igdrcl_tests PRIVATE ${IGDRCL_SRCS_ult_pch})
 
   set_source_files_properties(${UltSources}
     PROPERTIES COMPILE_FLAGS "/Yu${UltPchHeader} /FI${UltPchHeader} /Fp${UltPchBinary}"
@@ -467,8 +470,36 @@ if(MSVC)
   set_source_files_properties(${UltPchSource}
     PROPERTIES COMPILE_FLAGS "/Yc${UltPchHeader} /FI${UltPchHeader} /Fp${UltPchBinary}"
     OBJECT_OUTPUTS "${UltPchBinary}")
+elseif(USE_ULT_PCH)
+  set(UltPchHeaderInBuildDir "${CMAKE_CURRENT_BINARY_DIR}/igdrcl_tests_pch.h")
+  set(UltPchBinaryGch "${UltPchHeaderInBuildDir}.gch")
+  set(UltPchBinary "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/igdrcl_ult_pch.dir/igdrcl_tests_pch.h.o")
 
-  target_sources(igdrcl_tests PRIVATE ${IGDRCL_SRCS_ult_pch})
+  add_library(igdrcl_ult_pch STATIC ${UltPchHeader})
+  add_dependencies(igdrcl_tests igdrcl_ult_pch)
+
+  target_include_directories(igdrcl_ult_pch PRIVATE
+    $<TARGET_PROPERTY:${NEO_MOCKABLE_LIB_NAME},INTERFACE_INCLUDE_DIRECTORIES>
+    $<TARGET_PROPERTY:igdrcl_tests,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(igdrcl_ult_pch PRIVATE $<TARGET_PROPERTY:${NEO_MOCKABLE_LIB_NAME},INTERFACE_COMPILE_DEFINITIONS>)
+
+  target_include_directories(igdrcl_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+  if(NOT USE_ASAN)
+    set_source_files_properties(${UltSources}
+      PROPERTIES COMPILE_FLAGS "-include ${UltPchHeaderInBuildDir} -msse4"
+      OBJECT_DEPENDS ${UltPchBinaryGch})
+  endif()
+
+  set_source_files_properties(${UltPchHeader}
+    PROPERTIES LANGUAGE "CXX"
+    COMPILE_FLAGS "-x c++-header -msse4 -gdwarf-2")
+
+  add_custom_command(
+    OUTPUT ${UltPchBinaryGch}
+    COMMAND cp "${UltPchHeader}" "${UltPchHeaderInBuildDir}"
+    COMMAND cp "${UltPchBinary}" "${UltPchBinaryGch}"
+    DEPENDS ${UltPchBinary})
 endif()
 
 # Dont add any sources below PCH logic. This is to keep PCH dependencies correctly without creating new target

@@ -452,7 +452,7 @@ cl_command_queue CL_API_CALL clCreateCommandQueue(cl_context context,
             pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, DRIVER_CALLS_INTERNAL_CL_FLUSH);
             if (castToObjectOrAbort<CommandQueue>(commandQueue)->isProfilingEnabled()) {
                 pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, PROFILING_ENABLED);
-                if (pDevice->getDeviceInfo().preemptionSupported && pDevice->getHardwareInfo().pPlatform->eProductFamily < IGFX_SKYLAKE) {
+                if (pDevice->getDeviceInfo().preemptionSupported && pDevice->getHardwareInfo().platform.eProductFamily < IGFX_SKYLAKE) {
                     pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, PROFILING_ENABLED_WITH_DISABLED_PREEMPTION);
                 }
             }
@@ -2283,6 +2283,7 @@ cl_int CL_API_CALL clEnqueueReadImage(cl_command_queue commandQueue,
             rowPitch,
             slicePitch,
             ptr,
+            nullptr,
             numEventsInWaitList,
             eventWaitList,
             event);
@@ -2343,6 +2344,7 @@ cl_int CL_API_CALL clEnqueueWriteImage(cl_command_queue commandQueue,
             inputRowPitch,
             inputSlicePitch,
             ptr,
+            nullptr,
             numEventsInWaitList,
             eventWaitList,
             event);
@@ -3357,7 +3359,7 @@ void *CL_API_CALL clSVMAlloc(cl_context context,
         return pAlloc;
     }
 
-    pAlloc = pContext->getSVMAllocsManager()->createSVMAlloc(size, flags);
+    pAlloc = pContext->getSVMAllocsManager()->createSVMAlloc(size, MemObjHelper::getSvmAllocationProperties(flags));
 
     if (pContext->isProvidingPerformanceHints()) {
         pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_GOOD_INTEL, CL_SVM_ALLOC_MEETS_ALIGNMENT_RESTRICTIONS, pAlloc, size);
@@ -3619,6 +3621,12 @@ cl_int CL_API_CALL clSetKernelArgSVMPointer(cl_kernel kernel,
         return retVal;
     }
 
+    auto svmManager = pKernel->getContext().getSVMAllocsManager();
+    if (!svmManager) {
+        retVal = CL_INVALID_ARG_VALUE;
+        return retVal;
+    }
+
     cl_int kernelArgAddressQualifier = pKernel->getKernelArgAddressQualifier(argIndex);
     if ((kernelArgAddressQualifier != CL_KERNEL_ARG_ADDRESS_GLOBAL) &&
         (kernelArgAddressQualifier != CL_KERNEL_ARG_ADDRESS_CONSTANT)) {
@@ -3628,7 +3636,7 @@ cl_int CL_API_CALL clSetKernelArgSVMPointer(cl_kernel kernel,
 
     GraphicsAllocation *pSvmAlloc = nullptr;
     if (argValue != nullptr) {
-        auto svmData = pKernel->getContext().getSVMAllocsManager()->getSVMAlloc(argValue);
+        auto svmData = svmManager->getSVMAlloc(argValue);
         if (svmData == nullptr) {
             retVal = CL_INVALID_ARG_VALUE;
             return retVal;
@@ -3665,6 +3673,10 @@ cl_int CL_API_CALL clSetKernelExecInfo(cl_kernel kernel,
         }
         size_t numPointers = paramValueSize / sizeof(void *);
         size_t *pSvmPtrList = (size_t *)paramValue;
+
+        if (pKernel->getContext().getSVMAllocsManager() == nullptr) {
+            return CL_INVALID_VALUE;
+        }
 
         pKernel->clearKernelExecInfo();
         for (uint32_t i = 0; i < numPointers; i++) {
@@ -3892,7 +3904,7 @@ cl_command_queue CL_API_CALL clCreateCommandQueueWithProperties(cl_context conte
             pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, DRIVER_CALLS_INTERNAL_CL_FLUSH);
             if (castToObjectOrAbort<CommandQueue>(commandQueue)->isProfilingEnabled()) {
                 pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, PROFILING_ENABLED);
-                if (pDevice->getDeviceInfo().preemptionSupported && pDevice->getHardwareInfo().pPlatform->eProductFamily < IGFX_SKYLAKE) {
+                if (pDevice->getDeviceInfo().preemptionSupported && pDevice->getHardwareInfo().platform.eProductFamily < IGFX_SKYLAKE) {
                     pContext->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_NEUTRAL_INTEL, PROFILING_ENABLED_WITH_DISABLED_PREEMPTION);
                 }
             }
@@ -4143,9 +4155,14 @@ cl_int CL_API_CALL clEnqueueSVMMigrateMem(cl_command_queue commandQueue,
         retVal = CL_INVALID_VALUE;
         return retVal;
     }
+    auto pSvmAllocMgr = pCommandQueue->getContext().getSVMAllocsManager();
+
+    if (pSvmAllocMgr == nullptr) {
+        retVal = CL_INVALID_VALUE;
+        return retVal;
+    }
 
     for (uint32_t i = 0; i < numSvmPointers; i++) {
-        SVMAllocsManager *pSvmAllocMgr = pCommandQueue->getContext().getSVMAllocsManager();
         auto svmData = pSvmAllocMgr->getSVMAlloc(svmPointers[i]);
         if (svmData == nullptr) {
             retVal = CL_INVALID_VALUE;

@@ -6,9 +6,9 @@
  */
 
 #pragma once
+#include "core/helpers/basic_math.h"
 #include "public/cl_ext_private.h"
 #include "runtime/context/context_type.h"
-#include "runtime/helpers/basic_math.h"
 #include "runtime/mem_obj/mem_obj.h"
 #include "runtime/memory_manager/memory_constants.h"
 
@@ -105,7 +105,7 @@ class Buffer : public MemObj {
     bool isValidSubBufferOffset(size_t offset);
     uint64_t setArgStateless(void *memory, uint32_t patchSize) { return setArgStateless(memory, patchSize, false); }
     uint64_t setArgStateless(void *memory, uint32_t patchSize, bool set32BitAddressing);
-    virtual void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) = 0;
+    virtual void setArgStateful(void *memory, bool forceNonAuxMode, bool programForAuxTranslation) = 0;
     bool bufferRectPitchSet(const size_t *bufferOrigin,
                             const size_t *region,
                             size_t &bufferRowPitch,
@@ -119,6 +119,8 @@ class Buffer : public MemObj {
     void transferDataFromHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) override;
 
     bool isReadWriteOnCpuAllowed(cl_bool blocking, cl_uint numEventsInWaitList, void *ptr, size_t size);
+
+    uint32_t getMocsValue(bool disableL3Cache) const;
 
   protected:
     Buffer(Context *context,
@@ -163,7 +165,7 @@ class BufferHw : public Buffer {
         : Buffer(context, properties, size, memoryStorage, hostPtr, gfxAllocation,
                  zeroCopy, isHostPtrSVM, isObjectRedescribed) {}
 
-    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) override;
+    void setArgStateful(void *memory, bool forceNonAuxMode, bool programForAuxTranslation) override;
     void appendBufferState(void *memory, Context *context, GraphicsAllocation *gfxAllocation);
 
     static Buffer *create(Context *context,

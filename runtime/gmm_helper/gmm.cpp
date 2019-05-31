@@ -7,13 +7,13 @@
 
 #include "runtime/gmm_helper/gmm.h"
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/surface_formats.h"
 
 namespace NEO {
@@ -131,7 +131,7 @@ void Gmm::setupImageResourceParams(ImageInfo &imgInfo) {
     }
 
     applyAuxFlagsForImage(imgInfo);
-    auto &hwHelper = HwHelper::get(GmmHelper::getInstance()->getHardwareInfo()->pPlatform->eRenderCoreFamily);
+    auto &hwHelper = HwHelper::get(GmmHelper::getInstance()->getHardwareInfo()->platform.eRenderCoreFamily);
     if (!hwHelper.supportsYTiling() && resourceParams.Flags.Info.TiledY == 1) {
         resourceParams.Flags.Info.Linear = 0;
         resourceParams.Flags.Info.TiledY = 0;
@@ -179,7 +179,7 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
         imgInfo.offset = reqOffsetInfo.Render.Offset;
     }
 
-    if (imgInfo.surfaceFormat->GMMSurfaceFormat == GMM_FORMAT_NV12) {
+    if (imgInfo.surfaceFormat->GMMSurfaceFormat == GMM_RESOURCE_FORMAT::GMM_FORMAT_NV12 || imgInfo.surfaceFormat->GMMSurfaceFormat == GMM_RESOURCE_FORMAT::GMM_FORMAT_P010) {
         GMM_REQ_OFFSET_INFO reqOffsetInfo = {};
         reqOffsetInfo.ReqLock = 1;
         reqOffsetInfo.Slice = 1;
@@ -194,7 +194,7 @@ void Gmm::queryImageParams(ImageInfo &imgInfo) {
 }
 
 uint32_t Gmm::queryQPitch(GMM_RESOURCE_TYPE resType) {
-    if (GmmHelper::getInstance()->getHardwareInfo()->pPlatform->eRenderCoreFamily == IGFX_GEN8_CORE && resType == GMM_RESOURCE_TYPE::RESOURCE_3D) {
+    if (GmmHelper::getInstance()->getHardwareInfo()->platform.eRenderCoreFamily == IGFX_GEN8_CORE && resType == GMM_RESOURCE_TYPE::RESOURCE_3D) {
         return 0;
     }
     return gmmResourceInfo->getQPitch();

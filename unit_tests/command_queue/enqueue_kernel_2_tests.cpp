@@ -184,7 +184,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, EnqueueWorkItemTestsWithLimitedParamSet, WhenEnqueue
     enqueueKernel<FamilyType>();
     validateStateBaseAddress<FamilyType>(this->pDevice->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
                                          pDSH, pIOH, pSSH, itorPipelineSelect, itorWalker, cmdList,
-                                         context->getMemoryManager()->peekForce32BitAllocations() ? context->getMemoryManager()->allocator32Bit->getBase() : 0llu);
+                                         context->getMemoryManager()->peekForce32BitAllocations() ? context->getMemoryManager()->getExternalHeapBaseAddress() : 0llu);
 }
 
 HWCMDTEST_P(IGFX_GEN8_CORE, EnqueueWorkItemTestsWithLimitedParamSet, MediaInterfaceDescriptorLoad) {
@@ -314,8 +314,8 @@ HWCMDTEST_P(IGFX_GEN8_CORE, EnqueueScratchSpaceTests, GivenKernelRequiringScratc
     auto *sba = (STATE_BASE_ADDRESS *)*itorCmdForStateBase;
 
     const HardwareInfo &hwInfo = **platformDevices;
-    uint32_t threadPerEU = (hwInfo.pSysInfo->ThreadCount / hwInfo.pSysInfo->EUCount) + hwInfo.capabilityTable.extraQuantityThreadsPerEU;
-    uint32_t maxNumberOfThreads = hwInfo.pSysInfo->EUCount * threadPerEU;
+    uint32_t threadPerEU = (hwInfo.gtSystemInfo.ThreadCount / hwInfo.gtSystemInfo.EUCount) + hwInfo.capabilityTable.extraQuantityThreadsPerEU;
+    uint32_t maxNumberOfThreads = hwInfo.gtSystemInfo.EUCount * threadPerEU;
 
     // Verify we have a valid length
     EXPECT_EQ(maxNumberOfThreads, cmd->getMaximumNumberOfThreads());
@@ -491,7 +491,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, EnqueueKernelWithScratch, givenDeviceForcing32bitAll
 
         auto GSHaddress = (uintptr_t)sba->getGeneralStateBaseAddress();
 
-        EXPECT_EQ(memoryManager->allocator32Bit->getBase(), GSHaddress);
+        EXPECT_EQ(memoryManager->getExternalHeapBaseAddress(), GSHaddress);
 
         //now re-try to see if SBA is not programmed
 
@@ -610,14 +610,9 @@ HWTEST_P(EnqueueKernelPrintfTest, GivenKernelWithPrintfBlockedByEventWhenEventUn
 
         auto crossThreadData = reinterpret_cast<uint64_t *>(mockKernel.mockKernel->getCrossThreadData());
 
-        char *testString = new char[sizeof("test")];
-        strcpy_s(testString, sizeof("test"), "test");
+        std::string testString = "test";
 
-        PrintfStringInfo printfStringInfo;
-        printfStringInfo.SizeInBytes = sizeof("test");
-        printfStringInfo.pStringData = testString;
-
-        mockKernel.kernelInfo.patchInfo.stringDataMap.insert(std::make_pair(0, printfStringInfo));
+        mockKernel.kernelInfo.patchInfo.stringDataMap.insert(std::make_pair(0, testString));
 
         cl_uint workDim = 1;
         size_t globalWorkOffset[3] = {0, 0, 0};
@@ -787,7 +782,6 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueKernelTest, givenCacheFlushAfterWalkerEnabled
 
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.EnableCacheFlushAfterWalker.set(1);
-    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
 
     MockKernelWithInternals mockKernel(*pDevice, context);
     CommandQueueHw<FamilyType> cmdQ(context, pDevice, nullptr);
@@ -807,4 +801,26 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueKernelTest, givenCacheFlushAfterWalkerEnabled
     ASSERT_NE(nullptr, pipeControl);
     EXPECT_TRUE(pipeControl->getCommandStreamerStallEnable());
     EXPECT_TRUE(pipeControl->getDcFlushEnable());
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueAuxKernelTests, givenParentKernelWhenAuxTranslationIsRequiredThenMakeEnqueueBlocking) {
+    if (pDevice->getSupportedClVersion() >= 20) {
+        MyCmdQ<FamilyType> cmdQ(context, pDevice);
+        size_t gws[3] = {1, 0, 0};
+
+        cl_queue_properties queueProperties = {};
+        auto mockDevQueue = std::make_unique<MockDeviceQueueHw<FamilyType>>(context, pDevice, queueProperties);
+        context->setDefaultDeviceQueue(mockDevQueue.get());
+        std::unique_ptr<MockParentKernel> parentKernel(MockParentKernel::create(*context, false, false, false, false, false));
+        parentKernel->initialize();
+
+        parentKernel->auxTranslationRequired = false;
+        cmdQ.enqueueKernel(parentKernel.get(), 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
+        EXPECT_EQ(0u, cmdQ.waitCalled);
+        mockDevQueue->getIgilQueue()->m_controls.m_CriticalSection = 0;
+
+        parentKernel->auxTranslationRequired = true;
+        cmdQ.enqueueKernel(parentKernel.get(), 1, nullptr, gws, nullptr, 0, nullptr, nullptr);
+        EXPECT_EQ(1u, cmdQ.waitCalled);
+    }
 }

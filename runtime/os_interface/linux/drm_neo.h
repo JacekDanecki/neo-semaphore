@@ -6,6 +6,8 @@
  */
 
 #pragma once
+#include "runtime/memory_manager/memory_manager.h"
+#include "runtime/os_interface/linux/engine_info.h"
 #include "runtime/os_interface/linux/memory_info.h"
 #include "runtime/utilities/api_intercept.h"
 
@@ -25,12 +27,11 @@ namespace NEO {
 
 class DeviceFactory;
 struct HardwareInfo;
-struct FeatureTable;
 
 struct DeviceDescriptor {
     unsigned short deviceId;
     const HardwareInfo *pHwInfo;
-    void (*setupHardwareInfo)(GT_SYSTEM_INFO *, FeatureTable *, bool);
+    void (*setupHardwareInfo)(HardwareInfo *, bool);
     GTTYPE eGtType;
 };
 
@@ -64,15 +65,17 @@ class Drm {
     uint32_t createDrmContext();
     void destroyDrmContext(uint32_t drmContextId);
     void setLowPriorityContextParam(uint32_t drmContextId);
+    int bindDrmContext(uint32_t drmContextId, DeviceBitfield deviceBitfield, aub_stream::EngineType engineType);
 
     void setGtType(GTTYPE eGtType) { this->eGtType = eGtType; }
     GTTYPE getGtType() const { return this->eGtType; }
     MOCKABLE_VIRTUAL int getErrno();
     void setSimplifiedMocsTableUsage(bool value);
     bool getSimplifiedMocsTableUsage() const;
+    void queryEngineInfo();
     void queryMemoryInfo();
 
-    MemoryInfo *getMemoryInfo() {
+    MemoryInfo *getMemoryInfo() const {
         return memoryInfo.get();
     }
 
@@ -80,10 +83,11 @@ class Drm {
     bool useSimplifiedMocsTable = false;
     bool preemptionSupported = false;
     int fd;
-    int deviceId;
-    int revisionId;
-    GTTYPE eGtType;
-    Drm(int fd) : fd(fd), deviceId(0), revisionId(0), eGtType(GTTYPE_UNDEFINED) {}
+    int deviceId = 0;
+    int revisionId = 0;
+    GTTYPE eGtType = GTTYPE_UNDEFINED;
+    Drm(int fd) : fd(fd) {}
+    std::unique_ptr<EngineInfo> engineInfo;
     std::unique_ptr<MemoryInfo> memoryInfo;
 
     static bool isi915Version(int fd);
@@ -93,6 +97,7 @@ class Drm {
     static void closeDevice(int32_t deviceOrdinal);
 
     std::string getSysFsPciPath(int deviceID);
+    void *query(uint32_t queryId);
 
 #pragma pack(1)
     struct PCIConfig {

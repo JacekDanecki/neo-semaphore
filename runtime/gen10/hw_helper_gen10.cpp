@@ -5,18 +5,16 @@
  *
  */
 
-#include "runtime/aub/aub_helper.h"
-#include "runtime/aub/aub_helper.inl"
+#include "runtime/aub/aub_helper_bdw_plus.inl"
 #include "runtime/helpers/flat_batch_buffer_helper_hw.inl"
-#include "runtime/helpers/hw_helper.h"
-#include "runtime/helpers/hw_helper_common.inl"
+#include "runtime/helpers/hw_helper_bdw_plus.inl"
 
 namespace NEO {
 typedef CNLFamily Family;
 
 template <>
 void HwHelperHw<Family>::setCapabilityCoherencyFlag(const HardwareInfo *pHwInfo, bool &coherencyFlag) {
-    if (pHwInfo->pPlatform->usRevId < 0x4) {
+    if (pHwInfo->platform.usRevId < 0x4) {
         coherencyFlag = false;
     } else {
         coherencyFlag = true;

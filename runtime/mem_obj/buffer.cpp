@@ -7,7 +7,9 @@
 
 #include "runtime/mem_obj/buffer.h"
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/command_queue/command_queue.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/gmm_helper/gmm.h"
@@ -15,7 +17,6 @@
 #include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
 #include "runtime/helpers/validators.h"
 #include "runtime/mem_obj/mem_obj_helper.h"
@@ -81,7 +82,14 @@ void Buffer::validateInputAndCreateBuffer(cl_context &context,
                                           void *hostPtr,
                                           cl_int &retVal,
                                           cl_mem &buffer) {
-    if (size == 0) {
+    Context *pContext = nullptr;
+    retVal = validateObjects(WithCastToInternal(context, &pContext));
+    if (retVal != CL_SUCCESS) {
+        return;
+    }
+
+    auto pDevice = pContext->getDevice(0);
+    if (size == 0 || size > pDevice->getDeviceInfo().maxMemAllocSize) {
         retVal = CL_INVALID_BUFFER_SIZE;
         return;
     }
@@ -95,12 +103,6 @@ void Buffer::validateInputAndCreateBuffer(cl_context &context,
     bool expectHostPtr = (properties.flags & (CL_MEM_COPY_HOST_PTR | CL_MEM_USE_HOST_PTR)) != 0;
     if ((hostPtr == nullptr) == expectHostPtr) {
         retVal = CL_INVALID_HOST_PTR;
-        return;
-    }
-
-    Context *pContext = nullptr;
-    retVal = validateObjects(WithCastToInternal(context, &pContext));
-    if (retVal != CL_SUCCESS) {
         return;
     }
 
@@ -143,7 +145,7 @@ Buffer *Buffer::create(Context *context,
         context->peekContextType(),
         HwHelper::renderCompressedBuffersSupported(context->getDevice(0)->getHardwareInfo()),
         memoryManager->isLocalMemorySupported(),
-        HwHelper::get(context->getDevice(0)->getHardwareInfo().pPlatform->eRenderCoreFamily).obtainRenderBufferCompressionPreference(context->getDevice(0)->getHardwareInfo()));
+        HwHelper::get(context->getDevice(0)->getHardwareInfo().platform.eRenderCoreFamily).obtainRenderBufferCompressionPreference(size));
 
     checkMemory(properties.flags, size, hostPtr, errcodeRet, alignementSatisfied, copyMemoryFromHostPtr, memoryManager);
 
@@ -174,15 +176,18 @@ Buffer *Buffer::create(Context *context,
             allocateMemory = true;
         }
 
-        auto svmData = context->getSVMAllocsManager()->getSVMAlloc(hostPtr);
-        if (svmData) {
-            memory = svmData->gpuAllocation;
-            allocationType = memory->getAllocationType();
-            isHostPtrSVM = true;
-            zeroCopyAllowed = memory->getAllocationType() == GraphicsAllocation::AllocationType::SVM_ZERO_COPY;
-            copyMemoryFromHostPtr = false;
-            allocateMemory = false;
-            mapAllocation = svmData->cpuAllocation;
+        auto svmManager = context->getSVMAllocsManager();
+        if (svmManager) {
+            auto svmData = svmManager->getSVMAlloc(hostPtr);
+            if (svmData) {
+                memory = svmData->gpuAllocation;
+                allocationType = memory->getAllocationType();
+                isHostPtrSVM = true;
+                zeroCopyAllowed = memory->getAllocationType() == GraphicsAllocation::AllocationType::SVM_ZERO_COPY;
+                copyMemoryFromHostPtr = false;
+                allocateMemory = false;
+                mapAllocation = svmData->cpuAllocation;
+            }
         }
     }
 
@@ -268,10 +273,19 @@ Buffer *Buffer::create(Context *context,
 
     if (copyMemoryFromHostPtr) {
         auto gmm = memory->getDefaultGmm();
-        if ((gmm && gmm->isRenderCompressed) || !MemoryPool::isSystemMemoryPool(memory->getMemoryPool())) {
-            auto cmdQ = context->getSpecialQueue();
-            if (CL_SUCCESS != cmdQ->enqueueWriteBuffer(pBuffer, CL_TRUE, 0, size, hostPtr, nullptr, 0, nullptr, nullptr)) {
-                errcodeRet = CL_OUT_OF_RESOURCES;
+        bool gpuCopyRequired = (gmm && gmm->isRenderCompressed) || !MemoryPool::isSystemMemoryPool(memory->getMemoryPool());
+
+        if (gpuCopyRequired) {
+            auto blitCommandStreamReceiver = context->getCommandStreamReceiverForBlitOperation(*pBuffer);
+            if (blitCommandStreamReceiver) {
+                CsrDependencies dependencies;
+                blitCommandStreamReceiver->blitWithHostPtr(*pBuffer, hostPtr, size, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr,
+                                                           dependencies);
+            } else {
+                auto cmdQ = context->getSpecialQueue();
+                if (CL_SUCCESS != cmdQ->enqueueWriteBuffer(pBuffer, CL_TRUE, 0, size, hostPtr, nullptr, 0, nullptr, nullptr)) {
+                    errcodeRet = CL_OUT_OF_RESOURCES;
+                }
             }
         } else {
             memcpy_s(memory->getUnderlyingBuffer(), size, hostPtr, size);
@@ -474,7 +488,7 @@ Buffer *Buffer::createBufferHw(Context *context,
     const auto device = context->getDevice(0);
     const auto &hwInfo = device->getHardwareInfo();
 
-    auto funcCreate = bufferFactory[hwInfo.pPlatform->eRenderCoreFamily].createBufferFunction;
+    auto funcCreate = bufferFactory[hwInfo.platform.eRenderCoreFamily].createBufferFunction;
     DEBUG_BREAK_IF(nullptr == funcCreate);
     auto pBuffer = funcCreate(context, properties, size, memoryStorage, hostPtr, gfxAllocation,
                               zeroCopy, isHostPtrSVM, isImageRedescribed);
@@ -497,12 +511,36 @@ Buffer *Buffer::createBufferHwFromDevice(const Device *device,
 
     const auto &hwInfo = device->getHardwareInfo();
 
-    auto funcCreate = bufferFactory[hwInfo.pPlatform->eRenderCoreFamily].createBufferFunction;
+    auto funcCreate = bufferFactory[hwInfo.platform.eRenderCoreFamily].createBufferFunction;
     DEBUG_BREAK_IF(nullptr == funcCreate);
     auto pBuffer = funcCreate(nullptr, flags, size, memoryStorage, hostPtr, gfxAllocation,
                               zeroCopy, isHostPtrSVM, isImageRedescribed);
     pBuffer->executionEnvironment = device->getExecutionEnvironment();
     return pBuffer;
+}
+
+uint32_t Buffer::getMocsValue(bool disableL3Cache) const {
+    uint64_t bufferAddress = 0;
+    size_t bufferSize = 0;
+    if (getGraphicsAllocation()) {
+        bufferAddress = getGraphicsAllocation()->getGpuAddress();
+        bufferSize = getGraphicsAllocation()->getUnderlyingBufferSize();
+    } else {
+        bufferAddress = reinterpret_cast<uint64_t>(getHostPtr());
+        bufferSize = getSize();
+    }
+    bufferAddress += this->offset;
+
+    bool readOnlyMemObj = isValueSet(getFlags(), CL_MEM_READ_ONLY);
+    bool alignedMemObj = isAligned<MemoryConstants::cacheLineSize>(bufferAddress) &&
+                         isAligned<MemoryConstants::cacheLineSize>(bufferSize);
+
+    auto gmmHelper = executionEnvironment->getGmmHelper();
+    if (!disableL3Cache && !isMemObjUncacheable() && (alignedMemObj || readOnlyMemObj || !isMemObjZeroCopy())) {
+        return gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
+    } else {
+        return gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED);
+    }
 }
 
 void Buffer::setSurfaceState(const Device *device,

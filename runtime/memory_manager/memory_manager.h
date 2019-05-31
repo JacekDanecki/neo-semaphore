@@ -15,6 +15,7 @@
 #include "runtime/memory_manager/gfx_partition.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/host_ptr_defines.h"
+#include "runtime/memory_manager/local_memory_usage.h"
 #include "runtime/os_interface/32bit_memory.h"
 
 #include "engine_node.h"
@@ -106,19 +107,13 @@ class MemoryManager {
 
     virtual uint64_t getMaxApplicationAddress() = 0;
 
-    virtual uint64_t getInternalHeapBaseAddress() {
-        return gfxPartition.getHeapBase(internalHeapIndex);
-    }
+    virtual uint64_t getInternalHeapBaseAddress() = 0;
 
-    uint64_t getExternalHeapBaseAddress() {
-        return gfxPartition.getHeapBase(HeapIndex::HEAP_EXTERNAL);
-    }
+    virtual uint64_t getExternalHeapBaseAddress() = 0;
 
     bool peek64kbPagesEnabled() const { return enable64kbpages; }
     bool peekForce32BitAllocations() const { return force32bitAllocations; }
-    void setForce32BitAllocations(bool newValue);
-
-    std::unique_ptr<Allocator32bit> allocator32Bit;
+    virtual void setForce32BitAllocations(bool newValue);
 
     bool peekVirtualPaddingSupport() const { return virtualPaddingAvailable; }
     void setVirtualPaddingSupport(bool virtualPaddingSupport) { virtualPaddingAvailable = virtualPaddingSupport; }
@@ -166,7 +161,6 @@ class MemoryManager {
     struct AllocationData {
         union {
             struct {
-                uint32_t mustBeZeroCopy : 1;
                 uint32_t allocateMemory : 1;
                 uint32_t allow64kbPages : 1;
                 uint32_t allow32Bit : 1;
@@ -177,7 +171,7 @@ class MemoryManager {
                 uint32_t preferRenderCompressed : 1;
                 uint32_t multiOsContextCapable : 1;
                 uint32_t requiresCpuAccess : 1;
-                uint32_t reserved : 21;
+                uint32_t reserved : 22;
             } flags;
             uint32_t allFlags = 0;
         };
@@ -190,12 +184,12 @@ class MemoryManager {
         ImageInfo *imgInfo = nullptr;
     };
 
-    static bool getAllocationData(AllocationData &allocationData, const AllocationProperties &properties, const StorageInfo storageInfo,
-                                  const void *hostPtr);
+    static bool getAllocationData(AllocationData &allocationData, const AllocationProperties &properties, const void *hostPtr, const StorageInfo &storageInfo);
     static bool useInternal32BitAllocator(GraphicsAllocation::AllocationType allocationType) {
         return allocationType == GraphicsAllocation::AllocationType::KERNEL_ISA ||
                allocationType == GraphicsAllocation::AllocationType::INTERNAL_HEAP;
     }
+    StorageInfo createStorageInfoFromProperties(const AllocationProperties &properties);
 
     virtual GraphicsAllocation *createGraphicsAllocation(OsHandleStorage &handleStorage, const AllocationData &allocationData) = 0;
     virtual GraphicsAllocation *allocateGraphicsMemoryForNonSvmHostPtr(const AllocationData &allocationData) = 0;
@@ -204,49 +198,14 @@ class MemoryManager {
     virtual GraphicsAllocation *allocateGraphicsMemoryWithAlignment(const AllocationData &allocationData) = 0;
     virtual GraphicsAllocation *allocateGraphicsMemory64kb(const AllocationData &allocationData) = 0;
     virtual GraphicsAllocation *allocate32BitGraphicsMemoryImpl(const AllocationData &allocationData) = 0;
-    virtual GraphicsAllocation *allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) {
-        status = AllocationStatus::Error;
-        switch (allocationData.type) {
-        case GraphicsAllocation::AllocationType::IMAGE:
-        case GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY:
-            break;
-        default:
-            if (!allocationData.flags.useSystemMemory && !(allocationData.flags.allow32Bit && this->force32bitAllocations)) {
-                GraphicsAllocation *allocation = nullptr;
-                if (allocationData.type == GraphicsAllocation::AllocationType::SVM_GPU) {
-                    void *cpuAllocation = allocateSystemMemory(allocationData.size, allocationData.alignment);
-                    if (!cpuAllocation) {
-                        return nullptr;
-                    }
-                    uint64_t gpuAddress = reinterpret_cast<uint64_t>(allocationData.hostPtr);
-                    allocation = new GraphicsAllocation(allocationData.type,
-                                                        cpuAllocation,
-                                                        gpuAddress,
-                                                        gpuAddress,
-                                                        allocationData.size, MemoryPool::LocalMemory, false);
-                    allocation->setDriverAllocatedCpuPtr(cpuAllocation);
-                } else {
-                    allocation = allocateGraphicsMemory(allocationData);
-                }
-
-                if (allocation) {
-                    allocation->storageInfo = allocationData.storageInfo;
-                    allocation->setFlushL3Required(allocationData.flags.flushL3);
-                    status = AllocationStatus::Success;
-                }
-                return allocation;
-            }
-        }
-        status = AllocationStatus::RetryInNonDevicePool;
-        return nullptr;
-    }
+    virtual GraphicsAllocation *allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) = 0;
     GraphicsAllocation *allocateGraphicsMemoryForImageFromHostPtr(const AllocationData &allocationData);
     MOCKABLE_VIRTUAL GraphicsAllocation *allocateGraphicsMemoryForImage(const AllocationData &allocationData);
     virtual GraphicsAllocation *allocateGraphicsMemoryForImageImpl(const AllocationData &allocationData, std::unique_ptr<Gmm> gmm) = 0;
-
     virtual void *lockResourceImpl(GraphicsAllocation &graphicsAllocation) = 0;
     virtual void unlockResourceImpl(GraphicsAllocation &graphicsAllocation) = 0;
     virtual void freeAssociatedResourceImpl(GraphicsAllocation &graphicsAllocation) { return unlockResourceImpl(graphicsAllocation); };
+    uint32_t getBanksCount();
 
     bool force32bitAllocations = false;
     bool virtualPaddingAvailable = false;
@@ -262,7 +221,9 @@ class MemoryManager {
     uint32_t latestContextId = std::numeric_limits<uint32_t>::max();
     uint32_t defaultEngineIndex = 0;
     std::unique_ptr<DeferredDeleter> multiContextResourceDestructor;
+    std::unique_ptr<Allocator32bit> allocator32Bit;
     GfxPartition gfxPartition;
+    std::unique_ptr<LocalMemoryUsageBankSelector> localMemoryUsageBankSelector;
 };
 
 std::unique_ptr<DeferredDeleter> createDeferredDeleter();

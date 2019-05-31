@@ -7,11 +7,11 @@
 
 #include "runtime/os_interface/windows/wddm/wddm.h"
 
+#include "core/helpers/interlocked_max.h"
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/page_table_mngr.h"
 #include "runtime/gmm_helper/resource_info.h"
-#include "runtime/helpers/wddm_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/os_interface/hw_info_config.h"
 #include "runtime/os_interface/windows/gdi_interface.h"
@@ -38,7 +38,7 @@ Wddm::VirtualFreeFcn Wddm::virtualFreeFnc = getVirtualFree();
 
 Wddm::Wddm() {
     featureTable.reset(new FeatureTable());
-    waTable.reset(new WorkaroundTable());
+    workaroundTable.reset(new WorkaroundTable());
     gtSystemInfo.reset(new GT_SYSTEM_INFO);
     gfxPlatform.reset(new PLATFORM);
     memset(gtSystemInfo.get(), 0, sizeof(*gtSystemInfo));
@@ -74,10 +74,10 @@ bool Wddm::enumAdapters(HardwareInfo &outHardwareInfo) {
         return false;
     }
 
-    outHardwareInfo.pPlatform = new PLATFORM(*gfxPlatform);
-    outHardwareInfo.pSkuTable = new FeatureTable(*featureTable);
-    outHardwareInfo.pWaTable = new WorkaroundTable(*waTable);
-    outHardwareInfo.pSysInfo = new GT_SYSTEM_INFO(*gtSystemInfo);
+    outHardwareInfo.platform = *gfxPlatform;
+    outHardwareInfo.featureTable = *featureTable;
+    outHardwareInfo.workaroundTable = *workaroundTable;
+    outHardwareInfo.gtSystemInfo = *gtSystemInfo;
 
     outHardwareInfo.capabilityTable = hardwareInfoTable[productFamily]->capabilityTable;
     outHardwareInfo.capabilityTable.maxRenderFrequency = maxRenderFrequency;
@@ -107,7 +107,7 @@ bool Wddm::queryAdapterInfo() {
         memcpy_s(gfxPlatform.get(), sizeof(PLATFORM), &adapterInfo.GfxPlatform, sizeof(PLATFORM));
 
         SkuInfoReceiver::receiveFtrTableFromAdapterInfo(featureTable.get(), &adapterInfo);
-        SkuInfoReceiver::receiveWaTableFromAdapterInfo(waTable.get(), &adapterInfo);
+        SkuInfoReceiver::receiveWaTableFromAdapterInfo(workaroundTable.get(), &adapterInfo);
 
         memcpy_s(&gfxPartition, sizeof(gfxPartition), &adapterInfo.GfxPartition, sizeof(GMM_GFX_PARTITIONING));
 

@@ -395,7 +395,7 @@ struct UpdateEventTest : public ::testing::Test {
         memoryManager = new MockMemoryManager(*executionEnvironment);
         hostPtrManager = static_cast<MockHostPtrManager *>(memoryManager->getHostPtrManager());
         executionEnvironment->memoryManager.reset(memoryManager);
-        device.reset(Device::create<Device>(*platformDevices, executionEnvironment, 0u));
+        device.reset(Device::create<Device>(executionEnvironment, 0u));
         context = std::make_unique<MockContext>(device.get());
         cl_int retVal = CL_OUT_OF_RESOURCES;
         commandQueue.reset(CommandQueue::create(context.get(), device.get(), nullptr, retVal));
@@ -548,19 +548,13 @@ TEST_F(InternalsEventTest, givenBlockedKernelWithPrintfWhenSubmittedThenPrintOut
     pPrintfSurface->DataParamOffset = 0;
     pPrintfSurface->DataParamSize = 8;
 
-    char *testString = new char[sizeof("test")];
-
-    strcpy_s(testString, sizeof("test"), "test");
-
-    PrintfStringInfo printfStringInfo;
-    printfStringInfo.SizeInBytes = sizeof("test");
-    printfStringInfo.pStringData = testString;
+    std::string testString = "test";
 
     MockKernelWithInternals mockKernelWithInternals(*pDevice);
     auto pKernel = mockKernelWithInternals.mockKernel;
     KernelInfo *kernelInfo = const_cast<KernelInfo *>(&pKernel->getKernelInfo());
     kernelInfo->patchInfo.pAllocateStatelessPrintfSurface = pPrintfSurface;
-    kernelInfo->patchInfo.stringDataMap.insert(std::make_pair(0, printfStringInfo));
+    kernelInfo->patchInfo.stringDataMap.insert(std::make_pair(0, testString));
     uint64_t crossThread[10];
     pKernel->setCrossThreadData(&crossThread, sizeof(uint64_t) * 8);
 
@@ -1138,13 +1132,8 @@ TEST_F(EventTest, hwTimeStampsMemoryIsPlacedInGraphicsAllocation) {
     void *memoryStorage = allocation->getUnderlyingBuffer();
     size_t graphicsAllocationSize = allocation->getUnderlyingBufferSize();
 
-    uintptr_t timeStampAddress = reinterpret_cast<uintptr_t>(timeStamps);
-    uintptr_t graphicsAllocationStart = reinterpret_cast<uintptr_t>(memoryStorage);
-
-    if (!((timeStampAddress >= graphicsAllocationStart) &&
-          ((timeStampAddress + sizeof(HwTimeStamps)) <= (graphicsAllocationStart + graphicsAllocationSize)))) {
-        EXPECT_TRUE(false);
-    }
+    EXPECT_GE(timeStamps, memoryStorage);
+    EXPECT_LE(timeStamps + 1, ptrOffset(memoryStorage, graphicsAllocationSize));
 }
 
 TEST_F(EventTest, getHwPerfCounterReturnsValidPointer) {
@@ -1194,13 +1183,8 @@ TEST_F(EventTest, hwPerfCounterMemoryIsPlacedInGraphicsAllocation) {
     void *memoryStorage = allocation->getUnderlyingBuffer();
     size_t graphicsAllocationSize = allocation->getUnderlyingBufferSize();
 
-    uintptr_t perfCounterAddress = reinterpret_cast<uintptr_t>(perfCounter);
-    uintptr_t graphicsAllocationStart = reinterpret_cast<uintptr_t>(memoryStorage);
-
-    if (!((perfCounterAddress >= graphicsAllocationStart) &&
-          ((perfCounterAddress + sizeof(HwPerfCounter)) <= (graphicsAllocationStart + graphicsAllocationSize)))) {
-        EXPECT_TRUE(false);
-    }
+    EXPECT_GE(perfCounter, memoryStorage);
+    EXPECT_LE(perfCounter + 1, ptrOffset(memoryStorage, graphicsAllocationSize));
 }
 
 TEST_F(EventTest, IsPerfCounter_DisabledByNullQueue) {

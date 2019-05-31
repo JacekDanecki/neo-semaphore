@@ -62,15 +62,12 @@ TEST_F(AubCommandStreamReceiverTests, givenStructureWhenMisalignedUint64ThenUseS
 }
 
 TEST_F(AubCommandStreamReceiverTests, givenAubCommandStreamReceiverWhenItIsCreatedWithWrongGfxCoreFamilyThenNullPointerShouldBeReturned) {
-    HardwareInfo hwInfo = *platformDevices[0];
-    GFXCORE_FAMILY family = hwInfo.pPlatform->eRenderCoreFamily;
+    HardwareInfo *hwInfo = pDevice->executionEnvironment->getMutableHardwareInfo();
 
-    const_cast<PLATFORM *>(hwInfo.pPlatform)->eRenderCoreFamily = GFXCORE_FAMILY_FORCE_ULONG; // wrong gfx core family
+    hwInfo->platform.eRenderCoreFamily = GFXCORE_FAMILY_FORCE_ULONG; // wrong gfx core family
 
     CommandStreamReceiver *aubCsr = AUBCommandStreamReceiver::create("", true, *pDevice->executionEnvironment);
     EXPECT_EQ(nullptr, aubCsr);
-
-    const_cast<PLATFORM *>(hwInfo.pPlatform)->eRenderCoreFamily = family;
 }
 
 TEST_F(AubCommandStreamReceiverTests, givenAubCommandStreamReceiverWhenTypeIsCheckedThenAubCsrIsReturned) {
@@ -254,7 +251,7 @@ HWTEST_F(AubCommandStreamReceiverTests, givenGraphicsAllocationWhenMakeResidentC
 HWTEST_F(AubCommandStreamReceiverTests, givenAubCommandStreamReceiverWhenMultipleInstancesInitializeTheirEnginesThenUniqueGlobalGttAdressesAreGenerated) {
     pDevice->executionEnvironment->aubCenter.reset(new AubCenter());
 
-    auto engineInstance = HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[0];
+    auto engineInstance = HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances()[0];
     MockOsContext osContext(0, 1, engineInstance, PreemptionMode::Disabled, false);
 
     auto aubCsr1 = std::make_unique<AUBCommandStreamReceiverHw<FamilyType>>("", true, *pDevice->executionEnvironment);
@@ -1118,6 +1115,24 @@ TEST_F(HardwareContextContainerTests, givenOsContextWithMultipleDevicesSupported
     auto mockHwContext1 = static_cast<MockHardwareContext *>(hwContextControler.hardwareContexts[1].get());
     EXPECT_EQ(0u, mockHwContext0->deviceIndex);
     EXPECT_EQ(1u, mockHwContext1->deviceIndex);
+}
+
+TEST_F(HardwareContextContainerTests, givenSingleHwContextWhenSubmitMethodIsCalledOnHwContextControllerThenSubmitIsCalled) {
+    MockAubManager aubManager;
+    MockOsContext osContext(1, getDeviceBitfieldForNDevices(1), aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    HardwareContextController hwContextContainer(aubManager, osContext, 0);
+    EXPECT_EQ(1u, hwContextContainer.hardwareContexts.size());
+
+    auto mockHwContext0 = static_cast<MockHardwareContext *>(hwContextContainer.hardwareContexts[0].get());
+
+    EXPECT_FALSE(mockHwContext0->writeAndSubmitCalled);
+    EXPECT_FALSE(mockHwContext0->writeMemoryCalled);
+
+    hwContextContainer.submit(1, reinterpret_cast<const void *>(0x123), 2, 0, 1);
+
+    EXPECT_TRUE(mockHwContext0->submitCalled);
+    EXPECT_FALSE(mockHwContext0->writeAndSubmitCalled);
+    EXPECT_FALSE(mockHwContext0->writeMemoryCalled);
 }
 
 TEST_F(HardwareContextContainerTests, givenMultipleHwContextWhenSingleMethodIsCalledThenUseAllContexts) {

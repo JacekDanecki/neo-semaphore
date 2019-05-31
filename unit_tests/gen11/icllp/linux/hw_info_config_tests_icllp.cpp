@@ -22,62 +22,57 @@ struct HwInfoConfigTestLinuxIcllp : HwInfoConfigTestLinux {
 
 ICLLPTEST_F(HwInfoConfigTestLinuxIcllp, configureHwInfo) {
     auto hwInfoConfig = HwInfoConfig::get(productFamily);
-    int ret = hwInfoConfig->configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
+    int ret = hwInfoConfig->configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
-    EXPECT_EQ((unsigned short)drm->StoredDeviceID, outHwInfo.pPlatform->usDeviceID);
-    EXPECT_EQ((unsigned short)drm->StoredDeviceRevID, outHwInfo.pPlatform->usRevId);
-    EXPECT_EQ((uint32_t)drm->StoredEUVal, outHwInfo.pSysInfo->EUCount);
-    EXPECT_EQ((uint32_t)drm->StoredSSVal, outHwInfo.pSysInfo->SubSliceCount);
-    EXPECT_EQ(1u, outHwInfo.pSysInfo->SliceCount);
+    EXPECT_EQ((unsigned short)drm->StoredDeviceID, outHwInfo.platform.usDeviceID);
+    EXPECT_EQ((unsigned short)drm->StoredDeviceRevID, outHwInfo.platform.usRevId);
+    EXPECT_EQ((uint32_t)drm->StoredEUVal, outHwInfo.gtSystemInfo.EUCount);
+    EXPECT_EQ((uint32_t)drm->StoredSSVal, outHwInfo.gtSystemInfo.SubSliceCount);
+    EXPECT_EQ(1u, outHwInfo.gtSystemInfo.SliceCount);
     EXPECT_EQ(aub_stream::ENGINE_RCS, outHwInfo.capabilityTable.defaultEngineType);
 
-    EXPECT_EQ(GTTYPE_GT1, outHwInfo.pPlatform->eGTType);
-    EXPECT_TRUE(outHwInfo.pSkuTable->ftrGT1);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGT1_5);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGT2);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGT3);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGT4);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGTA);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGTC);
-    EXPECT_FALSE(outHwInfo.pSkuTable->ftrGTX);
-    EXPECT_TRUE(outHwInfo.pSkuTable->ftrTileY);
+    EXPECT_EQ(GTTYPE_GT1, outHwInfo.platform.eGTType);
+    EXPECT_TRUE(outHwInfo.featureTable.ftrGT1);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGT1_5);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGT2);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGT3);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGT4);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGTA);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGTC);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrGTX);
+    EXPECT_FALSE(outHwInfo.featureTable.ftrTileY);
 }
 
 ICLLPTEST_F(HwInfoConfigTestLinuxIcllp, negative) {
     auto hwInfoConfig = HwInfoConfig::get(productFamily);
 
     drm->StoredRetValForDeviceID = -1;
-    int ret = hwInfoConfig->configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
+    int ret = hwInfoConfig->configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(-1, ret);
-
-    ReleaseOutHwInfoStructs();
 
     drm->StoredRetValForDeviceID = 0;
     drm->StoredRetValForDeviceRevID = -1;
-    ret = hwInfoConfig->configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
+    ret = hwInfoConfig->configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(-1, ret);
-
-    ReleaseOutHwInfoStructs();
 
     drm->StoredRetValForDeviceRevID = 0;
     drm->StoredRetValForEUVal = -1;
-    ret = hwInfoConfig->configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
+    ret = hwInfoConfig->configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(-1, ret);
-
-    ReleaseOutHwInfoStructs();
 
     drm->StoredRetValForEUVal = 0;
     drm->StoredRetValForSSVal = -1;
-    ret = hwInfoConfig->configureHwInfo(pInHwInfo, &outHwInfo, osInterface);
+    ret = hwInfoConfig->configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(-1, ret);
 }
 
 using IcllpHwInfoTests = ::testing::Test;
 
 ICLLPTEST_F(IcllpHwInfoTests, icllp1x8x8systemInfo) {
-    GT_SYSTEM_INFO requestedGtSystemInfo = {};
     GT_SYSTEM_INFO expectedGtSystemInfo = {};
-    FeatureTable featureTable = {};
+    HardwareInfo hwInfo;
+    GT_SYSTEM_INFO &requestedGtSystemInfo = hwInfo.gtSystemInfo;
+    requestedGtSystemInfo = {};
 
     expectedGtSystemInfo.EUCount = 63;
     expectedGtSystemInfo.ThreadCount = 63 * ICLLP::threadsPerEu;
@@ -98,14 +93,15 @@ ICLLPTEST_F(IcllpHwInfoTests, icllp1x8x8systemInfo) {
     expectedGtSystemInfo.IsL3HashModeEnabled = false;
     expectedGtSystemInfo.IsDynamicallyPopulated = false;
 
-    ICLLP_1x8x8::setupHardwareInfo(&requestedGtSystemInfo, &featureTable, false);
+    ICLLP_1x8x8::setupHardwareInfo(&hwInfo, false);
     EXPECT_TRUE(memcmp(&requestedGtSystemInfo, &expectedGtSystemInfo, sizeof(GT_SYSTEM_INFO)) == 0);
 }
 
 ICLLPTEST_F(IcllpHwInfoTests, icllp1x4x8systemInfo) {
-    GT_SYSTEM_INFO requestedGtSystemInfo = {};
+    HardwareInfo hwInfo;
     GT_SYSTEM_INFO expectedGtSystemInfo = {};
-    FeatureTable featureTable = {};
+    GT_SYSTEM_INFO &requestedGtSystemInfo = hwInfo.gtSystemInfo;
+    requestedGtSystemInfo = {};
 
     expectedGtSystemInfo.EUCount = 31;
     expectedGtSystemInfo.ThreadCount = 31 * ICLLP::threadsPerEu;
@@ -126,14 +122,15 @@ ICLLPTEST_F(IcllpHwInfoTests, icllp1x4x8systemInfo) {
     expectedGtSystemInfo.IsL3HashModeEnabled = false;
     expectedGtSystemInfo.IsDynamicallyPopulated = false;
 
-    ICLLP_1x4x8::setupHardwareInfo(&requestedGtSystemInfo, &featureTable, false);
+    ICLLP_1x4x8::setupHardwareInfo(&hwInfo, false);
     EXPECT_TRUE(memcmp(&requestedGtSystemInfo, &expectedGtSystemInfo, sizeof(GT_SYSTEM_INFO)) == 0);
 }
 
 ICLLPTEST_F(IcllpHwInfoTests, icllp1x6x8systemInfo) {
-    GT_SYSTEM_INFO requestedGtSystemInfo = {};
     GT_SYSTEM_INFO expectedGtSystemInfo = {};
-    FeatureTable featureTable = {};
+    HardwareInfo hwInfo;
+    GT_SYSTEM_INFO &requestedGtSystemInfo = hwInfo.gtSystemInfo;
+    requestedGtSystemInfo = {};
 
     expectedGtSystemInfo.EUCount = 47;
     expectedGtSystemInfo.ThreadCount = 47 * ICLLP::threadsPerEu;
@@ -154,14 +151,15 @@ ICLLPTEST_F(IcllpHwInfoTests, icllp1x6x8systemInfo) {
     expectedGtSystemInfo.IsL3HashModeEnabled = false;
     expectedGtSystemInfo.IsDynamicallyPopulated = false;
 
-    ICLLP_1x6x8::setupHardwareInfo(&requestedGtSystemInfo, &featureTable, false);
+    ICLLP_1x6x8::setupHardwareInfo(&hwInfo, false);
     EXPECT_TRUE(memcmp(&requestedGtSystemInfo, &expectedGtSystemInfo, sizeof(GT_SYSTEM_INFO)) == 0);
 }
 
 ICLLPTEST_F(IcllpHwInfoTests, icllp1x1x8systemInfo) {
-    GT_SYSTEM_INFO requestedGtSystemInfo = {};
     GT_SYSTEM_INFO expectedGtSystemInfo = {};
-    FeatureTable featureTable = {};
+    HardwareInfo hwInfo;
+    GT_SYSTEM_INFO &requestedGtSystemInfo = hwInfo.gtSystemInfo;
+    requestedGtSystemInfo = {};
 
     expectedGtSystemInfo.EUCount = 8;
     expectedGtSystemInfo.ThreadCount = 8 * ICLLP::threadsPerEu;
@@ -182,6 +180,6 @@ ICLLPTEST_F(IcllpHwInfoTests, icllp1x1x8systemInfo) {
     expectedGtSystemInfo.IsL3HashModeEnabled = false;
     expectedGtSystemInfo.IsDynamicallyPopulated = false;
 
-    ICLLP_1x1x8::setupHardwareInfo(&requestedGtSystemInfo, &featureTable, false);
+    ICLLP_1x1x8::setupHardwareInfo(&hwInfo, false);
     EXPECT_TRUE(memcmp(&requestedGtSystemInfo, &expectedGtSystemInfo, sizeof(GT_SYSTEM_INFO)) == 0);
 }

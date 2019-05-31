@@ -79,7 +79,7 @@ class MemObj : public BaseObject<_cl_mem> {
     virtual void transferDataToHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) { UNRECOVERABLE_IF(true); };
     virtual void transferDataFromHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) { UNRECOVERABLE_IF(true); };
 
-    GraphicsAllocation *getGraphicsAllocation();
+    GraphicsAllocation *getGraphicsAllocation() const;
     void resetGraphicsAllocation(GraphicsAllocation *newGraphicsAllocation);
     GraphicsAllocation *getMcsAllocation() { return mcsAllocation; }
     void setMcsAllocation(GraphicsAllocation *alloc) { mcsAllocation = alloc; }
@@ -119,6 +119,8 @@ class MemObj : public BaseObject<_cl_mem> {
         }
         return mapAllocation;
     }
+
+    const MemoryProperties &getProperties() const { return properties; }
 
   protected:
     void getOsSpecificMemObjectInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam);

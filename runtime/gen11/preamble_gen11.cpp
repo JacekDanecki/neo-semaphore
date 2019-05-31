@@ -7,7 +7,7 @@
 
 #include "runtime/command_stream/csr_definitions.h"
 #include "runtime/helpers/pipeline_select_helper.h"
-#include "runtime/helpers/preamble.inl"
+#include "runtime/helpers/preamble_bdw_plus.inl"
 
 #include "reg_configs_common.h"
 
@@ -17,7 +17,7 @@ template <>
 uint32_t PreambleHelper<ICLFamily>::getL3Config(const HardwareInfo &hwInfo, bool useSLM) {
     uint32_t l3Config = 0;
 
-    switch (hwInfo.pPlatform->eProductFamily) {
+    switch (hwInfo.platform.eProductFamily) {
     case IGFX_ICELAKE_LP:
         l3Config = getL3ConfigHelper<IGFX_ICELAKE_LP>(useSLM);
         break;
@@ -46,7 +46,7 @@ void PreambleHelper<ICLFamily>::addPipeControlBeforeVfeCmd(LinearStream *pComman
     auto pipeControl = pCommandStream->getSpaceForCmd<PIPE_CONTROL>();
     *pipeControl = ICLFamily::cmdInitPipeControl;
     pipeControl->setCommandStreamerStallEnable(true);
-    if (hwInfo->pWaTable->waSendMIFLUSHBeforeVFE) {
+    if (hwInfo->workaroundTable.waSendMIFLUSHBeforeVFE) {
         pipeControl->setRenderTargetCacheFlushEnable(true);
         pipeControl->setDepthCacheFlushEnable(true);
         pipeControl->setDcFlushEnable(true);

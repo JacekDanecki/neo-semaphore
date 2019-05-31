@@ -311,11 +311,11 @@ HWTEST_F(CommandStreamReceiverTest, givenTimestampPacketAllocatorWhenAskingForTa
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     EXPECT_EQ(nullptr, csr.timestampPacketAllocator.get());
 
-    TagAllocator<TimestampPacket> *allocator = csr.getTimestampPacketAllocator();
+    TagAllocator<TimestampPacketStorage> *allocator = csr.getTimestampPacketAllocator();
     EXPECT_NE(nullptr, csr.timestampPacketAllocator.get());
     EXPECT_EQ(allocator, csr.timestampPacketAllocator.get());
 
-    TagAllocator<TimestampPacket> *allocator2 = csr.getTimestampPacketAllocator();
+    TagAllocator<TimestampPacketStorage> *allocator2 = csr.getTimestampPacketAllocator();
     EXPECT_EQ(allocator, allocator2);
 
     auto node1 = allocator->getTag();
@@ -371,6 +371,7 @@ TEST(CommandStreamReceiverSimpleTest, givenCommandStreamReceiverWhenInitializeTa
     EXPECT_TRUE(csr->getTagAddress() == nullptr);
     csr->initializeTagAllocation();
     EXPECT_NE(nullptr, csr->getTagAllocation());
+    EXPECT_EQ(GraphicsAllocation::AllocationType::TAG_BUFFER, csr->getTagAllocation()->getAllocationType());
     EXPECT_TRUE(csr->getTagAddress() != nullptr);
     EXPECT_EQ(*csr->getTagAddress(), initialHardwareTag);
 }
@@ -389,18 +390,6 @@ TEST(CommandStreamReceiverSimpleTest, givenNullHardwareDebugModeWhenInitializeTa
     EXPECT_NE(nullptr, csr->getTagAllocation());
     EXPECT_TRUE(csr->getTagAddress() != nullptr);
     EXPECT_EQ(*csr->getTagAddress(), static_cast<uint32_t>(-1));
-}
-
-TEST(CommandStreamReceiverSimpleTest, givenCSRWhenWaitBeforeMakingNonResidentWhenRequiredIsCalledWithBlockingFlagSetThenItReturnsImmediately) {
-    ExecutionEnvironment executionEnvironment;
-    MockCommandStreamReceiver csr(executionEnvironment);
-    uint32_t tag = 0;
-    MockGraphicsAllocation allocation(&tag, sizeof(tag));
-    csr.latestFlushedTaskCount = 3;
-    csr.setTagAllocation(&allocation);
-    csr.waitBeforeMakingNonResidentWhenRequired();
-
-    EXPECT_EQ(0u, tag);
 }
 
 TEST(CommandStreamReceiverSimpleTest, givenVariousDataSetsWhenVerifyingMemoryThenCorrectValueIsReturned) {
@@ -430,7 +419,7 @@ TEST(CommandStreamReceiverSimpleTest, givenVariousDataSetsWhenVerifyingMemoryThe
 TEST(CommandStreamReceiverMultiContextTests, givenMultipleCsrsWhenSameResourcesAreUsedThenResidencyIsProperlyHandled) {
     auto executionEnvironment = platformImpl->peekExecutionEnvironment();
 
-    std::unique_ptr<MockDevice> device(Device::create<MockDevice>(nullptr, executionEnvironment, 0u));
+    std::unique_ptr<MockDevice> device(Device::create<MockDevice>(executionEnvironment, 0u));
 
     auto &commandStreamReceiver0 = *executionEnvironment->commandStreamReceivers[0][0];
     auto &commandStreamReceiver1 = *executionEnvironment->commandStreamReceivers[0][1];
@@ -469,7 +458,7 @@ struct CreateAllocationForHostSurfaceTest : public ::testing::Test {
         executionEnvironment->setHwInfo(&hwInfo);
         gmockMemoryManager = new ::testing::NiceMock<GMockMemoryManager>(*executionEnvironment);
         executionEnvironment->memoryManager.reset(gmockMemoryManager);
-        device.reset(MockDevice::create<MockDevice>(&hwInfo, executionEnvironment, 0u));
+        device.reset(MockDevice::create<MockDevice>(executionEnvironment, 0u));
         commandStreamReceiver = &device->getCommandStreamReceiver();
     }
     HardwareInfo hwInfo = *platformDevices[0];

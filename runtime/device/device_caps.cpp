@@ -5,10 +5,10 @@
  *
  */
 
+#include "core/helpers/basic_math.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/device/device.h"
 #include "runtime/device/driver_info.h"
-#include "runtime/helpers/basic_math.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -28,7 +28,7 @@ extern const char *familyName[];
 static std::string vendor = "Intel(R) Corporation";
 static std::string profile = "FULL_PROFILE";
 static std::string spirVersions = "1.2 ";
-static const char *spirvVersion = "SPIR-V_1.0 ";
+static const char *spirvVersion = "SPIR-V_1.2 ";
 #define QTR(a) #a
 #define TOSTR(b) QTR(b)
 static std::string driverVersion = TOSTR(NEO_DRIVER_VERSION);
@@ -43,6 +43,7 @@ static constexpr cl_device_fp_config defaultFpFlags = static_cast<cl_device_fp_c
                                                                                        CL_FP_FMA);
 
 void Device::setupFp64Flags() {
+    auto &hwInfo = getHardwareInfo();
     if (DebugManager.flags.OverrideDefaultFP64Settings.get() == -1) {
         if (hwInfo.capabilityTable.ftrSupportsFP64) {
             deviceExtensions += "cl_khr_fp64 ";
@@ -66,6 +67,7 @@ void Device::setupFp64Flags() {
 }
 
 void Device::initializeCaps() {
+    auto &hwInfo = getHardwareInfo();
     deviceExtensions.clear();
     deviceExtensions.append(deviceExtensionsList);
     // Add our graphics family name to the device name
@@ -77,7 +79,7 @@ void Device::initializeCaps() {
     driverVersion = TOSTR(NEO_DRIVER_VERSION);
 
     name += "Intel(R) ";
-    name += familyName[hwInfo.pPlatform->eRenderCoreFamily];
+    name += familyName[hwInfo.platform.eRenderCoreFamily];
     name += " HD Graphics NEO";
 
     if (driverInfo) {
@@ -85,7 +87,7 @@ void Device::initializeCaps() {
         driverVersion.assign(driverInfo.get()->getVersion(driverVersion).c_str());
     }
 
-    auto &hwHelper = HwHelper::get(hwInfo.pPlatform->eRenderCoreFamily);
+    auto &hwHelper = HwHelper::get(hwInfo.platform.eRenderCoreFamily);
 
     deviceInfo.name = name.c_str();
     deviceInfo.driverVersion = driverVersion.c_str();
@@ -203,7 +205,7 @@ void Device::initializeCaps() {
     deviceInfo.addressBits = 64;
 
     //copy system info to prevent misaligned reads
-    const auto systemInfo = *hwInfo.pSysInfo;
+    const auto systemInfo = hwInfo.gtSystemInfo;
 
     deviceInfo.globalMemCachelineSize = 64;
     deviceInfo.globalMemCacheSize = systemInfo.L3BankCount * 128 * KB;
@@ -251,7 +253,7 @@ void Device::initializeCaps() {
     deviceInfo.numThreadsPerEU = 0;
     auto simdSizeUsed = DebugManager.flags.UseMaxSimdSizeToDeduceMaxWorkgroupSize.get() ? 32 : 8;
 
-    deviceInfo.maxNumEUsPerSubSlice = (systemInfo.EuCountPerPoolMin == 0 || hwInfo.pSkuTable->ftrPooledEuEnabled == 0)
+    deviceInfo.maxNumEUsPerSubSlice = (systemInfo.EuCountPerPoolMin == 0 || hwInfo.featureTable.ftrPooledEuEnabled == 0)
                                           ? (systemInfo.EUCount / systemInfo.SubSliceCount)
                                           : systemInfo.EuCountPerPoolMin;
     deviceInfo.numThreadsPerEU = systemInfo.ThreadCount / systemInfo.EUCount;

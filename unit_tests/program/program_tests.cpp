@@ -7,6 +7,7 @@
 
 #include "unit_tests/program/program_tests.h"
 
+#include "core/helpers/ptr_math.h"
 #include "elf/reader.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/compiler_interface/compiler_options.h"
@@ -14,7 +15,6 @@
 #include "runtime/helpers/hash.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/kernel_commands.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/helpers/string.h"
 #include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/kernel.h"
@@ -1545,7 +1545,7 @@ TEST(ProgramFromBinaryTests, givenBinaryWithInvalidICBEThenErrorIsReturned) {
     memset(&binHeader, 0, sizeof(binHeader));
     binHeader.Magic = iOpenCL::MAGIC_CL;
     binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION - 3;
-    binHeader.Device = platformDevices[0]->pPlatform->eRenderCoreFamily;
+    binHeader.Device = platformDevices[0]->platform.eRenderCoreFamily;
     binHeader.GPUPointerSizeInBytes = 8;
     binHeader.NumberOfKernels = 0;
     binHeader.SteppingId = 0;
@@ -1597,7 +1597,7 @@ TEST(ProgramFromBinaryTests, CreateWithBinary_FailRecompile) {
     memset(&binHeader, 0, sizeof(binHeader));
     binHeader.Magic = iOpenCL::MAGIC_CL;
     binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION;
-    binHeader.Device = platformDevices[0]->pPlatform->eRenderCoreFamily;
+    binHeader.Device = platformDevices[0]->platform.eRenderCoreFamily;
     binHeader.GPUPointerSizeInBytes = 8;
     binHeader.NumberOfKernels = 0;
     binHeader.SteppingId = 0;
@@ -1633,7 +1633,7 @@ TEST(ProgramFromBinaryTests, givenEmptyProgramThenErrorIsReturned) {
     memset(&binHeader, 0, sizeof(binHeader));
     binHeader.Magic = iOpenCL::MAGIC_CL;
     binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION;
-    binHeader.Device = platformDevices[0]->pPlatform->eRenderCoreFamily;
+    binHeader.Device = platformDevices[0]->platform.eRenderCoreFamily;
     binHeader.GPUPointerSizeInBytes = 8;
     binHeader.NumberOfKernels = 0;
     binHeader.SteppingId = 0;
@@ -2007,7 +2007,7 @@ TEST_F(ProgramTests, ProgramFromGenBinaryWithPATCH_TOKEN_GLOBAL_MEMORY_OBJECT_KE
         SProgramBinaryHeader *pBHdr = (SProgramBinaryHeader *)pBin;
         pBHdr->Magic = iOpenCL::MAGIC_CL;
         pBHdr->Version = iOpenCL::CURRENT_ICBE_VERSION;
-        pBHdr->Device = pDevice->getHardwareInfo().pPlatform->eRenderCoreFamily;
+        pBHdr->Device = pDevice->getHardwareInfo().platform.eRenderCoreFamily;
         pBHdr->GPUPointerSizeInBytes = 8;
         pBHdr->NumberOfKernels = 1;
         pBHdr->SteppingId = 0;
@@ -2072,7 +2072,7 @@ TEST_F(ProgramTests, ProgramFromGenBinaryWithPATCH_TOKEN_GTPIN_FREE_GRF_INFO) {
         SProgramBinaryHeader *pBHdr = (SProgramBinaryHeader *)pBin;
         pBHdr->Magic = iOpenCL::MAGIC_CL;
         pBHdr->Version = iOpenCL::CURRENT_ICBE_VERSION;
-        pBHdr->Device = pDevice->getHardwareInfo().pPlatform->eRenderCoreFamily;
+        pBHdr->Device = pDevice->getHardwareInfo().platform.eRenderCoreFamily;
         pBHdr->GPUPointerSizeInBytes = 8;
         pBHdr->NumberOfKernels = 1;
         pBHdr->SteppingId = 0;
@@ -2347,7 +2347,7 @@ TEST_F(ProgramTests, GetProgramCompilerVersion) {
     struct SProgramBinaryHeader prgHdr;
     prgHdr.Magic = iOpenCL::MAGIC_CL;
     prgHdr.Version = 12;
-    prgHdr.Device = pDevice->getHardwareInfo().pPlatform->eRenderCoreFamily;
+    prgHdr.Device = pDevice->getHardwareInfo().platform.eRenderCoreFamily;
     prgHdr.GPUPointerSizeInBytes = 8;
     prgHdr.NumberOfKernels = 1;
     prgHdr.SteppingId = 0;
@@ -2515,7 +2515,7 @@ TEST_F(ProgramTests, givenNewProgramTheStatelessToStatefulBufferOffsetOtimizatio
     auto it = internalOpts.find("-cl-intel-has-buffer-offset-arg ");
 
     HardwareCapabilities hwCaps = {0};
-    HwHelper::get(prog.getDevice(0).getHardwareInfo().pPlatform->eRenderCoreFamily).setupHardwareCapabilities(&hwCaps, prog.getDevice(0).getHardwareInfo());
+    HwHelper::get(prog.getDevice(0).getHardwareInfo().platform.eRenderCoreFamily).setupHardwareCapabilities(&hwCaps, prog.getDevice(0).getHardwareInfo());
     if (hwCaps.isStatelesToStatefullWithOffsetSupported) {
         EXPECT_NE(std::string::npos, it);
     } else {
@@ -2943,4 +2943,73 @@ TEST_F(ProgramTests, givenProgramWhenBuiltThenAdditionalOptionsAreApplied) {
 
     program.build(1, &device, nullptr, nullptr, nullptr, false);
     EXPECT_EQ(1u, program.applyAdditionalOptionsCalled);
+}
+
+struct RebuildProgram : public Program {
+    using Program::createProgramFromBinary;
+    RebuildProgram(ExecutionEnvironment &executionEnvironment, Context *context, bool isBuiltIn = false) : Program(executionEnvironment, context, isBuiltIn) {}
+    cl_int rebuildProgramFromIr() override {
+        rebuildProgramFromIrCalled = true;
+        return CL_SUCCESS;
+    }
+    cl_int processElfBinary(const void *pBinary, size_t binarySize, uint32_t &binaryVersion) override {
+        processElfBinaryCalled = true;
+        return CL_SUCCESS;
+    }
+    bool rebuildProgramFromIrCalled = false;
+    bool processElfBinaryCalled = false;
+};
+
+TEST(RebuildProgramFromIrTests, givenBinaryProgramWhenKernelRebulildIsForcedThenRebuildProgramFromIrCalled) {
+    DebugManagerStateRestore dbgRestorer;
+    DebugManager.flags.RebuildPrecompiledKernels.set(true);
+    cl_int retVal = CL_INVALID_BINARY;
+
+    SProgramBinaryHeader binHeader;
+    memset(&binHeader, 0, sizeof(binHeader));
+    binHeader.Magic = iOpenCL::MAGIC_CL;
+    binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION;
+    binHeader.Device = platformDevices[0]->platform.eRenderCoreFamily;
+    binHeader.GPUPointerSizeInBytes = 8;
+    binHeader.NumberOfKernels = 0;
+    binHeader.SteppingId = 0;
+    binHeader.PatchListSize = 0;
+    size_t binSize = sizeof(SProgramBinaryHeader);
+
+    ExecutionEnvironment executionEnvironment;
+    std::unique_ptr<RebuildProgram> pProgram(RebuildProgram::createFromGenBinary<RebuildProgram>(executionEnvironment, nullptr, &binHeader, binSize, false, &retVal));
+    ASSERT_NE(nullptr, pProgram.get());
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION;
+    retVal = pProgram->createProgramFromBinary(&binHeader, binSize);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_TRUE(pProgram->processElfBinaryCalled);
+    EXPECT_TRUE(pProgram->rebuildProgramFromIrCalled);
+}
+
+TEST(RebuildProgramFromIrTests, givenBinaryProgramWhenKernelRebulildIsNotForcedThenRebuildProgramFromIrNotCalled) {
+    cl_int retVal = CL_INVALID_BINARY;
+
+    SProgramBinaryHeader binHeader;
+    memset(&binHeader, 0, sizeof(binHeader));
+    binHeader.Magic = iOpenCL::MAGIC_CL;
+    binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION;
+    binHeader.Device = platformDevices[0]->platform.eRenderCoreFamily;
+    binHeader.GPUPointerSizeInBytes = 8;
+    binHeader.NumberOfKernels = 0;
+    binHeader.SteppingId = 0;
+    binHeader.PatchListSize = 0;
+    size_t binSize = sizeof(SProgramBinaryHeader);
+
+    ExecutionEnvironment executionEnvironment;
+    std::unique_ptr<RebuildProgram> pProgram(RebuildProgram::createFromGenBinary<RebuildProgram>(executionEnvironment, nullptr, &binHeader, binSize, false, &retVal));
+    ASSERT_NE(nullptr, pProgram.get());
+    EXPECT_EQ(CL_SUCCESS, retVal);
+
+    binHeader.Version = iOpenCL::CURRENT_ICBE_VERSION;
+    retVal = pProgram->createProgramFromBinary(&binHeader, binSize);
+    EXPECT_EQ(CL_SUCCESS, retVal);
+    EXPECT_TRUE(pProgram->processElfBinaryCalled);
+    EXPECT_FALSE(pProgram->rebuildProgramFromIrCalled);
 }

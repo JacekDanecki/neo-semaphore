@@ -69,7 +69,7 @@ TEST(WddmMemoryManager, NonAssignable) {
 }
 
 TEST(WddmAllocationTest, givenAllocationIsTrimCandidateInOneOsContextWhenGettingTrimCandidatePositionThenReturnItsPositionAndUnusedPositionInOtherContexts) {
-    WddmAllocation allocation{GraphicsAllocation::AllocationType::UNDECIDED, nullptr, 0, nullptr, MemoryPool::MemoryNull, false};
+    MockWddmAllocation allocation;
     MockOsContext osContext(1u, 1, aub_stream::ENGINE_RCS, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
     allocation.setTrimCandidateListPosition(osContext.getContextId(), 700u);
     EXPECT_EQ(trimListUnusedPosition, allocation.getTrimCandidateListPosition(0u));
@@ -77,14 +77,14 @@ TEST(WddmAllocationTest, givenAllocationIsTrimCandidateInOneOsContextWhenGetting
 }
 
 TEST(WddmAllocationTest, givenAllocationCreatedWithOsContextCountOneWhenItIsCreatedThenMaxOsContextCountIsUsedInstead) {
-    WddmAllocation allocation{GraphicsAllocation::AllocationType::UNDECIDED, nullptr, 0, nullptr, MemoryPool::MemoryNull, false};
+    MockWddmAllocation allocation;
     allocation.setTrimCandidateListPosition(1u, 700u);
     EXPECT_EQ(700u, allocation.getTrimCandidateListPosition(1u));
     EXPECT_EQ(trimListUnusedPosition, allocation.getTrimCandidateListPosition(0u));
 }
 
 TEST(WddmAllocationTest, givenRequestedContextIdTooLargeWhenGettingTrimCandidateListPositionThenReturnUnusedPosition) {
-    WddmAllocation allocation{GraphicsAllocation::AllocationType::UNDECIDED, nullptr, 0, nullptr, MemoryPool::MemoryNull, false};
+    MockWddmAllocation allocation;
     EXPECT_EQ(trimListUnusedPosition, allocation.getTrimCandidateListPosition(1u));
     EXPECT_EQ(trimListUnusedPosition, allocation.getTrimCandidateListPosition(1000u));
 }
@@ -92,16 +92,13 @@ TEST(WddmAllocationTest, givenRequestedContextIdTooLargeWhenGettingTrimCandidate
 TEST(WddmAllocationTest, givenAllocationTypeWhenPassedToWddmAllocationConstructorThenAllocationTypeIsStored) {
     WddmAllocation allocation{GraphicsAllocation::AllocationType::COMMAND_BUFFER, nullptr, 0, nullptr, MemoryPool::MemoryNull, false};
     EXPECT_EQ(GraphicsAllocation::AllocationType::COMMAND_BUFFER, allocation.getAllocationType());
-
-    WddmAllocation allocation2{GraphicsAllocation::AllocationType::UNDECIDED, nullptr, 0, 0u, MemoryPool::MemoryNull, false};
-    EXPECT_EQ(GraphicsAllocation::AllocationType::UNDECIDED, allocation2.getAllocationType());
 }
 
 TEST(WddmAllocationTest, givenMemoryPoolWhenPassedToWddmAllocationConstructorThenMemoryPoolIsStored) {
     WddmAllocation allocation{GraphicsAllocation::AllocationType::COMMAND_BUFFER, nullptr, 0, nullptr, MemoryPool::System64KBPages, false};
     EXPECT_EQ(MemoryPool::System64KBPages, allocation.getMemoryPool());
 
-    WddmAllocation allocation2{GraphicsAllocation::AllocationType::UNDECIDED, nullptr, 0, 0u, MemoryPool::SystemCpuInaccessible, false};
+    WddmAllocation allocation2{GraphicsAllocation::AllocationType::COMMAND_BUFFER, nullptr, 0, 0u, MemoryPool::SystemCpuInaccessible, false};
     EXPECT_EQ(MemoryPool::SystemCpuInaccessible, allocation2.getMemoryPool());
 }
 
@@ -329,7 +326,7 @@ TEST_F(WddmMemoryManagerSimpleTest, givenNonZeroFenceValueOnSingleEngineRegister
 }
 
 TEST_F(WddmMemoryManagerSimpleTest, givenNonZeroFenceValuesOnMultipleEnginesRegisteredWhenHandleFenceCompletionIsCalledThenWaitOnCpuForEachEngine) {
-    memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[1],
+    memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances()[1],
                                               2, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
     ASSERT_EQ(2u, memoryManager->getRegisteredEnginesCount());
 
@@ -347,7 +344,7 @@ TEST_F(WddmMemoryManagerSimpleTest, givenNonZeroFenceValuesOnMultipleEnginesRegi
 }
 
 TEST_F(WddmMemoryManagerSimpleTest, givenNonZeroFenceValueOnSomeOfMultipleEnginesRegisteredWhenHandleFenceCompletionIsCalledThenWaitOnCpuForTheseEngines) {
-    memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->pPlatform->eRenderCoreFamily).getGpgpuEngineInstances()[1],
+    memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances()[1],
                                               2, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
     ASSERT_EQ(2u, memoryManager->getRegisteredEnginesCount());
 
@@ -968,7 +965,7 @@ TEST_F(WddmMemoryManagerTest, givenManagerWithDisabledDeferredDeleterWhenMapGpuV
     memoryManager->setDeferredDeleter(nullptr);
     setMapGpuVaFailConfigFcn(0, 1);
 
-    WddmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, ptr, size, nullptr, MemoryPool::MemoryNull, false);
+    WddmAllocation allocation(GraphicsAllocation::AllocationType::BUFFER, ptr, size, nullptr, MemoryPool::MemoryNull, false);
     allocation.setDefaultGmm(gmm.get());
     bool ret = memoryManager->createWddmAllocation(&allocation, allocation.getAlignedCpuPtr());
     EXPECT_FALSE(ret);
@@ -984,7 +981,7 @@ TEST_F(WddmMemoryManagerTest, givenManagerWithEnabledDeferredDeleterWhenFirstMap
 
     setMapGpuVaFailConfigFcn(0, 1);
 
-    WddmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, ptr, size, nullptr, MemoryPool::MemoryNull, false);
+    WddmAllocation allocation(GraphicsAllocation::AllocationType::BUFFER, ptr, size, nullptr, MemoryPool::MemoryNull, false);
     allocation.setDefaultGmm(gmm.get());
     bool ret = memoryManager->createWddmAllocation(&allocation, allocation.getAlignedCpuPtr());
     EXPECT_TRUE(ret);
@@ -1000,7 +997,7 @@ TEST_F(WddmMemoryManagerTest, givenManagerWithEnabledDeferredDeleterWhenFirstAnd
 
     setMapGpuVaFailConfigFcn(0, 2);
 
-    WddmAllocation allocation(GraphicsAllocation::AllocationType::UNDECIDED, ptr, size, nullptr, MemoryPool::MemoryNull, false);
+    WddmAllocation allocation(GraphicsAllocation::AllocationType::BUFFER, ptr, size, nullptr, MemoryPool::MemoryNull, false);
     allocation.setDefaultGmm(gmm.get());
     bool ret = memoryManager->createWddmAllocation(&allocation, allocation.getAlignedCpuPtr());
     EXPECT_FALSE(ret);
@@ -1201,7 +1198,7 @@ TEST_F(BufferWithWddmMemory, givenFragmentsThatAreNotInOrderWhenGraphicsAllocati
     memoryManager->getHostPtrManager()->storeFragment(fragment);
 
     auto offset = 80;
-    auto allocationPtr = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(ptr) + offset);
+    auto allocationPtr = ptrOffset(ptr, offset);
     AllocationData allocationData;
     allocationData.size = size;
     allocationData.hostPtr = allocationPtr;
@@ -1649,20 +1646,25 @@ TEST_F(WddmMemoryManagerSimpleTest, whenDestroyingNotLockedAllocationThatNeedsMa
     memoryManager->freeGraphicsMemory(allocation);
     EXPECT_EQ(0u, wddm->evictTemporaryResourceResult.called);
 }
-TEST_F(WddmMemoryManagerSimpleTest, whenDestroyingAllocationWithPreferredGpuAddressThenReleaseTheAddress) {
+TEST_F(WddmMemoryManagerSimpleTest, whenDestroyingAllocationWithReservedGpuVirtualAddressThenReleaseTheAddress) {
     auto allocation = static_cast<WddmAllocation *>(memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize}));
     uint64_t gpuAddress = 0x123;
-    allocation->preferredGpuAddress = gpuAddress;
+    uint64_t sizeForFree = 0x1234;
+    allocation->reservedGpuVirtualAddress = gpuAddress;
+    allocation->reservedSizeForGpuVirtualAddress = sizeForFree;
     memoryManager->freeGraphicsMemory(allocation);
     EXPECT_EQ(1u, wddm->freeGpuVirtualAddressResult.called);
     EXPECT_EQ(gpuAddress, wddm->freeGpuVirtualAddressResult.uint64ParamPassed);
+    EXPECT_EQ(sizeForFree, wddm->freeGpuVirtualAddressResult.sizePassed);
 }
 
-TEST_F(WddmMemoryManagerSimpleTest, givenAllocationWithPreferredGpuAddressWhenMapCallFailsDuringCreateWddmAllocationThenReleasePreferredAddress) {
+TEST_F(WddmMemoryManagerSimpleTest, givenAllocationWithReservedGpuVirtualAddressWhenMapCallFailsDuringCreateWddmAllocationThenReleasePreferredAddress) {
     MockWddmAllocation allocation;
     allocation.setAllocationType(GraphicsAllocation::AllocationType::KERNEL_ISA);
     uint64_t gpuAddress = 0x123;
-    allocation.preferredGpuAddress = gpuAddress;
+    uint64_t sizeForFree = 0x1234;
+    allocation.reservedGpuVirtualAddress = gpuAddress;
+    allocation.reservedSizeForGpuVirtualAddress = sizeForFree;
 
     wddm->callBaseMapGpuVa = false;
     wddm->mapGpuVaStatus = false;
@@ -1670,6 +1672,7 @@ TEST_F(WddmMemoryManagerSimpleTest, givenAllocationWithPreferredGpuAddressWhenMa
     memoryManager->createWddmAllocation(&allocation, nullptr);
     EXPECT_EQ(1u, wddm->freeGpuVirtualAddressResult.called);
     EXPECT_EQ(gpuAddress, wddm->freeGpuVirtualAddressResult.uint64ParamPassed);
+    EXPECT_EQ(sizeForFree, wddm->freeGpuVirtualAddressResult.sizePassed);
 }
 
 TEST_F(WddmMemoryManagerSimpleTest, givenSvmCpuAllocationWhenSizeAndAlignmentProvidedThenAllocateMemoryReserveGpuVa) {

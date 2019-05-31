@@ -1104,7 +1104,6 @@ HWTEST_F(DispatchWalkerTest, GivenCacheFlushAfterWalkerDisabledWhenAllocationReq
 
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.EnableCacheFlushAfterWalker.set(0);
-    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
 
     MockKernel kernel1(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel1.initialize());
@@ -1139,7 +1138,6 @@ HWTEST_F(DispatchWalkerTest, GivenCacheFlushAfterWalkerEnabledWhenWalkerWithTwoK
 
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.EnableCacheFlushAfterWalker.set(1);
-    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
 
     MockKernel kernel1(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel1.initialize());
@@ -1179,7 +1177,6 @@ HWTEST_F(DispatchWalkerTest, GivenCacheFlushAfterWalkerEnabledWhenTwoWalkersForQ
 
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.EnableCacheFlushAfterWalker.set(1);
-    DebugManager.flags.EnableCacheFlushAfterWalkerForAllQueues.set(1);
 
     MockKernel kernel1(program.get(), kernelInfo, *pDevice);
     ASSERT_EQ(CL_SUCCESS, kernel1.initialize());
@@ -1354,8 +1351,8 @@ HWTEST_P(ProfilingCommandsTest, givenKernelWhenProfilingCommandStartIsTakenThenT
     ASSERT_NE(nullptr, storeReg);
 
     uint64_t gpuAddress = storeReg->getMemoryAddress();
-    auto timestampFieldAddress = checkForStart ? &hwTimeStamp1->tagForCpuAccess->ContextStartTS : &hwTimeStamp1->tagForCpuAccess->ContextEndTS;
-    uint64_t expectedAddress = hwTimeStamp1->getBaseGraphicsAllocation()->getGpuAddress() + ptrDiff(timestampFieldAddress, hwTimeStamp1->getBaseGraphicsAllocation()->getUnderlyingBuffer());
+    auto contextTimestampFieldOffset = checkForStart ? offsetof(HwTimeStamps, ContextStartTS) : offsetof(HwTimeStamps, ContextEndTS);
+    uint64_t expectedAddress = hwTimeStamp1->getGpuAddress() + contextTimestampFieldOffset;
     EXPECT_EQ(expectedAddress, gpuAddress);
 
     itorStoreReg++;
@@ -1365,8 +1362,7 @@ HWTEST_P(ProfilingCommandsTest, givenKernelWhenProfilingCommandStartIsTakenThenT
     ASSERT_NE(nullptr, storeReg);
 
     gpuAddress = storeReg->getMemoryAddress();
-    timestampFieldAddress = checkForStart ? &hwTimeStamp2->tagForCpuAccess->ContextStartTS : &hwTimeStamp2->tagForCpuAccess->ContextEndTS;
-    expectedAddress = hwTimeStamp2->getBaseGraphicsAllocation()->getGpuAddress() + ptrDiff(timestampFieldAddress, hwTimeStamp2->getBaseGraphicsAllocation()->getUnderlyingBuffer());
+    expectedAddress = hwTimeStamp2->getGpuAddress() + contextTimestampFieldOffset;
     EXPECT_EQ(expectedAddress, gpuAddress);
 
     if (checkForStart) {
@@ -1376,8 +1372,7 @@ HWTEST_P(ProfilingCommandsTest, givenKernelWhenProfilingCommandStartIsTakenThenT
         ASSERT_NE(nullptr, pipeControl);
 
         gpuAddress = static_cast<uint64_t>(pipeControl->getAddress()) | (static_cast<uint64_t>(pipeControl->getAddressHigh()) << 32);
-        timestampFieldAddress = checkForStart ? &hwTimeStamp1->tagForCpuAccess->GlobalStartTS : &hwTimeStamp1->tagForCpuAccess->GlobalEndTS;
-        expectedAddress = hwTimeStamp1->getBaseGraphicsAllocation()->getGpuAddress() + ptrDiff(timestampFieldAddress, hwTimeStamp1->getBaseGraphicsAllocation()->getUnderlyingBuffer());
+        expectedAddress = hwTimeStamp1->getGpuAddress() + offsetof(HwTimeStamps, GlobalStartTS);
         EXPECT_EQ(expectedAddress, gpuAddress);
 
         itorPipeCtrl++;
@@ -1387,8 +1382,7 @@ HWTEST_P(ProfilingCommandsTest, givenKernelWhenProfilingCommandStartIsTakenThenT
         ASSERT_NE(nullptr, pipeControl);
 
         gpuAddress = static_cast<uint64_t>(pipeControl->getAddress()) | static_cast<uint64_t>(pipeControl->getAddressHigh()) << 32;
-        timestampFieldAddress = checkForStart ? &hwTimeStamp2->tagForCpuAccess->GlobalStartTS : &hwTimeStamp2->tagForCpuAccess->GlobalEndTS;
-        expectedAddress = hwTimeStamp2->getBaseGraphicsAllocation()->getGpuAddress() + ptrDiff(timestampFieldAddress, hwTimeStamp2->getBaseGraphicsAllocation()->getUnderlyingBuffer());
+        expectedAddress = hwTimeStamp2->getGpuAddress() + offsetof(HwTimeStamps, GlobalStartTS);
         EXPECT_EQ(expectedAddress, gpuAddress);
     }
 }

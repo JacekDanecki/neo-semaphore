@@ -33,8 +33,12 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     using MemoryManager::allocateGraphicsMemoryInPreferredPool;
     using MemoryManager::allocateGraphicsMemoryWithProperties;
     using MemoryManager::AllocationData;
+    using MemoryManager::allocator32Bit;
     using MemoryManager::createGraphicsAllocation;
+    using MemoryManager::createStorageInfoFromProperties;
     using MemoryManager::getAllocationData;
+    using MemoryManager::getBanksCount;
+    using MemoryManager::localMemoryUsageBankSelector;
     using MemoryManager::multiContextResourceDestructor;
     using MemoryManager::registeredEngines;
     using MemoryManager::useInternal32BitAllocator;

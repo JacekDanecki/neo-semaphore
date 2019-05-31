@@ -261,9 +261,10 @@ TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenSubCaptureKeepsInactiveThenM
     EXPECT_TRUE(DebugManager.flags.MakeEachEnqueueBlocking.get());
     EXPECT_FALSE(DebugManager.flags.ForceCsrFlushing.get());
     EXPECT_FALSE(DebugManager.flags.ForceCsrReprogramming.get());
+    EXPECT_FALSE(DebugManager.flags.OmitTimestampPacketDependencies.get());
 }
 
-TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenSubCaptureGetsActiveThenDontMakeEachEnqueueBlockingAndForceCsrReprogramming) {
+TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenSubCaptureGetsActiveThenDontMakeEachEnqueueBlockingButForceCsrReprogrammingAndOmitTimestampPacketDependencies) {
     AubSubCaptureManagerMock aubSubCaptureManager("");
 
     DispatchInfo dispatchInfo;
@@ -279,6 +280,7 @@ TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenSubCaptureGetsActiveThenDont
     aubSubCaptureManager.activateSubCapture(multiDispatchInfo);
     EXPECT_FALSE(DebugManager.flags.ForceCsrFlushing.get());
     EXPECT_TRUE(DebugManager.flags.ForceCsrReprogramming.get());
+    EXPECT_TRUE(DebugManager.flags.OmitTimestampPacketDependencies.get());
     EXPECT_FALSE(DebugManager.flags.MakeEachEnqueueBlocking.get());
 }
 
@@ -298,6 +300,7 @@ TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenSubCaptureKeepsActiveThenDon
     aubSubCaptureManager.activateSubCapture(multiDispatchInfo);
     EXPECT_FALSE(DebugManager.flags.ForceCsrFlushing.get());
     EXPECT_FALSE(DebugManager.flags.ForceCsrReprogramming.get());
+    EXPECT_FALSE(DebugManager.flags.OmitTimestampPacketDependencies.get());
     EXPECT_FALSE(DebugManager.flags.MakeEachEnqueueBlocking.get());
 }
 
@@ -317,6 +320,7 @@ TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenSubCaptureGetsInactiveThenMa
     aubSubCaptureManager.activateSubCapture(multiDispatchInfo);
     EXPECT_TRUE(DebugManager.flags.ForceCsrFlushing.get());
     EXPECT_FALSE(DebugManager.flags.ForceCsrReprogramming.get());
+    EXPECT_FALSE(DebugManager.flags.OmitTimestampPacketDependencies.get());
     EXPECT_TRUE(DebugManager.flags.MakeEachEnqueueBlocking.get());
 }
 
@@ -545,4 +549,27 @@ TEST_F(AubSubCaptureTest, givenSubCaptureManagerInFilterModeWhenKernelNameIsSpec
     active = aubSubCaptureManager.activateSubCapture(multiDispatchInfo);
     EXPECT_FALSE(active);
     EXPECT_FALSE(aubSubCaptureManager.isSubCaptureActive());
+}
+
+TEST_F(AubSubCaptureTest, givenSubCaptureManagerWhenPublicInterfacIsCalledThenLockShouldBeAcquired) {
+    AubSubCaptureManagerMock aubSubCaptureManager("");
+    DispatchInfo dispatchInfo;
+    MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.push(dispatchInfo);
+
+    aubSubCaptureManager.isLocked = false;
+    aubSubCaptureManager.isSubCaptureEnabled();
+    EXPECT_TRUE(aubSubCaptureManager.isLocked);
+
+    aubSubCaptureManager.isLocked = false;
+    aubSubCaptureManager.disableSubCapture();
+    EXPECT_TRUE(aubSubCaptureManager.isLocked);
+
+    aubSubCaptureManager.isLocked = false;
+    aubSubCaptureManager.activateSubCapture(multiDispatchInfo);
+    EXPECT_TRUE(aubSubCaptureManager.isLocked);
+
+    aubSubCaptureManager.isLocked = false;
+    aubSubCaptureManager.getSubCaptureFileName(multiDispatchInfo);
+    EXPECT_TRUE(aubSubCaptureManager.isLocked);
 }

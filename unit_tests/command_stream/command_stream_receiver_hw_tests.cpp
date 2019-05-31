@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/helpers/ptr_math.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_queue/gpgpu_walker.h"
@@ -17,7 +18,6 @@
 #include "runtime/helpers/blit_commands_helper.h"
 #include "runtime/helpers/cache_policy.h"
 #include "runtime/helpers/preamble.h"
-#include "runtime/helpers/ptr_math.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -38,8 +38,10 @@
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_csr.h"
 #include "unit_tests/mocks/mock_event.h"
+#include "unit_tests/mocks/mock_internal_allocation_storage.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_submissions_aggregator.h"
+#include "unit_tests/mocks/mock_timestamp_container.h"
 #include "unit_tests/utilities/base_object_utils.h"
 
 #include "reg_configs_common.h"
@@ -229,7 +231,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverHwTest, WhenCommandStreamReceiv
 
 HWTEST_F(CommandStreamReceiverHwTest, WhenScratchSpaceIsNotRequiredThenScratchAllocationIsNotCreated) {
     auto commandStreamReceiver = std::make_unique<MockCsrHw<FamilyType>>(*pDevice->executionEnvironment);
-    auto scratchController = commandStreamReceiver->scratchSpaceController.get();
+    auto scratchController = commandStreamReceiver->getScratchSpaceController();
 
     bool stateBaseAddressDirty = false;
     bool cfeStateDirty = false;
@@ -241,7 +243,7 @@ HWTEST_F(CommandStreamReceiverHwTest, WhenScratchSpaceIsNotRequiredThenScratchAl
 
 HWTEST_F(CommandStreamReceiverHwTest, WhenScratchSpaceIsRequiredThenCorrectAddressIsReturned) {
     auto commandStreamReceiver = std::make_unique<MockCsrHw<FamilyType>>(*pDevice->executionEnvironment);
-    auto scratchController = commandStreamReceiver->scratchSpaceController.get();
+    auto scratchController = commandStreamReceiver->getScratchSpaceController();
 
     bool cfeStateDirty = false;
     bool stateBaseAddressDirty = false;
@@ -252,6 +254,14 @@ HWTEST_F(CommandStreamReceiverHwTest, WhenScratchSpaceIsRequiredThenCorrectAddre
     uint64_t expectedScratchAddress = 0xAAABBBCCCDDD000ull;
     scratchController->getScratchSpaceAllocation()->setCpuPtrAndGpuAddress(scratchController->getScratchSpaceAllocation()->getUnderlyingBuffer(), expectedScratchAddress);
     EXPECT_TRUE(UnitTestHelper<FamilyType>::evaluateGshAddressForScratchSpace((expectedScratchAddress - MemoryConstants::pageSize), scratchController->calculateNewGSH()));
+}
+
+HWTEST_F(CommandStreamReceiverHwTest, WhenScratchSpaceIsNotRequiredThenGshAddressZeroIsReturned) {
+    auto commandStreamReceiver = std::make_unique<MockCsrHw<FamilyType>>(*pDevice->executionEnvironment);
+    auto scratchController = commandStreamReceiver->getScratchSpaceController();
+
+    EXPECT_EQ(nullptr, scratchController->getScratchSpaceAllocation());
+    EXPECT_EQ(0u, scratchController->calculateNewGSH());
 }
 
 struct BcsTests : public CommandStreamReceiverHwTest {
@@ -275,34 +285,59 @@ struct BcsTests : public CommandStreamReceiverHwTest {
         CommandStreamReceiverHwTest::TearDown();
     }
 
+    CsrDependencies csrDependencies;
     std::unique_ptr<MockContext> context;
 };
 
 HWTEST_F(BcsTests, givenBltSizeWhenEstimatingCommandSizeThenAddAllRequiredCommands) {
-    uint64_t alignedBltSize = (3 * BlitterConstants::max2dBlitSize) + 1;
-    uint64_t notAlignedBltSize = (3 * BlitterConstants::max2dBlitSize);
-    uint32_t alignedNumberOfBlts = 4;
-    uint32_t notAlignedNumberOfBlts = 3;
+    constexpr auto max2DBlitSize = BlitterConstants::maxBlitWidth * BlitterConstants::maxBlitHeight;
+    uint64_t notAlignedBltSize = (3 * max2DBlitSize) + 1;
+    uint64_t alignedBltSize = (3 * max2DBlitSize);
+    uint32_t alignedNumberOfBlts = 3;
+    uint32_t notAlignedNumberOfBlts = 4;
 
     size_t expectedSize = sizeof(typename FamilyType::MI_FLUSH_DW) + sizeof(typename FamilyType::MI_BATCH_BUFFER_END);
 
     auto expectedAlignedSize = alignUp(expectedSize + (sizeof(typename FamilyType::XY_COPY_BLT) * alignedNumberOfBlts), MemoryConstants::cacheLineSize);
     auto expectedNotAlignedSize = alignUp(expectedSize + (sizeof(typename FamilyType::XY_COPY_BLT) * notAlignedNumberOfBlts), MemoryConstants::cacheLineSize);
 
-    auto alignedEstimatedSize = BlitCommandsHelper<FamilyType>::estimateBlitCommandsSize(alignedBltSize);
-    auto notAlignedEstimatedSize = BlitCommandsHelper<FamilyType>::estimateBlitCommandsSize(notAlignedBltSize);
+    auto alignedEstimatedSize = BlitCommandsHelper<FamilyType>::estimateBlitCommandsSize(alignedBltSize, csrDependencies);
+    auto notAlignedEstimatedSize = BlitCommandsHelper<FamilyType>::estimateBlitCommandsSize(notAlignedBltSize, csrDependencies);
 
     EXPECT_EQ(expectedAlignedSize, alignedEstimatedSize);
     EXPECT_EQ(expectedNotAlignedSize, notAlignedEstimatedSize);
 }
 
+HWTEST_F(BcsTests, givenBltSizeAndCsrDependenciesWhenEstimatingCommandSizeThenAddAllRequiredCommands) {
+    uint32_t numberOfBlts = 1;
+    size_t numberNodesPerContainer = 5;
+    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+
+    MockTimestampPacketContainer timestamp0(*csr.getTimestampPacketAllocator(), numberNodesPerContainer);
+    MockTimestampPacketContainer timestamp1(*csr.getTimestampPacketAllocator(), numberNodesPerContainer);
+    csrDependencies.push_back(&timestamp0);
+    csrDependencies.push_back(&timestamp1);
+
+    size_t expectedSize = sizeof(typename FamilyType::MI_FLUSH_DW) + sizeof(typename FamilyType::MI_BATCH_BUFFER_END) +
+                          (sizeof(typename FamilyType::XY_COPY_BLT) * numberOfBlts) +
+                          TimestampPacketHelper::getRequiredCmdStreamSize<FamilyType>(csrDependencies);
+
+    auto expectedAlignedSize = alignUp(expectedSize, MemoryConstants::cacheLineSize);
+
+    auto estimatedSize = BlitCommandsHelper<FamilyType>::estimateBlitCommandsSize(1, csrDependencies);
+
+    EXPECT_EQ(expectedAlignedSize, estimatedSize);
+}
+
 HWTEST_F(BcsTests, givenBltSizeWithLeftoverWhenDispatchedThenProgramAllRequiredCommands) {
     using MI_FLUSH_DW = typename FamilyType::MI_FLUSH_DW;
+    constexpr auto max2DBlitSize = BlitterConstants::maxBlitWidth * BlitterConstants::maxBlitHeight;
+
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     static_cast<OsAgnosticMemoryManager *>(csr.getMemoryManager())->turnOnFakingBigAllocations();
 
     uint32_t bltLeftover = 17;
-    uint64_t bltSize = (2 * BlitterConstants::max2dBlitSize) + bltLeftover;
+    uint64_t bltSize = (2 * max2DBlitSize) + bltLeftover;
     uint32_t numberOfBlts = 3;
 
     cl_int retVal = CL_SUCCESS;
@@ -311,8 +346,13 @@ HWTEST_F(BcsTests, givenBltSizeWithLeftoverWhenDispatchedThenProgramAllRequiredC
 
     uint32_t newTaskCount = 19;
     csr.taskCount = newTaskCount - 1;
-    csr.blitFromHostPtr(*buffer, hostPtr, bltSize);
+    EXPECT_EQ(0u, csr.recursiveLockCounter.load());
+    csr.blitWithHostPtr(*buffer, hostPtr, bltSize, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
     EXPECT_EQ(newTaskCount, csr.taskCount);
+    EXPECT_EQ(newTaskCount, csr.latestFlushedTaskCount);
+    EXPECT_EQ(newTaskCount, csr.latestSentTaskCount);
+    EXPECT_EQ(newTaskCount, csr.latestSentTaskCountValueDuringFlush);
+    EXPECT_EQ(1u, csr.recursiveLockCounter.load());
 
     HardwareParse hwParser;
     hwParser.parseCommands<FamilyType>(csr.commandStream);
@@ -328,13 +368,16 @@ HWTEST_F(BcsTests, givenBltSizeWithLeftoverWhenDispatchedThenProgramAllRequiredC
         EXPECT_EQ(0u, bltCmd->getDestinationY1CoordinateTop());
         EXPECT_EQ(0u, bltCmd->getSourceX1CoordinateLeft());
         EXPECT_EQ(0u, bltCmd->getSourceY1CoordinateTop());
+        uint32_t expectedWidth = static_cast<uint32_t>(BlitterConstants::maxBlitWidth);
+        uint32_t expectedHeight = static_cast<uint32_t>(BlitterConstants::maxBlitHeight);
         if (i == (numberOfBlts - 1)) {
-            EXPECT_EQ(bltLeftover, bltCmd->getDestinationX2CoordinateRight());
-            EXPECT_EQ(1u, bltCmd->getDestinationY2CoordinateBottom());
-        } else {
-            EXPECT_EQ(static_cast<uint32_t>(BlitterConstants::maxBlitWidth), bltCmd->getDestinationX2CoordinateRight());
-            EXPECT_EQ(static_cast<uint32_t>(BlitterConstants::maxBlitWidth), bltCmd->getDestinationY2CoordinateBottom());
+            expectedWidth = bltLeftover;
+            expectedHeight = 1;
         }
+        EXPECT_EQ(expectedWidth, bltCmd->getDestinationX2CoordinateRight());
+        EXPECT_EQ(expectedHeight, bltCmd->getDestinationY2CoordinateBottom());
+        EXPECT_EQ(expectedWidth, bltCmd->getDestinationPitch());
+        EXPECT_EQ(expectedWidth, bltCmd->getSourcePitch());
     }
 
     auto miFlushCmd = genCmdCast<MI_FLUSH_DW *>(*(cmdIterator++));
@@ -351,6 +394,50 @@ HWTEST_F(BcsTests, givenBltSizeWithLeftoverWhenDispatchedThenProgramAllRequiredC
     }
 }
 
+HWTEST_F(BcsTests, givenCsrDependenciesWhenProgrammingCommandStreamThenAddSemaphoreAndAtomic) {
+    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
+    void *hostPtr = reinterpret_cast<void *>(0x12340000);
+    uint32_t numberOfDependencyContainers = 2;
+    size_t numberNodesPerContainer = 5;
+
+    MockTimestampPacketContainer timestamp0(*csr.getTimestampPacketAllocator(), numberNodesPerContainer);
+    MockTimestampPacketContainer timestamp1(*csr.getTimestampPacketAllocator(), numberNodesPerContainer);
+    csrDependencies.push_back(&timestamp0);
+    csrDependencies.push_back(&timestamp1);
+
+    csr.blitWithHostPtr(*buffer, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
+
+    HardwareParse hwParser;
+    hwParser.parseCommands<FamilyType>(csr.commandStream);
+    auto &cmdList = hwParser.cmdList;
+    bool xyCopyBltCmdFound = false;
+    bool dependenciesFound = false;
+
+    for (auto cmdIterator = cmdList.begin(); cmdIterator != cmdList.end(); cmdIterator++) {
+        if (genCmdCast<typename FamilyType::XY_COPY_BLT *>(*cmdIterator)) {
+            xyCopyBltCmdFound = true;
+            continue;
+        }
+        auto miSemaphore = genCmdCast<typename FamilyType::MI_SEMAPHORE_WAIT *>(*cmdIterator);
+        if (miSemaphore) {
+            dependenciesFound = true;
+            EXPECT_FALSE(xyCopyBltCmdFound);
+            auto miAtomic = genCmdCast<typename FamilyType::MI_ATOMIC *>(*(++cmdIterator));
+            EXPECT_NE(nullptr, miAtomic);
+
+            for (uint32_t i = 1; i < numberOfDependencyContainers * numberNodesPerContainer; i++) {
+                EXPECT_NE(nullptr, genCmdCast<typename FamilyType::MI_SEMAPHORE_WAIT *>(*(++cmdIterator)));
+                EXPECT_NE(nullptr, genCmdCast<typename FamilyType::MI_ATOMIC *>(*(++cmdIterator)));
+            }
+        }
+    }
+    EXPECT_TRUE(xyCopyBltCmdFound);
+    EXPECT_TRUE(dependenciesFound);
+}
+
 HWTEST_F(BcsTests, givenInputAllocationsWhenBlitDispatchedThenMakeAllAllocationsResident) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.storeMakeResidentAllocations = true;
@@ -359,18 +446,149 @@ HWTEST_F(BcsTests, givenInputAllocationsWhenBlitDispatchedThenMakeAllAllocations
     auto buffer = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
     void *hostPtr = reinterpret_cast<void *>(0x12340000);
 
-    csr.blitFromHostPtr(*buffer, hostPtr, 1);
+    EXPECT_EQ(0u, csr.makeSurfacePackNonResidentCalled);
+
+    csr.blitWithHostPtr(*buffer, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
 
     EXPECT_TRUE(csr.isMadeResident(buffer->getGraphicsAllocation()));
     EXPECT_TRUE(csr.isMadeResident(csr.commandStream.getGraphicsAllocation()));
     EXPECT_TRUE(csr.isMadeResident(csr.getTagAllocation()));
+    EXPECT_EQ(1u, csr.makeSurfacePackNonResidentCalled);
 
-    bool hostPtrAllocationFound = false;
-    for (auto &allocation : csr.makeResidentAllocations) {
-        if (allocation.first->getUnderlyingBuffer() == hostPtr) {
-            hostPtrAllocationFound = true;
-            break;
+    EXPECT_EQ(4u, csr.makeResidentAllocations.size());
+}
+
+HWTEST_F(BcsTests, givenBufferWhenBlitCalledThenFlushCommandBuffer) {
+    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    csr.recordFlusheBatchBuffer = true;
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
+    void *hostPtr = reinterpret_cast<void *>(0x12340000);
+
+    auto &commandStream = csr.getCS(MemoryConstants::pageSize);
+    size_t commandStreamOffset = 4;
+    commandStream.getSpace(commandStreamOffset);
+
+    uint32_t newTaskCount = 17;
+    csr.taskCount = newTaskCount - 1;
+    csr.blitWithHostPtr(*buffer, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
+
+    EXPECT_EQ(commandStream.getGraphicsAllocation(), csr.latestFlushedBatchBuffer.commandBufferAllocation);
+    EXPECT_EQ(commandStreamOffset, csr.latestFlushedBatchBuffer.startOffset);
+    EXPECT_EQ(0u, csr.latestFlushedBatchBuffer.chainedBatchBufferStartOffset);
+    EXPECT_EQ(nullptr, csr.latestFlushedBatchBuffer.chainedBatchBuffer);
+    EXPECT_FALSE(csr.latestFlushedBatchBuffer.requiresCoherency);
+    EXPECT_FALSE(csr.latestFlushedBatchBuffer.low_priority);
+    EXPECT_EQ(QueueThrottle::MEDIUM, csr.latestFlushedBatchBuffer.throttle);
+    EXPECT_EQ(commandStream.getUsed(), csr.latestFlushedBatchBuffer.usedSize);
+    EXPECT_EQ(&commandStream, csr.latestFlushedBatchBuffer.stream);
+
+    EXPECT_EQ(newTaskCount, csr.latestWaitForCompletionWithTimeoutTaskCount.load());
+}
+
+HWTEST_F(BcsTests, whenBlitFromHostPtrCalledThenCallWaitWithKmdFallback) {
+    class MyMockCsr : public UltCommandStreamReceiver<FamilyType> {
+      public:
+        using UltCommandStreamReceiver<FamilyType>::UltCommandStreamReceiver;
+
+        void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait,
+                                                   bool useQuickKmdSleep, bool forcePowerSavingMode) override {
+            waitForTaskCountWithKmdNotifyFallbackCalled++;
+            taskCountToWaitPassed = taskCountToWait;
+            flushStampToWaitPassed = flushStampToWait;
+            useQuickKmdSleepPassed = useQuickKmdSleep;
+            forcePowerSavingModePassed = forcePowerSavingMode;
         }
+
+        uint32_t taskCountToWaitPassed = 0;
+        FlushStamp flushStampToWaitPassed = 0;
+        bool useQuickKmdSleepPassed = false;
+        bool forcePowerSavingModePassed = false;
+        uint32_t waitForTaskCountWithKmdNotifyFallbackCalled = 0;
+    };
+
+    auto myMockCsr = std::make_unique<::testing::NiceMock<MyMockCsr>>(*pDevice->getExecutionEnvironment());
+    auto &bcsOsContext = pDevice->getUltCommandStreamReceiver<FamilyType>().getOsContext();
+    myMockCsr->initializeTagAllocation();
+    myMockCsr->setupContext(bcsOsContext);
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
+    void *hostPtr = reinterpret_cast<void *>(0x12340000);
+
+    myMockCsr->blitWithHostPtr(*buffer, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
+
+    EXPECT_EQ(1u, myMockCsr->waitForTaskCountWithKmdNotifyFallbackCalled);
+    EXPECT_EQ(myMockCsr->taskCount, myMockCsr->taskCountToWaitPassed);
+    EXPECT_EQ(myMockCsr->flushStamp->peekStamp(), myMockCsr->flushStampToWaitPassed);
+    EXPECT_FALSE(myMockCsr->useQuickKmdSleepPassed);
+    EXPECT_FALSE(myMockCsr->forcePowerSavingModePassed);
+}
+
+HWTEST_F(BcsTests, whenBlitFromHostPtrCalledThenCleanTemporaryAllocations) {
+    auto &bcsCsr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    auto mockInternalAllocationsStorage = new MockInternalAllocationStorage(bcsCsr);
+    bcsCsr.internalAllocationStorage.reset(mockInternalAllocationsStorage);
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
+    void *hostPtr = reinterpret_cast<void *>(0x12340000);
+
+    uint32_t newTaskCount = 17;
+    bcsCsr.taskCount = newTaskCount - 1;
+
+    EXPECT_EQ(0u, mockInternalAllocationsStorage->cleanAllocationsCalled);
+    bcsCsr.blitWithHostPtr(*buffer, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
+    EXPECT_EQ(1u, mockInternalAllocationsStorage->cleanAllocationsCalled);
+    EXPECT_EQ(newTaskCount, mockInternalAllocationsStorage->lastCleanAllocationsTaskCount);
+    EXPECT_TRUE(TEMPORARY_ALLOCATION == mockInternalAllocationsStorage->lastCleanAllocationUsage);
+}
+
+HWTEST_F(BcsTests, givenBufferWhenBlitOperationCalledThenProgramCorrectGpuAddresses) {
+    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer1 = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
+    auto buffer2 = clUniquePtr<Buffer>(Buffer::create(context.get(), CL_MEM_READ_WRITE, 1, nullptr, retVal));
+    void *hostPtr = reinterpret_cast<void *>(0x12340000);
+
+    {
+        // from hostPtr
+        HardwareParse hwParser;
+        csr.blitWithHostPtr(*buffer1, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::FromHostPtr, csrDependencies);
+
+        hwParser.parseCommands<FamilyType>(csr.commandStream);
+
+        auto bltCmd = genCmdCast<typename FamilyType::XY_COPY_BLT *>(*hwParser.cmdList.begin());
+        EXPECT_NE(nullptr, bltCmd);
+        EXPECT_EQ(reinterpret_cast<uint64_t>(hostPtr), bltCmd->getSourceBaseAddress());
+        EXPECT_EQ(buffer1->getGraphicsAllocation()->getGpuAddress(), bltCmd->getDestinationBaseAddress());
     }
-    EXPECT_TRUE(hostPtrAllocationFound);
+    {
+        // to hostPtr
+        HardwareParse hwParser;
+        auto offset = csr.commandStream.getUsed();
+        csr.blitWithHostPtr(*buffer1, hostPtr, 1, BlitterConstants::BlitWithHostPtrDirection::ToHostPtr, csrDependencies);
+
+        hwParser.parseCommands<FamilyType>(csr.commandStream, offset);
+
+        auto bltCmd = genCmdCast<typename FamilyType::XY_COPY_BLT *>(*hwParser.cmdList.begin());
+        EXPECT_NE(nullptr, bltCmd);
+        EXPECT_EQ(reinterpret_cast<uint64_t>(hostPtr), bltCmd->getDestinationBaseAddress());
+        EXPECT_EQ(buffer1->getGraphicsAllocation()->getGpuAddress(), bltCmd->getSourceBaseAddress());
+    }
+    {
+        // Buffer to Buffer
+        HardwareParse hwParser;
+        auto offset = csr.commandStream.getUsed();
+        csr.blitBuffer(*buffer1, *buffer2, 1, csrDependencies);
+
+        hwParser.parseCommands<FamilyType>(csr.commandStream, offset);
+
+        auto bltCmd = genCmdCast<typename FamilyType::XY_COPY_BLT *>(*hwParser.cmdList.begin());
+        EXPECT_NE(nullptr, bltCmd);
+        EXPECT_EQ(buffer1->getGraphicsAllocation()->getGpuAddress(), bltCmd->getDestinationBaseAddress());
+        EXPECT_EQ(buffer2->getGraphicsAllocation()->getGpuAddress(), bltCmd->getSourceBaseAddress());
+    }
 }
