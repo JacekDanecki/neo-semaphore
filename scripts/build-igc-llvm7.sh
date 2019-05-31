@@ -38,7 +38,7 @@ cd ..
 
 mkdir build
 cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DIGC_OPTION__OUTPUT_DIR=../igc-install/Release -DVME_TYPES_DEFINED=FALSE -DCMAKE_INSTALL_PREFIX:PATH='/usr' -Wno-dev ../igc
+cmake -DCMAKE_BUILD_TYPE=Release -DIGC_OPTION__OUTPUT_DIR=../igc-install/Release -DCOMMON_CLANG_LIBRARY_NAME=opencl_clang -DVME_TYPES_DEFINED=FALSE -DCMAKE_INSTALL_PREFIX:PATH='/usr' -Wno-dev ../igc
 make -j`nproc`
 make install
 cd ..
