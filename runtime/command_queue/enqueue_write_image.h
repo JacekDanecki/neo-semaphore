@@ -10,7 +10,7 @@
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/helpers/kernel_commands.h"
+#include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
@@ -45,25 +45,8 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteImage(
         isMemTransferNeeded = dstImage->checkIfMemoryTransferIsRequired(hostOffset, 0, ptr, CL_COMMAND_WRITE_IMAGE);
     }
     if (!isMemTransferNeeded) {
-        NullSurface s;
-        Surface *surfaces[] = {&s};
-        enqueueHandler<CL_COMMAND_MARKER>(
-            surfaces,
-            blockingWrite == CL_TRUE,
-            di,
-            numEventsInWaitList,
-            eventWaitList,
-            event);
-        if (event) {
-            auto pEvent = castToObjectOrAbort<Event>(*event);
-            pEvent->setCmdType(CL_COMMAND_WRITE_IMAGE);
-        }
-
-        if (context->isProvidingPerformanceHints()) {
-            context->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_GOOD_INTEL, CL_ENQUEUE_WRITE_IMAGE_DOESNT_REQUIRES_COPY_DATA, static_cast<cl_mem>(dstImage));
-        }
-
-        return CL_SUCCESS;
+        return enqueueMarkerForReadWriteOperation(dstImage, const_cast<void *>(ptr), CL_COMMAND_WRITE_IMAGE, blockingWrite,
+                                                  numEventsInWaitList, eventWaitList, event);
     }
     auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToImage3d,
                                                                                                         this->getContext(), this->getDevice());
@@ -106,7 +89,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteImage(
     dc.dstMemObj = dstImage;
     dc.dstOffset = origin;
     dc.size = region;
-    dc.dstRowPitch = inputRowPitch;
+    dc.dstRowPitch = ((dstImage->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY) && (inputSlicePitch > inputRowPitch)) ? inputSlicePitch : inputRowPitch;
     dc.dstSlicePitch = inputSlicePitch;
     if (dstImage->getImageDesc().num_mip_levels > 0) {
         dc.dstMipLevel = findMipLevel(dstImage->getImageDesc().image_type, origin);

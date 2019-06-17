@@ -107,12 +107,22 @@ class Context : public BaseObject<_cl_context> {
         }
     }
 
+    template <typename... Args>
+    void providePerformanceHintForMemoryTransfer(cl_command_type commandType, bool transferRequired, Args &&... args) {
+        cl_diagnostics_verbose_level verboseLevel = transferRequired ? CL_CONTEXT_DIAGNOSTICS_LEVEL_BAD_INTEL
+                                                                     : CL_CONTEXT_DIAGNOSTICS_LEVEL_GOOD_INTEL;
+        PerformanceHints hint = driverDiagnostics->obtainHintForTransferOperation(commandType, transferRequired);
+
+        providePerformanceHint(verboseLevel, hint, args...);
+    }
+
     cl_bool isProvidingPerformanceHints() const {
         return driverDiagnostics != nullptr;
     }
 
     bool getInteropUserSyncEnabled() { return interopUserSync; }
     void setInteropUserSyncEnabled(bool enabled) { interopUserSync = enabled; }
+    bool areMultiStorageAllocationsPreffered();
 
     ContextType peekContextType() { return this->contextType; }
 

@@ -13,7 +13,7 @@
 #include "runtime/context/context.h"
 #include "runtime/event/event.h"
 #include "runtime/helpers/cache_policy.h"
-#include "runtime/helpers/kernel_commands.h"
+#include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
@@ -53,25 +53,8 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadImage(
         isMemTransferNeeded = srcImage->checkIfMemoryTransferIsRequired(hostOffset, 0, ptr, CL_COMMAND_READ_IMAGE);
     }
     if (!isMemTransferNeeded) {
-        NullSurface s;
-        Surface *surfaces[] = {&s};
-        enqueueHandler<CL_COMMAND_MARKER>(
-            surfaces,
-            blockingRead == CL_TRUE,
-            di,
-            numEventsInWaitList,
-            eventWaitList,
-            event);
-        if (event) {
-            auto pEvent = castToObjectOrAbort<Event>(*event);
-            pEvent->setCmdType(CL_COMMAND_READ_IMAGE);
-        }
-
-        if (context->isProvidingPerformanceHints()) {
-            context->providePerformanceHint(CL_CONTEXT_DIAGNOSTICS_LEVEL_GOOD_INTEL, CL_ENQUEUE_READ_IMAGE_DOESNT_REQUIRES_COPY_DATA, static_cast<cl_mem>(srcImage));
-        }
-
-        return CL_SUCCESS;
+        return enqueueMarkerForReadWriteOperation(srcImage, ptr, CL_COMMAND_READ_IMAGE, blockingRead,
+                                                  numEventsInWaitList, eventWaitList, event);
     }
 
     auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImage3dToBuffer,
@@ -115,7 +98,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadImage(
     dc.dstOffset.x = dstPtrOffset;
     dc.srcOffset = origin;
     dc.size = region;
-    dc.srcRowPitch = inputRowPitch;
+    dc.srcRowPitch = (srcImage->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY) ? inputSlicePitch : inputRowPitch;
     dc.srcSlicePitch = inputSlicePitch;
     if (srcImage->getImageDesc().num_mip_levels > 0) {
         dc.srcMipLevel = findMipLevel(srcImage->getImageDesc().image_type, origin);

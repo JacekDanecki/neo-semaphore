@@ -34,6 +34,7 @@ constexpr auto nonSharedResource = 0u;
 }
 
 class Gmm;
+class MemoryManager;
 struct AllocationProperties;
 
 class GraphicsAllocation : public IDNode<GraphicsAllocation> {
@@ -166,12 +167,14 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
     bool isResidencyTaskCountBelow(uint32_t taskCount, uint32_t contextId) const { return !isResident(contextId) || getResidencyTaskCount(contextId) < taskCount; }
 
     virtual std::string getAllocationInfoString() const;
+    virtual uint64_t peekInternalHandle(MemoryManager *memoryManager) { return 0llu; }
 
     static bool isCpuAccessRequired(AllocationType allocationType) {
-        return allocationType == AllocationType::LINEAR_STREAM ||
+        return allocationType == AllocationType::COMMAND_BUFFER ||
+               allocationType == AllocationType::CONSTANT_SURFACE ||
                allocationType == AllocationType::INTERNAL_HEAP ||
-               allocationType == AllocationType::TIMESTAMP_PACKET_TAG_BUFFER ||
-               allocationType == AllocationType::COMMAND_BUFFER;
+               allocationType == AllocationType::LINEAR_STREAM ||
+               allocationType == AllocationType::TIMESTAMP_PACKET_TAG_BUFFER;
     }
     void *getReservedAddressPtr() const {
         return this->reservedAddressRangeInfo.addressPtr;
@@ -197,6 +200,7 @@ class GraphicsAllocation : public IDNode<GraphicsAllocation> {
         gmms[handleId] = gmm;
     }
     uint32_t getNumHandles() const { return storageInfo.getNumHandles(); }
+    uint32_t getUsedPageSize() const;
 
     OsHandleStorage fragmentsStorage;
     StorageInfo storageInfo = {};

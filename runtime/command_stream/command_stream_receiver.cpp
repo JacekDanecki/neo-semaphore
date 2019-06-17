@@ -237,6 +237,17 @@ void CommandStreamReceiver::initProgrammingFlags() {
     latestSentStatelessMocsConfig = 0;
 }
 
+void CommandStreamReceiver::programForAubSubCapture(bool wasActiveInPreviousEnqueue, bool isActive) {
+    if (!wasActiveInPreviousEnqueue && isActive) {
+        // force CSR reprogramming upon subcapture activation
+        this->initProgrammingFlags();
+    }
+    if (wasActiveInPreviousEnqueue && !isActive) {
+        // flush BB upon subcapture deactivation
+        this->flushBatchedSubmissions();
+    }
+}
+
 ResidencyContainer &CommandStreamReceiver::getResidencyAllocations() {
     return this->residencyAllocations;
 }
@@ -245,7 +256,7 @@ ResidencyContainer &CommandStreamReceiver::getEvictionAllocations() {
     return this->evictionAllocations;
 }
 
-void CommandStreamReceiver::activateAubSubCapture(const MultiDispatchInfo &dispatchInfo) {}
+AubSubCaptureStatus CommandStreamReceiver::checkAndActivateAubSubCapture(const MultiDispatchInfo &dispatchInfo) { return {false, false}; }
 
 void CommandStreamReceiver::addAubComment(const char *comment) {}
 
@@ -357,7 +368,7 @@ AllocationsList &CommandStreamReceiver::getAllocationsForReuse() { return intern
 
 bool CommandStreamReceiver::createAllocationForHostSurface(HostPtrSurface &surface, bool requiresL3Flush) {
     auto memoryManager = getMemoryManager();
-    AllocationProperties properties{false, surface.getSurfaceSize(), GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR};
+    AllocationProperties properties{false, surface.getSurfaceSize(), GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR, false};
     properties.flags.flushL3RequiredForRead = properties.flags.flushL3RequiredForWrite = requiresL3Flush;
     auto allocation = memoryManager->allocateGraphicsMemoryWithProperties(properties, surface.getMemoryPointer());
     if (allocation == nullptr && surface.peekIsPtrCopyAllowed()) {
@@ -407,22 +418,23 @@ cl_int CommandStreamReceiver::expectMemory(const void *gfxAddress, const void *s
     return (isMemoryEqual == isEqualMemoryExpected) ? CL_SUCCESS : CL_INVALID_VALUE;
 }
 
-void CommandStreamReceiver::blitWithHostPtr(Buffer &buffer, void *hostPtr, uint64_t hostPtrSize,
-                                            BlitterConstants::BlitWithHostPtrDirection copyDirection, CsrDependencies &csrDependencies) {
-    HostPtrSurface hostPtrSurface(hostPtr, static_cast<size_t>(hostPtrSize), true);
+void CommandStreamReceiver::blitWithHostPtr(Buffer &buffer, void *hostPtr, bool blocking, size_t bufferOffset, uint64_t copySize,
+                                            BlitterConstants::BlitWithHostPtrDirection copyDirection, CsrDependencies &csrDependencies,
+                                            const TimestampPacketContainer &outputTimestampPacket) {
+    HostPtrSurface hostPtrSurface(hostPtr, static_cast<size_t>(copySize), true);
     bool success = createAllocationForHostSurface(hostPtrSurface, false);
     UNRECOVERABLE_IF(!success);
     auto hostPtrAllocation = hostPtrSurface.getAllocation();
 
     auto device = buffer.getContext()->getDevice(0);
-    auto hostPtrBuffer = std::unique_ptr<Buffer>(Buffer::createBufferHwFromDevice(device, CL_MEM_READ_ONLY, static_cast<size_t>(hostPtrSize),
+    auto hostPtrBuffer = std::unique_ptr<Buffer>(Buffer::createBufferHwFromDevice(device, CL_MEM_READ_WRITE, static_cast<size_t>(copySize),
                                                                                   hostPtr, hostPtr, hostPtrAllocation,
                                                                                   true, false, true));
 
     if (BlitterConstants::BlitWithHostPtrDirection::FromHostPtr == copyDirection) {
-        blitBuffer(buffer, *hostPtrBuffer, hostPtrSize, csrDependencies);
+        blitBuffer(buffer, *hostPtrBuffer, blocking, bufferOffset, 0, copySize, csrDependencies, outputTimestampPacket);
     } else {
-        blitBuffer(*hostPtrBuffer, buffer, hostPtrSize, csrDependencies);
+        blitBuffer(*hostPtrBuffer, buffer, blocking, 0, bufferOffset, copySize, csrDependencies, outputTimestampPacket);
     }
 }
 } // namespace NEO

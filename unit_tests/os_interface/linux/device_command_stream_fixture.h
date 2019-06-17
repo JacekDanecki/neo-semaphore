@@ -80,11 +80,13 @@ class DrmMockCustom : public Drm {
             gemSetTiling = 0;
             gemGetTiling = 0;
             primeFdToHandle = 0;
+            handleToPrimeFd = 0;
             gemMmap = 0;
             gemSetDomain = 0;
             gemWait = 0;
             gemClose = 0;
             regRead = 0;
+            getParam = 0;
             contextGetParam = 0;
             contextCreate = 0;
             contextDestroy = 0;
@@ -97,11 +99,13 @@ class DrmMockCustom : public Drm {
         std::atomic<int32_t> gemSetTiling;
         std::atomic<int32_t> gemGetTiling;
         std::atomic<int32_t> primeFdToHandle;
+        std::atomic<int32_t> handleToPrimeFd;
         std::atomic<int32_t> gemMmap;
         std::atomic<int32_t> gemSetDomain;
         std::atomic<int32_t> gemWait;
         std::atomic<int32_t> gemClose;
         std::atomic<int32_t> regRead;
+        std::atomic<int32_t> getParam;
         std::atomic<int32_t> contextGetParam;
         std::atomic<int32_t> contextCreate;
         std::atomic<int32_t> contextDestroy;
@@ -126,11 +130,13 @@ class DrmMockCustom : public Drm {
         NEO_IOCTL_EXPECT_EQ(gemSetTiling);
         NEO_IOCTL_EXPECT_EQ(gemGetTiling);
         NEO_IOCTL_EXPECT_EQ(primeFdToHandle);
+        NEO_IOCTL_EXPECT_EQ(handleToPrimeFd);
         NEO_IOCTL_EXPECT_EQ(gemMmap);
         NEO_IOCTL_EXPECT_EQ(gemSetDomain);
         NEO_IOCTL_EXPECT_EQ(gemWait);
         NEO_IOCTL_EXPECT_EQ(gemClose);
         NEO_IOCTL_EXPECT_EQ(regRead);
+        NEO_IOCTL_EXPECT_EQ(getParam);
         NEO_IOCTL_EXPECT_EQ(contextGetParam);
         NEO_IOCTL_EXPECT_EQ(contextCreate);
         NEO_IOCTL_EXPECT_EQ(contextDestroy);
@@ -153,6 +159,10 @@ class DrmMockCustom : public Drm {
     //DRM_IOCTL_PRIME_FD_TO_HANDLE
     __u32 outputHandle = 0;
     __s32 inputFd = 0;
+    //DRM_IOCTL_PRIME_HANDLE_TO_FD
+    __u32 inputHandle = 0;
+    __s32 outputFd = 0;
+    __s32 inputFlags = 0;
     //DRM_IOCTL_I915_GEM_USERPTR
     __u32 returnHandle = 0;
     //DRM_IOCTL_I915_GEM_MMAP
@@ -166,6 +176,9 @@ class DrmMockCustom : public Drm {
     __u32 setDomainHandle = 0;
     __u32 setDomainReadDomains = 0;
     __u32 setDomainWriteDomain = 0;
+    //DRM_IOCTL_I915_GETPARAM
+    drm_i915_getparam_t recordedGetParam = {0};
+    int getParamRetValue = 0;
     //DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM
     drm_i915_gem_context_param recordedGetContextParam = {0};
     __u64 getContextParamRetValue = 0;
@@ -216,6 +229,14 @@ class DrmMockCustom : public Drm {
             inputFd = primeToHandleParams->fd;
             ioctl_cnt.primeFdToHandle++;
         } break;
+        case DRM_IOCTL_PRIME_HANDLE_TO_FD: {
+            auto *handleToPrimeParams = (drm_prime_handle *)arg;
+            //return FD
+            inputHandle = handleToPrimeParams->handle;
+            inputFlags = handleToPrimeParams->flags;
+            handleToPrimeParams->fd = outputFd;
+            ioctl_cnt.handleToPrimeFd++;
+        } break;
         case DRM_IOCTL_I915_GEM_MMAP: {
             auto mmapParams = (drm_i915_gem_mmap *)arg;
             mmapHandle = mmapParams->handle;
@@ -245,6 +266,13 @@ class DrmMockCustom : public Drm {
         case DRM_IOCTL_I915_REG_READ:
             ioctl_cnt.regRead++;
             break;
+
+        case DRM_IOCTL_I915_GETPARAM: {
+            ioctl_cnt.contextGetParam++;
+            auto getParam = (drm_i915_getparam_t *)arg;
+            recordedGetParam = *getParam;
+            *getParam->value = getParamRetValue;
+        } break;
 
         case DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM: {
             ioctl_cnt.contextGetParam++;

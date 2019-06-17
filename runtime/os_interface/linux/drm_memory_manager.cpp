@@ -38,6 +38,7 @@ DrmMemoryManager::DrmMemoryManager(gemCloseWorkerMode mode,
                                                                                  pinBB(nullptr),
                                                                                  forcePinEnabled(forcePinAllowed),
                                                                                  validateHostPtrMemory(validateHostPtrMemory) {
+    supportsMultiStorageResources = false;
     gfxPartition.init(platformDevices[0]->capabilityTable.gpuAddressSpace);
     MemoryManager::virtualPaddingAvailable = true;
     if (mode != gemCloseWorkerMode::gemCloseWorkerInactive) {
@@ -520,7 +521,7 @@ GraphicsAllocation *DrmMemoryManager::createGraphicsAllocationFromSharedHandle(o
         ((void)(ret));
 
         properties.imgInfo->tilingMode = TilingModeHelper::convert(getTiling.tiling_mode);
-        Gmm *gmm = new Gmm(*properties.imgInfo);
+        Gmm *gmm = new Gmm(*properties.imgInfo, createStorageInfoFromProperties(properties));
         drmAllocation->setDefaultGmm(gmm);
     }
     return drmAllocation;
@@ -767,5 +768,15 @@ void *DrmMemoryManager::reserveCpuAddressRange(size_t size) {
 
 void DrmMemoryManager::releaseReservedCpuAddressRange(void *reserved, size_t size) {
     munmapFunction(reserved, size);
+}
+int DrmMemoryManager::obtainFdFromHandle(int boHandle) {
+    drm_prime_handle openFd = {0, 0, 0};
+
+    openFd.flags = DRM_CLOEXEC | DRM_RDWR;
+    openFd.handle = boHandle;
+
+    drm->ioctl(DRM_IOCTL_PRIME_HANDLE_TO_FD, &openFd);
+
+    return openFd.fd;
 }
 } // namespace NEO

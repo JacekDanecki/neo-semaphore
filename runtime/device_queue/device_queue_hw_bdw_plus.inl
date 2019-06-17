@@ -126,7 +126,7 @@ void DeviceQueueHw<GfxFamily>::addMediaStateClearCmds() {
 
     addDcFlushToPipeControlWa(pipeControl);
 
-    PreambleHelper<GfxFamily>::programVFEState(&slbCS, device->getHardwareInfo(), 0, 0);
+    PreambleHelper<GfxFamily>::programVFEState(&slbCS, device->getHardwareInfo(), 0, 0, device->getDeviceInfo().maxFrontEndThreads);
 }
 
 template <typename GfxFamily>
@@ -184,7 +184,7 @@ void DeviceQueueHw<GfxFamily>::setupIndirectState(IndirectHeap &surfaceStateHeap
 
         totalBlockSSHSize += alignUp(pBlockInfo->heapInfo.pKernelHeader->SurfaceStateHeapSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
 
-        auto btOffset = KernelCommandsHelper<GfxFamily>::pushBindingTableAndSurfaceStates(surfaceStateHeap, *pBlockInfo);
+        auto btOffset = HardwareCommandsHelper<GfxFamily>::pushBindingTableAndSurfaceStates(surfaceStateHeap, *pBlockInfo);
 
         parentKernel->setReflectionSurfaceBlockBtOffset(i, static_cast<uint32_t>(btOffset));
 

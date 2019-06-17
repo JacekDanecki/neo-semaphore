@@ -70,7 +70,8 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
         return CommandStreamReceiverType::CSR_HW;
     }
 
-    void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, uint64_t sourceSize, CsrDependencies &csrDependencies) override;
+    void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, bool blocking, uint64_t dstOffset, uint64_t srcOffset,
+                    uint64_t copySize, CsrDependencies &csrDependencies, const TimestampPacketContainer &outputTimestampPacket) override;
 
   protected:
     using CommandStreamReceiver::osContext;
@@ -81,7 +82,7 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     void programPipelineSelect(LinearStream &csr, DispatchFlags &dispatchFlags);
     void programMediaSampler(LinearStream &csr, DispatchFlags &dispatchFlags);
     void programStateSip(LinearStream &cmdStream, Device &device);
-    void programVFEState(LinearStream &csr, DispatchFlags &dispatchFlags);
+    void programVFEState(LinearStream &csr, DispatchFlags &dispatchFlags, uint32_t maxFrontEndThreads);
     virtual void initPageTableManagerRegisters(LinearStream &csr){};
 
     void addClearSLMWorkAround(typename GfxFamily::PIPE_CONTROL *pCmd);

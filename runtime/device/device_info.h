@@ -118,6 +118,7 @@ struct DeviceInfo {
     cl_uint                      preferredLocalAtomicAlignment;
     cl_bool                      hostUnifiedMemory;
     uint32_t                     computeUnitsUsedForScratch;
+    uint32_t                     maxFrontEndThreads;
     cl_bool                      vmeAvcSupportsPreemption;
     cl_bool                      vmeAvcSupportsTextureSampler;
     cl_uint                      vmeAvcVersion;
@@ -129,7 +130,6 @@ struct DeviceInfo {
     bool                         nv12Extension;
     bool                         vmeExtension;
     bool                         platformLP;
-    bool                         cpuCopyAllowed;
     bool                         packedYuvExtension;
     bool                         sourceLevelDebuggerActive;
 };

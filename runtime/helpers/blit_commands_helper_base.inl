@@ -10,7 +10,7 @@
 namespace NEO {
 
 template <typename GfxFamily>
-size_t BlitCommandsHelper<GfxFamily>::estimateBlitCommandsSize(uint64_t copySize, CsrDependencies &csrDependencies) {
+size_t BlitCommandsHelper<GfxFamily>::estimateBlitCommandsSize(uint64_t copySize, CsrDependencies &csrDependencies, bool updateTimestampPacket) {
     size_t numberOfBlits = 0;
     uint64_t sizeToBlit = copySize;
     uint64_t width = 1;
@@ -33,14 +33,15 @@ size_t BlitCommandsHelper<GfxFamily>::estimateBlitCommandsSize(uint64_t copySize
     size_t size = TimestampPacketHelper::getRequiredCmdStreamSize<GfxFamily>(csrDependencies) +
                   (sizeof(typename GfxFamily::XY_COPY_BLT) * numberOfBlits) +
                   sizeof(typename GfxFamily::MI_FLUSH_DW) +
+                  (sizeof(typename GfxFamily::MI_FLUSH_DW) * static_cast<size_t>(updateTimestampPacket)) +
                   sizeof(typename GfxFamily::MI_BATCH_BUFFER_END);
 
     return alignUp(size, MemoryConstants::cacheLineSize);
 }
 
 template <typename GfxFamily>
-void BlitCommandsHelper<GfxFamily>::dispatchBlitCommandsForBuffer(Buffer &dstBuffer, Buffer &srcBuffer,
-                                                                  LinearStream &linearStream, uint64_t copySize) {
+void BlitCommandsHelper<GfxFamily>::dispatchBlitCommandsForBuffer(Buffer &dstBuffer, Buffer &srcBuffer, LinearStream &linearStream,
+                                                                  uint64_t dstOffset, uint64_t srcOffset, uint64_t copySize) {
     uint64_t sizeToBlit = copySize;
     uint64_t width = 1;
     uint64_t height = 1;
@@ -71,8 +72,8 @@ void BlitCommandsHelper<GfxFamily>::dispatchBlitCommandsForBuffer(Buffer &dstBuf
         bltCmd->setDestinationPitch(static_cast<uint32_t>(width));
         bltCmd->setSourcePitch(static_cast<uint32_t>(width));
 
-        bltCmd->setDestinationBaseAddress(dstBuffer.getGraphicsAllocation()->getGpuAddress() + offset);
-        bltCmd->setSourceBaseAddress(srcBuffer.getGraphicsAllocation()->getGpuAddress() + offset);
+        bltCmd->setDestinationBaseAddress(dstBuffer.getGraphicsAllocation()->getGpuAddress() + dstOffset + offset);
+        bltCmd->setSourceBaseAddress(srcBuffer.getGraphicsAllocation()->getGpuAddress() + srcOffset + offset);
 
         appendBlitCommandsForBuffer(dstBuffer, srcBuffer, *bltCmd);
 
