@@ -30,7 +30,7 @@ GLKTEST_F(Gen9DeviceCaps, GlkClVersionSupport) {
 GLKTEST_F(Gen9DeviceCaps, GlkIs32BitOsAllocatorAvailable) {
     const auto &caps = pDevice->getDeviceInfo();
     auto memoryManager = pDevice->getMemoryManager();
-    if (is32BitOsAllocatorAvailable) {
+    if (is64bit) {
         EXPECT_TRUE(memoryManager->peekForce32BitAllocations());
         EXPECT_TRUE(caps.force32BitAddressess);
     } else {
@@ -58,4 +58,8 @@ GLKTEST_F(GlkUsDeviceIdTest, isSimulationCap) {
 
 GLKTEST_F(GlkUsDeviceIdTest, GivenGLKWhenCheckftr64KBpagesThenFalse) {
     EXPECT_FALSE(pDevice->getHardwareInfo().capabilityTable.ftr64KBpages);
+}
+
+GLKTEST_F(GlkUsDeviceIdTest, givenGlkWhenCheckFtrSupportsInteger64BitAtomicsThenReturnFalse) {
+    EXPECT_FALSE(pDevice->getHardwareInfo().capabilityTable.ftrSupportsInteger64BitAtomics);
 }

@@ -5,15 +5,17 @@
  *
  */
 
+#include "core/helpers/file_io.h"
+#include "core/helpers/hash.h"
+#include "core/helpers/string.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
+#include "core/unit_tests/utilities/base_object_utils.h"
 #include "runtime/built_ins/aux_translation_builtin.h"
 #include "runtime/built_ins/built_ins.h"
-#include "runtime/built_ins/built_ins.inl"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/built_ins/vme_dispatch_builder.h"
+#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/dispatch_info_builder.h"
-#include "runtime/helpers/file_io.h"
-#include "runtime/helpers/hash.h"
-#include "runtime/helpers/string.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "test.h"
@@ -23,13 +25,11 @@
 #include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/fixtures/run_kernel_fixture.h"
 #include "unit_tests/global_environment.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_builtins.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_compilers.h"
 #include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/utilities/base_object_utils.h"
 
 #include "gtest/gtest.h"
 #include "os_inc.h"
@@ -69,15 +69,14 @@ class BuiltInTests
     }
 
     void AppendBuiltInStringFromFile(std::string builtInFile, size_t &size) {
-        void *pData = nullptr;
         std::string src;
-        size = loadDataFromFile(
+        auto pData = loadDataFromFile(
             builtInFile.c_str(),
-            pData);
+            size);
 
         ASSERT_NE(nullptr, pData);
 
-        src = (const char *)pData;
+        src = (const char *)pData.get();
         size_t start = src.find("R\"===(");
         size_t stop = src.find(")===\"");
 
@@ -88,10 +87,29 @@ class BuiltInTests
         start += strlen("R\"===(");
         size = stop - start;
         allBuiltIns.append(src, start, size);
-        deleteDataReadFromFile(pData);
+    }
+
+    bool compareBultinOpParams(const BuiltinOpParams &left,
+                               const BuiltinOpParams &right) {
+        return left.srcPtr == right.srcPtr &&
+               left.dstPtr == right.dstPtr &&
+               left.size == right.size &&
+               left.srcOffset == right.srcOffset &&
+               left.dstOffset == right.dstOffset &&
+               left.dstMemObj == right.dstMemObj &&
+               left.srcMemObj == right.srcMemObj;
     }
 
     std::string allBuiltIns;
+};
+
+struct VmeBuiltInTests : BuiltInTests {
+    void SetUp() override {
+        BuiltInTests::SetUp();
+        if (!pDevice->getHardwareInfo().capabilityTable.supportsVme) {
+            GTEST_SKIP();
+        }
+    }
 };
 
 TEST_F(BuiltInTests, SourceConsistency) {
@@ -183,7 +201,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBuffer) {
     MockBuffer &dst = *dstPtr;
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
 
     builtinOpsParams.srcMemObj = &src;
     builtinOpsParams.dstMemObj = &dst;
@@ -231,13 +249,14 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBuffer) {
         }
         i++;
     }
-
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     delete srcPtr;
     delete dstPtr;
 }
 
-TEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTranslationThenPickAndSetupCorrectKernels) {
-    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTranslationThenPickAndSetupCorrectKernels) {
+    BuiltinDispatchInfoBuilder &baseBuilder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+    auto &builder = static_cast<BuiltInOp<EBuiltInOps::AuxTranslation> &>(baseBuilder);
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     MultiDispatchInfo multiDispatchInfo;
@@ -247,7 +266,7 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTransla
     mockBuffer[1].getGraphicsAllocation()->setSize(0x20000);
     mockBuffer[2].getGraphicsAllocation()->setSize(0x30000);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
     builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
 
@@ -255,7 +274,7 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTransla
         memObjsForAuxTranslation.insert(&buffer);
     }
 
-    EXPECT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, builtinOpsParams));
+    EXPECT_TRUE(builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams));
     EXPECT_EQ(3u, multiDispatchInfo.size());
 
     for (auto &dispatchInfo : multiDispatchInfo) {
@@ -266,17 +285,15 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTransla
         memObjsForAuxTranslation.erase(buffer);
 
         cl_mem clMem = buffer;
-        void *gpuAddress = reinterpret_cast<void *>(buffer->getGraphicsAllocation()->getGpuAddress());
         EXPECT_EQ(clMem, kernel->getKernelArguments().at(0).object);
-        EXPECT_EQ(gpuAddress, kernel->getKernelArguments().at(1).value);
-        EXPECT_EQ(nullptr, kernel->getKernelArguments().at(1).object);
+        EXPECT_EQ(clMem, kernel->getKernelArguments().at(1).object);
 
         EXPECT_EQ(1u, dispatchInfo.getDim());
         size_t xGws = alignUp(buffer->getSize(), 512) / 16;
         Vec3<size_t> gws = {xGws, 1, 1};
         EXPECT_EQ(gws, dispatchInfo.getGWS());
     }
-
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     // always pick different kernel
     EXPECT_EQ(3u, builtinKernels.size());
     EXPECT_NE(builtinKernels[0], builtinKernels[1]);
@@ -284,8 +301,9 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTransla
     EXPECT_NE(builtinKernels[1], builtinKernels[2]);
 }
 
-TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslationThenPickAndSetupCorrectKernels) {
-    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslationThenPickAndSetupCorrectKernels) {
+    BuiltinDispatchInfoBuilder &baseBuilder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+    auto &builder = static_cast<BuiltInOp<EBuiltInOps::AuxTranslation> &>(baseBuilder);
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     MultiDispatchInfo multiDispatchInfo;
@@ -295,7 +313,7 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslatio
     mockBuffer[1].getGraphicsAllocation()->setSize(0x20000);
     mockBuffer[2].getGraphicsAllocation()->setSize(0x30000);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
     builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
 
@@ -303,7 +321,7 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslatio
         memObjsForAuxTranslation.insert(&buffer);
     }
 
-    EXPECT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, builtinOpsParams));
+    EXPECT_TRUE(builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams));
     EXPECT_EQ(3u, multiDispatchInfo.size());
 
     for (auto &dispatchInfo : multiDispatchInfo) {
@@ -314,9 +332,7 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslatio
         memObjsForAuxTranslation.erase(buffer);
 
         cl_mem clMem = buffer;
-        void *gpuAddress = reinterpret_cast<void *>(buffer->getGraphicsAllocation()->getGpuAddress());
-        EXPECT_EQ(gpuAddress, kernel->getKernelArguments().at(0).value);
-        EXPECT_EQ(nullptr, kernel->getKernelArguments().at(0).object);
+        EXPECT_EQ(clMem, kernel->getKernelArguments().at(0).object);
         EXPECT_EQ(clMem, kernel->getKernelArguments().at(1).object);
 
         EXPECT_EQ(1u, dispatchInfo.getDim());
@@ -324,7 +340,7 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslatio
         Vec3<size_t> gws = {xGws, 1, 1};
         EXPECT_EQ(gws, dispatchInfo.getGWS());
     }
-
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     // always pick different kernel
     EXPECT_EQ(3u, builtinKernels.size());
     EXPECT_NE(builtinKernels[0], builtinKernels[1]);
@@ -332,15 +348,16 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslatio
     EXPECT_NE(builtinKernels[1], builtinKernels[2]);
 }
 
-TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxTranslationDispatchThenPickDifferentKernelsDependingOnRequest) {
-    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxTranslationDispatchThenPickDifferentKernelsDependingOnRequest) {
+    BuiltinDispatchInfoBuilder &baseBuilder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+    auto &builder = static_cast<BuiltInOp<EBuiltInOps::AuxTranslation> &>(baseBuilder);
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     MockBuffer mockBuffer[3];
     std::vector<Kernel *> builtinKernels;
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
     builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
 
     for (auto &buffer : mockBuffer) {
@@ -348,17 +365,17 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxTranslationDispatchThenPickD
     }
 
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
-    EXPECT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, builtinOpsParams));
+    EXPECT_TRUE(builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams));
 
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
-    EXPECT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, builtinOpsParams));
+    EXPECT_TRUE(builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams));
 
     EXPECT_EQ(6u, multiDispatchInfo.size());
 
     for (auto &dispatchInfo : multiDispatchInfo) {
         builtinKernels.push_back(dispatchInfo.getKernel());
     }
-
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     // nonAux vs Aux instance
     EXPECT_EQ(6u, builtinKernels.size());
     EXPECT_NE(builtinKernels[0], builtinKernels[3]);
@@ -366,27 +383,27 @@ TEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxTranslationDispatchThenPickD
     EXPECT_NE(builtinKernels[2], builtinKernels[5]);
 }
 
-TEST_F(BuiltInTests, givenInvalidAuxTranslationDirectionWhenBuildingDispatchInfosThenAbort) {
-    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+HWTEST_F(BuiltInTests, givenInvalidAuxTranslationDirectionWhenBuildingDispatchInfosThenAbort) {
+    BuiltinDispatchInfoBuilder &baseBuilder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
+    auto &builder = static_cast<BuiltInOp<EBuiltInOps::AuxTranslation> &>(baseBuilder);
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     MockBuffer mockBuffer;
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
     builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
 
     memObjsForAuxTranslation.insert(&mockBuffer);
 
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::None;
-    EXPECT_THROW(builder.buildDispatchInfos(multiDispatchInfo, builtinOpsParams), std::exception);
+    EXPECT_THROW(builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams), std::exception);
 }
 
-template <typename Family>
-class MockAuxBuilInOp : public BuiltInOp<Family, EBuiltInOps::AuxTranslation> {
+class MockAuxBuilInOp : public BuiltInOp<EBuiltInOps::AuxTranslation> {
   public:
     using BuiltinDispatchInfoBuilder::populate;
-    using BaseClass = BuiltInOp<Family, EBuiltInOps::AuxTranslation>;
+    using BaseClass = BuiltInOp<EBuiltInOps::AuxTranslation>;
     using BaseClass::baseKernel;
     using BaseClass::convertToAuxKernel;
     using BaseClass::convertToNonAuxKernel;
@@ -396,19 +413,19 @@ class MockAuxBuilInOp : public BuiltInOp<Family, EBuiltInOps::AuxTranslation> {
     MockAuxBuilInOp(BuiltIns &kernelsLib, Context &context, Device &device) : BaseClass(kernelsLib, context, device) {}
 };
 
-HWTEST_F(BuiltInTests, whenAuxBuiltInIsConstructedThenResizeKernelInstancedTo5) {
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+TEST_F(BuiltInTests, whenAuxBuiltInIsConstructedThenResizeKernelInstancedTo5) {
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     EXPECT_EQ(5u, mockAuxBuiltInOp.convertToAuxKernel.size());
     EXPECT_EQ(5u, mockAuxBuiltInOp.convertToNonAuxKernel.size());
 }
 
 HWTEST_F(BuiltInTests, givenMoreBuffersForAuxTranslationThanKernelInstancesWhenDispatchingThenResize) {
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     EXPECT_EQ(5u, mockAuxBuiltInOp.convertToAuxKernel.size());
     EXPECT_EQ(5u, mockAuxBuiltInOp.convertToNonAuxKernel.size());
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
     MultiDispatchInfo multiDispatchInfo;
     MockBuffer mockBuffer[7];
 
@@ -419,13 +436,13 @@ HWTEST_F(BuiltInTests, givenMoreBuffersForAuxTranslationThanKernelInstancesWhenD
         memObjsForAuxTranslation.insert(&buffer);
     }
 
-    EXPECT_TRUE(mockAuxBuiltInOp.buildDispatchInfos(multiDispatchInfo, builtinOpsParams));
+    EXPECT_TRUE(mockAuxBuiltInOp.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams));
     EXPECT_EQ(7u, mockAuxBuiltInOp.convertToAuxKernel.size());
     EXPECT_EQ(7u, mockAuxBuiltInOp.convertToNonAuxKernel.size());
 }
 
-HWTEST_F(BuiltInTests, givenkAuxBuiltInWhenResizeIsCalledThenCloneAllNewInstancesFromBaseKernel) {
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+TEST_F(BuiltInTests, givenkAuxBuiltInWhenResizeIsCalledThenCloneAllNewInstancesFromBaseKernel) {
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     size_t newSize = mockAuxBuiltInOp.convertToAuxKernel.size() + 3;
     mockAuxBuiltInOp.resizeKernelInstances(newSize);
 
@@ -442,7 +459,7 @@ HWTEST_F(BuiltInTests, givenkAuxBuiltInWhenResizeIsCalledThenCloneAllNewInstance
 
 HWTEST_F(BuiltInTests, givenKernelWithAuxTranslationRequiredWhenEnqueueCalledThenLockOnBuiltin) {
     pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, *pContext, *pDevice);
-    auto mockAuxBuiltInOp = new MockAuxBuilInOp<FamilyType>(*pBuiltIns, *pContext, *pDevice);
+    auto mockAuxBuiltInOp = new MockAuxBuilInOp(*pBuiltIns, *pContext, *pDevice);
     pBuiltIns->BuiltinOpsBuilders[static_cast<uint32_t>(EBuiltInOps::AuxTranslation)].first.reset(mockAuxBuiltInOp);
 
     auto mockProgram = clUniquePtr(new MockProgram(*pDevice->getExecutionEnvironment()));
@@ -473,6 +490,154 @@ HWTEST_F(BuiltInTests, givenKernelWithAuxTranslationRequiredWhenEnqueueCalledThe
     EXPECT_EQ(1u, mockBuiltinKernel->releaseOwnershipCalls);
 }
 
+HWTEST_F(BuiltInTests, givenAuxTranslationKernelWhenSettingKernelArgsThenSetValidMocs) {
+    if (this->pDevice->areSharedSystemAllocationsAllowed()) {
+        GTEST_SKIP();
+    }
+
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+    MultiDispatchInfo multiDispatchInfo;
+    MemObjsForAuxTranslation memObjsForAuxTranslation;
+
+    BuiltinOpParams builtinOpParamsToAux;
+    builtinOpParamsToAux.memObjsForAuxTranslation = &memObjsForAuxTranslation;
+    builtinOpParamsToAux.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
+
+    BuiltinOpParams builtinOpParamsToNonAux;
+    builtinOpParamsToNonAux.memObjsForAuxTranslation = &memObjsForAuxTranslation;
+    builtinOpParamsToNonAux.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = std::unique_ptr<Buffer>(Buffer::create(pContext, 0, MemoryConstants::pageSize, nullptr, retVal));
+    memObjsForAuxTranslation.insert(buffer.get());
+
+    mockAuxBuiltInOp.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpParamsToAux);
+    mockAuxBuiltInOp.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpParamsToNonAux);
+
+    {
+        // read args
+        auto argNum = 0;
+        auto expectedMocs = pDevice->getExecutionEnvironment()->getGmmHelper()->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED);
+        auto sshBase = mockAuxBuiltInOp.convertToAuxKernel[0]->getSurfaceStateHeap();
+        auto sshOffset = mockAuxBuiltInOp.convertToAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(expectedMocs, surfaceState->getMemoryObjectControlState());
+
+        sshBase = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getSurfaceStateHeap();
+        sshOffset = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(expectedMocs, surfaceState->getMemoryObjectControlState());
+    }
+
+    {
+        // write args
+        auto argNum = 1;
+        auto expectedMocs = pDevice->getExecutionEnvironment()->getGmmHelper()->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
+        auto sshBase = mockAuxBuiltInOp.convertToAuxKernel[0]->getSurfaceStateHeap();
+        auto sshOffset = mockAuxBuiltInOp.convertToAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(expectedMocs, surfaceState->getMemoryObjectControlState());
+
+        sshBase = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getSurfaceStateHeap();
+        sshOffset = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(expectedMocs, surfaceState->getMemoryObjectControlState());
+    }
+}
+
+HWTEST_F(BuiltInTests, givenAuxToNonAuxTranslationWhenSettingSurfaceStateThenSetValidAuxMode) {
+    if (this->pDevice->areSharedSystemAllocationsAllowed()) {
+        GTEST_SKIP();
+    }
+
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
+
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+    MultiDispatchInfo multiDispatchInfo;
+    MemObjsForAuxTranslation memObjsForAuxTranslation;
+
+    BuiltinOpParams builtinOpParams;
+    builtinOpParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
+    builtinOpParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = std::unique_ptr<Buffer>(Buffer::create(pContext, 0, MemoryConstants::pageSize, nullptr, retVal));
+    buffer->getGraphicsAllocation()->setAllocationType(GraphicsAllocation::AllocationType::BUFFER_COMPRESSED);
+    auto gmm = new Gmm(nullptr, 1, false);
+    gmm->isRenderCompressed = true;
+    buffer->getGraphicsAllocation()->setDefaultGmm(gmm);
+
+    memObjsForAuxTranslation.insert(buffer.get());
+
+    mockAuxBuiltInOp.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpParams);
+
+    {
+        // read arg
+        auto argNum = 0;
+        auto sshBase = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getSurfaceStateHeap();
+        auto sshOffset = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_CCS_E, surfaceState->getAuxiliarySurfaceMode());
+    }
+
+    {
+        // write arg
+        auto argNum = 1;
+        auto sshBase = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getSurfaceStateHeap();
+        auto sshOffset = mockAuxBuiltInOp.convertToNonAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE, surfaceState->getAuxiliarySurfaceMode());
+    }
+}
+
+HWTEST_F(BuiltInTests, givenNonAuxToAuxTranslationWhenSettingSurfaceStateThenSetValidAuxMode) {
+    if (this->pDevice->areSharedSystemAllocationsAllowed()) {
+        GTEST_SKIP();
+    }
+
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+    using AUXILIARY_SURFACE_MODE = typename RENDER_SURFACE_STATE::AUXILIARY_SURFACE_MODE;
+
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+    MultiDispatchInfo multiDispatchInfo;
+    MemObjsForAuxTranslation memObjsForAuxTranslation;
+
+    BuiltinOpParams builtinOpParams;
+    builtinOpParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
+    builtinOpParams.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
+
+    cl_int retVal = CL_SUCCESS;
+    auto buffer = std::unique_ptr<Buffer>(Buffer::create(pContext, 0, MemoryConstants::pageSize, nullptr, retVal));
+    buffer->getGraphicsAllocation()->setAllocationType(GraphicsAllocation::AllocationType::BUFFER_COMPRESSED);
+    auto gmm = new Gmm(nullptr, 1, false);
+    gmm->isRenderCompressed = true;
+    buffer->getGraphicsAllocation()->setDefaultGmm(gmm);
+    memObjsForAuxTranslation.insert(buffer.get());
+
+    mockAuxBuiltInOp.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpParams);
+
+    {
+        // read arg
+        auto argNum = 0;
+        auto sshBase = mockAuxBuiltInOp.convertToAuxKernel[0]->getSurfaceStateHeap();
+        auto sshOffset = mockAuxBuiltInOp.convertToAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_NONE, surfaceState->getAuxiliarySurfaceMode());
+    }
+
+    {
+        // write arg
+        auto argNum = 1;
+        auto sshBase = mockAuxBuiltInOp.convertToAuxKernel[0]->getSurfaceStateHeap();
+        auto sshOffset = mockAuxBuiltInOp.convertToAuxKernel[0]->getKernelInfo().kernelArgInfo[argNum].offsetHeap;
+        auto surfaceState = reinterpret_cast<RENDER_SURFACE_STATE *>(ptrOffset(sshBase, sshOffset));
+        EXPECT_EQ(AUXILIARY_SURFACE_MODE::AUXILIARY_SURFACE_MODE_AUX_CCS_E, surfaceState->getAuxiliarySurfaceMode());
+    }
+}
+
 TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferAligned) {
     BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBuffer, *pContext, *pDevice);
 
@@ -480,7 +645,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferAligned) {
     AlignedBuffer dst;
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
 
     builtinOpsParams.srcMemObj = &src;
     builtinOpsParams.dstMemObj = &dst;
@@ -503,6 +668,8 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferAligned) {
     size_t middleElSize = sizeof(uint32_t) * 4;
     size_t middleSize = dst.getSize() / middleElSize;
     EXPECT_EQ(Vec3<size_t>(middleSize, 1, 1), dispatchInfo->getGWS());
+
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
 }
 
 TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferWithSourceOffsetUnalignedToFour) {
@@ -512,7 +679,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferWithSourceOffse
     AlignedBuffer dst;
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
 
     builtinOpsParams.srcMemObj = &src;
     builtinOpsParams.srcOffset.x = 1;
@@ -526,6 +693,8 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferWithSourceOffse
     const DispatchInfo *dispatchInfo = multiDispatchInfo.begin();
 
     EXPECT_EQ(dispatchInfo->getKernel()->getKernelInfo().name, "CopyBufferToBufferLeftLeftover");
+
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
 }
 
 TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReadBufferAligned) {
@@ -536,7 +705,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReadBufferAligned) {
     auto dstPtr = alignedMalloc(size, MemoryConstants::cacheLineSize);
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
 
     builtinOpsParams.srcMemObj = &srcMemObj;
     builtinOpsParams.dstPtr = dstPtr;
@@ -559,7 +728,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReadBufferAligned) {
     size_t middleElSize = sizeof(uint32_t) * 4;
     size_t middleSize = size / middleElSize;
     EXPECT_EQ(Vec3<size_t>(middleSize, 1, 1), dispatchInfo->getGWS());
-
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     alignedFree(dstPtr);
 }
 
@@ -571,7 +740,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderWriteBufferAligned) {
     AlignedBuffer dstMemObj;
 
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams builtinOpsParams;
+    BuiltinOpParams builtinOpsParams;
 
     builtinOpsParams.srcPtr = srcPtr;
     builtinOpsParams.dstMemObj = &dstMemObj;
@@ -594,7 +763,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderWriteBufferAligned) {
     size_t middleElSize = sizeof(uint32_t) * 4;
     size_t middleSize = size / middleElSize;
     EXPECT_EQ(Vec3<size_t>(middleSize, 1, 1), dispatchInfo->getGWS());
-
+    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     alignedFree(srcPtr);
 }
 
@@ -615,7 +784,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderGetBuilderForUnknownBuiltInOp) {
     EXPECT_TRUE(caughtException);
 }
 
-TEST_F(BuiltInTests, getSchedulerKernel) {
+HWCMDTEST_F(IGFX_GEN8_CORE, BuiltInTests, getSchedulerKernel) {
     if (pDevice->getSupportedClVersion() >= 20) {
         Context &context = *pContext;
         SchedulerKernel &schedulerKernel = pBuiltIns->getSchedulerKernel(context);
@@ -624,7 +793,7 @@ TEST_F(BuiltInTests, getSchedulerKernel) {
     }
 }
 
-HWTEST_F(BuiltInTests, getSchedulerKernelForSecondTimeDoesNotCreateNewKernel) {
+HWCMDTEST_F(IGFX_GEN8_CORE, BuiltInTests, getSchedulerKernelForSecondTimeDoesNotCreateNewKernel) {
     if (pDevice->getSupportedClVersion() >= 20) {
         Context &context = *pContext;
         SchedulerKernel &schedulerKernel = pBuiltIns->getSchedulerKernel(context);
@@ -644,7 +813,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReturnFalseIfUnsupportedBuildType
     auto &bs = *pDevice->getExecutionEnvironment()->getBuiltIns();
     BuiltinDispatchInfoBuilder bdib{bs};
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams params;
+    BuiltinOpParams params;
 
     auto ret = bdib.buildDispatchInfos(multiDispatchInfo, params);
     EXPECT_FALSE(ret);
@@ -666,17 +835,17 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReturnTrueIfExplicitKernelArgNotT
     auto &bs = *pDevice->getExecutionEnvironment()->getBuiltIns();
     BuiltinDispatchInfoBuilder bdib{bs};
     MultiDispatchInfo multiDispatchInfo;
-    BuiltinDispatchInfoBuilder::BuiltinOpParams params;
+    BuiltinOpParams params;
 
     cl_int err;
     auto ret = bdib.setExplicitArg(1, 5, nullptr, err);
     EXPECT_TRUE(ret);
 }
 
-TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderGetVMEBuilderReturnNonNull) {
+TEST_F(VmeBuiltInTests, BuiltinDispatchInfoBuilderGetVMEBuilderReturnNonNull) {
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
 
-    EBuiltInOps vmeOps[] = {EBuiltInOps::VmeBlockMotionEstimateIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel};
+    EBuiltInOps::Type vmeOps[] = {EBuiltInOps::VmeBlockMotionEstimateIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel};
     for (auto op : vmeOps) {
         BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(op, *pContext, *pDevice);
         EXPECT_NE(nullptr, &builder);
@@ -685,9 +854,9 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderGetVMEBuilderReturnNonNull) {
     restoreBuiltInBinaryName(pDevice);
 }
 
-TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderVMEBuilderNullKernel) {
+TEST_F(VmeBuiltInTests, BuiltinDispatchInfoBuilderVMEBuilderNullKernel) {
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    EBuiltInOps vmeOps[] = {EBuiltInOps::VmeBlockMotionEstimateIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel};
+    EBuiltInOps::Type vmeOps[] = {EBuiltInOps::VmeBlockMotionEstimateIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel};
     for (auto op : vmeOps) {
         BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(op, *pContext, *pDevice);
 
@@ -702,7 +871,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderVMEBuilderNullKernel) {
     restoreBuiltInBinaryName(pDevice);
 }
 
-TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderVMEBuilder) {
+TEST_F(VmeBuiltInTests, BuiltinDispatchInfoBuilderVMEBuilder) {
     MockKernelWithInternals mockKernel{*pDevice};
     ((SPatchExecutionEnvironment *)mockKernel.kernelInfo.patchInfo.executionEnvironment)->CompiledSIMD32 = 0;
     ((SPatchExecutionEnvironment *)mockKernel.kernelInfo.patchInfo.executionEnvironment)->CompiledSIMD16 = 1;
@@ -752,7 +921,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderVMEBuilder) {
     }
 }
 
-TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderAdvancedVMEBuilder) {
+TEST_F(VmeBuiltInTests, BuiltinDispatchInfoBuilderAdvancedVMEBuilder) {
     MockKernelWithInternals mockKernel{*pDevice};
     ((SPatchExecutionEnvironment *)mockKernel.kernelInfo.patchInfo.executionEnvironment)->CompiledSIMD32 = 0;
     ((SPatchExecutionEnvironment *)mockKernel.kernelInfo.patchInfo.executionEnvironment)->CompiledSIMD16 = 1;
@@ -774,7 +943,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderAdvancedVMEBuilder) {
     auto image = std::unique_ptr<Image>(Image2dHelper<>::create(pContext));
     cl_mem srcImageArg = static_cast<cl_mem>(image.get());
 
-    EBuiltInOps vmeOps[] = {EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel};
+    EBuiltInOps::Type vmeOps[] = {EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel};
     for (auto op : vmeOps) {
         MultiDispatchInfo outMdi;
         overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
@@ -816,7 +985,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderAdvancedVMEBuilder) {
     }
 }
 
-TEST_F(BuiltInTests, getBuiltinAsString) {
+TEST_F(VmeBuiltInTests, getBuiltinAsString) {
     EXPECT_EQ(0, strcmp("aux_translation.igdrcl_built_in", getBuiltinAsString(EBuiltInOps::AuxTranslation)));
     EXPECT_EQ(0, strcmp("copy_buffer_to_buffer.igdrcl_built_in", getBuiltinAsString(EBuiltInOps::CopyBufferToBuffer)));
     EXPECT_EQ(0, strcmp("copy_buffer_rect.igdrcl_built_in", getBuiltinAsString(EBuiltInOps::CopyBufferRect)));
@@ -834,6 +1003,11 @@ TEST_F(BuiltInTests, getBuiltinAsString) {
     EXPECT_EQ(0, strcmp("vme_block_advanced_motion_estimate_bidirectional_check_intel", getBuiltinAsString(EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel)));
     EXPECT_EQ(0, strcmp("scheduler.igdrcl_built_in", getBuiltinAsString(EBuiltInOps::Scheduler)));
     EXPECT_EQ(0, strcmp("unknown", getBuiltinAsString(EBuiltInOps::COUNT)));
+}
+
+TEST_F(BuiltInTests, WhenUnknownOperationIsSpecifiedThenUnknownNameIsReturned) {
+    EXPECT_EQ(0, strcmp("unknown", getUnknownBuiltinAsString(EBuiltInOps::CopyImage3dToBuffer)));
+    EXPECT_EQ(0, strcmp("unknown", getUnknownBuiltinAsString(EBuiltInOps::COUNT)));
 }
 
 TEST_F(BuiltInTests, getExtension) {
@@ -857,7 +1031,7 @@ TEST_F(BuiltInTests, createBuiltinResource) {
 }
 
 TEST_F(BuiltInTests, createBuiltinResourceName) {
-    EBuiltInOps builtin = EBuiltInOps::CopyBufferToBuffer;
+    EBuiltInOps::Type builtin = EBuiltInOps::CopyBufferToBuffer;
     const std::string extension = ".cl";
     const std::string platformName = "skl";
     const uint32_t deviceRevId = 9;
@@ -1002,7 +1176,7 @@ TEST_F(BuiltInTests, getBuiltinCodeForTypeInvalid) {
 TEST_F(BuiltInTests, getBuiltinResourcesForTypeSource) {
     class MockBuiltinsLib : BuiltinsLib {
       public:
-        BuiltinResourceT getBuiltinResource(EBuiltInOps builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
+        BuiltinResourceT getBuiltinResource(EBuiltInOps::Type builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
             return BuiltinsLib::getBuiltinResource(builtin, requestedCodeType, device);
         }
     };
@@ -1022,14 +1196,17 @@ TEST_F(BuiltInTests, getBuiltinResourcesForTypeSource) {
     EXPECT_NE(0u, mockBuiltinsLib->getBuiltinResource(EBuiltInOps::VmeBlockMotionEstimateIntel, BuiltinCode::ECodeType::Source, *pDevice).size());
     EXPECT_NE(0u, mockBuiltinsLib->getBuiltinResource(EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, BuiltinCode::ECodeType::Source, *pDevice).size());
     EXPECT_NE(0u, mockBuiltinsLib->getBuiltinResource(EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel, BuiltinCode::ECodeType::Source, *pDevice).size());
-    EXPECT_EQ(0u, mockBuiltinsLib->getBuiltinResource(EBuiltInOps::Scheduler, BuiltinCode::ECodeType::Source, *pDevice).size());
     EXPECT_EQ(0u, mockBuiltinsLib->getBuiltinResource(EBuiltInOps::COUNT, BuiltinCode::ECodeType::Source, *pDevice).size());
+
+    if (pDevice->getHardwareInfo().capabilityTable.supportsDeviceEnqueue) {
+        EXPECT_EQ(0u, mockBuiltinsLib->getBuiltinResource(EBuiltInOps::Scheduler, BuiltinCode::ECodeType::Source, *pDevice).size());
+    }
 }
 
-TEST_F(BuiltInTests, getBuiltinResourcesForTypeBinary) {
+HWCMDTEST_F(IGFX_GEN8_CORE, BuiltInTests, getBuiltinResourcesForTypeBinary) {
     class MockBuiltinsLib : BuiltinsLib {
       public:
-        BuiltinResourceT getBuiltinResource(EBuiltInOps builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
+        BuiltinResourceT getBuiltinResource(EBuiltInOps::Type builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
             return BuiltinsLib::getBuiltinResource(builtin, requestedCodeType, device);
         }
     };
@@ -1069,6 +1246,17 @@ TEST_F(BuiltInTests, createProgramFromCodeForTypeSource) {
     EXPECT_NE(0u, bc.resource.size());
     auto program = std::unique_ptr<Program>(BuiltinsLib::createProgramFromCode(bc, *pContext, *pDevice));
     EXPECT_NE(nullptr, program.get());
+}
+
+TEST_F(BuiltInTests, givenCreateProgramFromSourceWhenDeviceSupportSharedSystemAllocationThenInternalOptionsDisableStosoFlag) {
+    auto builtinsLib = std::unique_ptr<BuiltinsLib>(new BuiltinsLib());
+    pDevice->deviceInfo.sharedSystemMemCapabilities = CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ATOMIC_ACCESS_INTEL;
+
+    const BuiltinCode bc = builtinsLib->getBuiltinCode(EBuiltInOps::CopyBufferToBuffer, BuiltinCode::ECodeType::Source, *pDevice);
+    EXPECT_NE(0u, bc.resource.size());
+    auto program = std::unique_ptr<Program>(BuiltinsLib::createProgramFromCode(bc, *pContext, *pDevice));
+    EXPECT_NE(nullptr, program.get());
+    EXPECT_THAT(program->getInternalOptions(), testing::HasSubstr(std::string("-cl-intel-greater-than-4GB-buffer-required")));
 }
 
 TEST_F(BuiltInTests, createProgramFromCodeForTypeIntermediate) {
@@ -1118,7 +1306,7 @@ TEST_F(BuiltInTests, createProgramFromCodeInternalOptionsFor32Bit) {
     EXPECT_EQ(std::string::npos, it);
 
     it = builtinInternalOptions.find("-cl-intel-greater-than-4GB-buffer-required");
-    if (is32bit) {
+    if (is32bit || pDevice->areSharedSystemAllocationsAllowed()) {
         EXPECT_NE(std::string::npos, it);
     } else {
         EXPECT_EQ(std::string::npos, it);
@@ -1128,17 +1316,19 @@ TEST_F(BuiltInTests, createProgramFromCodeInternalOptionsFor32Bit) {
 }
 
 TEST_F(BuiltInTests, whenQueriedProperVmeVersionIsReturned) {
+    if (!pDevice->getHardwareInfo().capabilityTable.supportsVme) {
+        GTEST_SKIP();
+    }
     cl_uint param;
     auto ret = pDevice->getDeviceInfo(CL_DEVICE_ME_VERSION_INTEL, sizeof(param), &param, nullptr);
     EXPECT_EQ(CL_SUCCESS, ret);
     EXPECT_EQ(static_cast<cl_uint>(CL_ME_VERSION_ADVANCED_VER_2_INTEL), param);
 }
 
-TEST_F(BuiltInTests, vmeDispatchValidationHelpers) {
+TEST_F(VmeBuiltInTests, vmeDispatchValidationHelpers) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     cl_int err;
@@ -1195,12 +1385,11 @@ TEST_F(BuiltInTests, vmeDispatchValidationHelpers) {
     }
 }
 
-TEST_F(BuiltInTests, vmeDispatchIsBidir) {
+TEST_F(VmeBuiltInTests, vmeDispatchIsBidir) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel> avmeBidirBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel> avmeBidirBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     EXPECT_FALSE(avmeBuilder.isBidirKernel());
@@ -1244,11 +1433,10 @@ const cl_image_format ImageVmeInvalidChannelOrder::imageFormat = {
     CL_RGBA,
     CL_UNORM_INT8};
 
-TEST_F(BuiltInTests, vmeValidateImages) {
+TEST_F(VmeBuiltInTests, vmeValidateImages) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockMotionEstimateIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockMotionEstimateIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     uint32_t srcImgArgNum = 1;
@@ -1323,11 +1511,10 @@ TEST_F(BuiltInTests, vmeValidateImages) {
     }
 }
 
-TEST_F(BuiltInTests, vmeValidateFlags) {
+TEST_F(VmeBuiltInTests, vmeValidateFlags) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     uint32_t defaultSkipBlockVal = 8192;
@@ -1354,12 +1541,11 @@ TEST_F(BuiltInTests, vmeValidateFlags) {
     }
 }
 
-TEST_F(BuiltInTests, vmeValidateSkipBlockType) {
+TEST_F(VmeBuiltInTests, vmeValidateSkipBlockType) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel> avmeBidirectionalBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel> avmeBidirectionalBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     cl_int err;
@@ -1390,11 +1576,11 @@ TEST_F(BuiltInTests, vmeValidateSkipBlockType) {
     EXPECT_EQ(static_cast<uint32_t>(CL_ME_MB_TYPE_8x8_INTEL), skipBlockType);
 }
 
-TEST_F(BuiltInTests, setExplicitArgAccelerator) {
+TEST_F(VmeBuiltInTests, setExplicitArgAccelerator) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     cl_int err;
@@ -1416,13 +1602,12 @@ TEST_F(BuiltInTests, setExplicitArgAccelerator) {
     EXPECT_EQ(CL_SUCCESS, err);
 }
 
-TEST_F(BuiltInTests, vmeValidateDispatch) {
+TEST_F(VmeBuiltInTests, vmeValidateDispatch) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    struct MockVmeBuilder : BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockMotionEstimateIntel> {
+    struct MockVmeBuilder : BuiltInOp<EBuiltInOps::VmeBlockMotionEstimateIntel> {
         MockVmeBuilder(BuiltIns &kernelsLib, Context &context, Device &device)
-            : BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockMotionEstimateIntel>(kernelsLib, context, device) {
+            : BuiltInOp<EBuiltInOps::VmeBlockMotionEstimateIntel>(kernelsLib, context, device) {
         }
 
         cl_int validateVmeDispatch(Vec3<size_t> inputRegion, Vec3<size_t> offset, size_t blkNum, size_t blkMul) const override {
@@ -1522,11 +1707,10 @@ TEST_F(BuiltInTests, vmeValidateDispatch) {
     }
 }
 
-TEST_F(BuiltInTests, vmeValidateVmeDispatch) {
+TEST_F(VmeBuiltInTests, vmeValidateVmeDispatch) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockMotionEstimateIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockMotionEstimateIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     cl_int err;
@@ -1561,11 +1745,10 @@ TEST_F(BuiltInTests, vmeValidateVmeDispatch) {
     }
 }
 
-TEST_F(BuiltInTests, advancedVmeValidateVmeDispatch) {
+TEST_F(VmeBuiltInTests, advancedVmeValidateVmeDispatch) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     cl_int err;
@@ -1622,11 +1805,10 @@ TEST_F(BuiltInTests, advancedVmeValidateVmeDispatch) {
     EXPECT_EQ(CL_SUCCESS, avmeBuilder.validateVmeDispatch(Vec3<size_t>{1, 1, 0}, Vec3<size_t>{0, 0, 0}, 1, 1));
 }
 
-TEST_F(BuiltInTests, advancedBidirectionalVmeValidateVmeDispatch) {
+TEST_F(VmeBuiltInTests, advancedBidirectionalVmeValidateVmeDispatch) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel> avmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     cl_int err;
@@ -1671,11 +1853,10 @@ TEST_F(BuiltInTests, advancedBidirectionalVmeValidateVmeDispatch) {
     EXPECT_EQ(CL_INVALID_BUFFER_SIZE, avmeBuilder.validateVmeDispatch(Vec3<size_t>{1, 1, 0}, Vec3<size_t>{0, 0, 0}, mb.getSize() * 2, 1));
 }
 
-TEST_F(BuiltInTests, advancedVmeGetSkipResidualsBuffExpSizeDefaultValue) {
+TEST_F(VmeBuiltInTests, advancedVmeGetSkipResidualsBuffExpSizeDefaultValue) {
     this->pBuiltIns->setCacheingEnableState(false);
     overwriteBuiltInBinaryName(pDevice, "media_kernels_backend");
-    using GenericFamily = int;
-    BuiltInOp<GenericFamily, EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
+    BuiltInOp<EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel> vmeBuilder(*this->pBuiltIns, *pContext, *this->pDevice);
     restoreBuiltInBinaryName(pDevice);
 
     auto size16x16 = vmeBuilder.getSkipResidualsBuffExpSize(CL_ME_MB_TYPE_16x16_INTEL, 4);
@@ -1751,8 +1932,8 @@ TEST_F(BuiltInTests, givenDebugFlagForceUseSourceWhenArgIsAnyThenReturnBuiltinCo
 
 using BuiltInOwnershipWrapperTests = BuiltInTests;
 
-HWTEST_F(BuiltInOwnershipWrapperTests, givenBuiltinWhenConstructedThenLockAndUnlockOnDestruction) {
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+TEST_F(BuiltInOwnershipWrapperTests, givenBuiltinWhenConstructedThenLockAndUnlockOnDestruction) {
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     MockContext mockContext;
 
     {
@@ -1764,8 +1945,8 @@ HWTEST_F(BuiltInOwnershipWrapperTests, givenBuiltinWhenConstructedThenLockAndUnl
     EXPECT_EQ(pContext, &mockAuxBuiltInOp.baseKernel->getContext());
 }
 
-HWTEST_F(BuiltInOwnershipWrapperTests, givenLockWithoutParametersWhenConstructingThenLockOnlyWhenRequested) {
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
+TEST_F(BuiltInOwnershipWrapperTests, givenLockWithoutParametersWhenConstructingThenLockOnlyWhenRequested) {
+    MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     MockContext mockContext;
 
     {
@@ -1778,9 +1959,9 @@ HWTEST_F(BuiltInOwnershipWrapperTests, givenLockWithoutParametersWhenConstructin
     EXPECT_EQ(pContext, &mockAuxBuiltInOp.baseKernel->getContext());
 }
 
-HWTEST_F(BuiltInOwnershipWrapperTests, givenLockWithAcquiredOwnershipWhenTakeOwnershipCalledThenAbort) {
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp1(*pBuiltIns, *pContext, *pDevice);
-    MockAuxBuilInOp<FamilyType> mockAuxBuiltInOp2(*pBuiltIns, *pContext, *pDevice);
+TEST_F(BuiltInOwnershipWrapperTests, givenLockWithAcquiredOwnershipWhenTakeOwnershipCalledThenAbort) {
+    MockAuxBuilInOp mockAuxBuiltInOp1(*pBuiltIns, *pContext, *pDevice);
+    MockAuxBuilInOp mockAuxBuiltInOp2(*pBuiltIns, *pContext, *pDevice);
 
     BuiltInOwnershipWrapper lock(mockAuxBuiltInOp1, pContext);
     EXPECT_THROW(lock.takeOwnership(mockAuxBuiltInOp1, pContext), std::exception);

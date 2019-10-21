@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/device/device.h"
 #include "runtime/event/user_event.h"
@@ -21,7 +22,6 @@
 #include "runtime/sharings/gl/gl_texture.h"
 #include "runtime/sharings/sharing.h"
 #include "test.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/libult/create_command_stream.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "unit_tests/mocks/gl/mock_gl_arb_sync_event.h"
@@ -80,7 +80,7 @@ TEST_F(glSharingTests, givenMockGlWhenGlBufferIsCreatedThenMemObjectHasGlHandler
     EXPECT_EQ(bufferId, mockGlSharing->dllParam->getBufferInfo().bufferName);
     EXPECT_EQ(4096u, glBuffer->getSize());
     size_t flagsExpected = CL_MEM_READ_WRITE;
-    EXPECT_EQ(flagsExpected, glBuffer->getFlags());
+    EXPECT_EQ(flagsExpected, glBuffer->getMemoryPropertiesFlags());
 
     auto handler = glBuffer->peekSharingHandler();
     ASSERT_NE(nullptr, handler);
@@ -102,7 +102,7 @@ TEST_F(glSharingTests, givenMockGlWhenGlBufferIsCreatedFromWrongHandleThenErrorA
     auto tempMemoryManager = context.getMemoryManager();
 
     auto memoryManager = std::unique_ptr<FailingMemoryManager>(new FailingMemoryManager());
-    context.setMemoryManager(memoryManager.get());
+    context.memoryManager = memoryManager.get();
 
     auto retVal = CL_SUCCESS;
     auto glBuffer = GlBuffer::createSharedGlBuffer(&context, CL_MEM_READ_WRITE, 0, &retVal);
@@ -110,7 +110,7 @@ TEST_F(glSharingTests, givenMockGlWhenGlBufferIsCreatedFromWrongHandleThenErrorA
     EXPECT_EQ(nullptr, glBuffer);
     EXPECT_EQ(CL_INVALID_GL_OBJECT, retVal);
 
-    context.setMemoryManager(tempMemoryManager);
+    context.memoryManager = tempMemoryManager;
 }
 
 TEST_F(glSharingTests, givenContextWhenClCreateFromGlBufferIsCalledThenBufferIsReturned) {
@@ -789,9 +789,9 @@ TEST(glSharingBasicTest, givenCorrectFlagsWhenGettingSupportedFormatsThenCorrect
     cl_GLenum glFormats[3] = {};
     cl_uint numImageFormats = 0;
 
-    for (size_t i = 0; i < arrayCount(flags); i++) {
+    for (auto flag : flags) {
 
-        auto result = glSharingFunctions.getSupportedFormats(flags[i], image_type, arrayCount(glFormats), glFormats, &numImageFormats);
+        auto result = glSharingFunctions.getSupportedFormats(flag, image_type, arrayCount(glFormats), glFormats, &numImageFormats);
 
         EXPECT_EQ(CL_SUCCESS, result);
         EXPECT_EQ(static_cast<uint32_t>(GlSharing::gLToCLFormats.size()), numImageFormats);
@@ -809,15 +809,15 @@ TEST(glSharingBasicTest, givenSupportedImageTypesWhenGettingSupportedFormatsThen
     cl_GLenum glFormats[3] = {};
     cl_uint numImageFormats = 0;
 
-    for (size_t i = 0; i < arrayCount(image_types); i++) {
+    for (auto image_type : image_types) {
 
-        auto result = glSharingFunctions.getSupportedFormats(flags, image_types[i], arrayCount(glFormats), glFormats, &numImageFormats);
+        auto result = glSharingFunctions.getSupportedFormats(flags, image_type, arrayCount(glFormats), glFormats, &numImageFormats);
 
         EXPECT_EQ(CL_SUCCESS, result);
         EXPECT_EQ(static_cast<uint32_t>(GlSharing::gLToCLFormats.size()), numImageFormats);
 
-        for (uint32_t formatIndex = 0; formatIndex < arrayCount(glFormats); formatIndex++) {
-            EXPECT_NE(GlSharing::gLToCLFormats.end(), GlSharing::gLToCLFormats.find(glFormats[formatIndex]));
+        for (auto glFormat : glFormats) {
+            EXPECT_NE(GlSharing::gLToCLFormats.end(), GlSharing::gLToCLFormats.find(glFormat));
         }
     }
 }
@@ -1301,7 +1301,7 @@ TEST_F(clGetSupportedGLTextureFormatsINTELTests, givenContextWithoutGlSharingWhe
 
 TEST_F(clGetSupportedGLTextureFormatsINTELTests, givenValidInputsWhenGettingFormatsThenSuccesAndValidFormatsAreReturned) {
     cl_uint numFormats = 0;
-    cl_GLint glFormats[2] = {};
+    cl_GLenum glFormats[2] = {};
     auto glFormatsCount = static_cast<cl_uint>(arrayCount(glFormats));
 
     auto retVal = clGetSupportedGLTextureFormatsINTEL(&context, CL_MEM_READ_WRITE, CL_MEM_OBJECT_IMAGE2D,

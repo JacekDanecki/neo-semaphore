@@ -7,7 +7,9 @@
 
 #include "runtime/command_queue/command_queue.h"
 
+#include "core/helpers/aligned_memory.h"
 #include "core/helpers/ptr_math.h"
+#include "core/helpers/string.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
@@ -16,7 +18,6 @@
 #include "runtime/event/event_builder.h"
 #include "runtime/event/user_event.h"
 #include "runtime/gtpin/gtpin_notify.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/array_count.h"
 #include "runtime/helpers/convert_color.h"
 #include "runtime/helpers/get_info.h"
@@ -24,7 +25,6 @@
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/queue_helpers.h"
-#include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/helpers/timestamp_packet.h"
 #include "runtime/mem_obj/buffer.h"
@@ -67,9 +67,12 @@ CommandQueue::CommandQueue(Context *context, Device *deviceId, const cl_queue_pr
     flushStamp.reset(new FlushStampTracker(true));
 
     if (device) {
-        engine = &device->getDefaultEngine();
-        if (getCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+        gpgpuEngine = &device->getDefaultEngine();
+        if (getGpgpuCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
             timestampPacketContainer = std::make_unique<TimestampPacketContainer>();
+        }
+        if (device->getExecutionEnvironment()->getHardwareInfo()->capabilityTable.blitterOperationsSupported) {
+            bcsEngine = &device->getDeviceById(0)->getEngine(aub_stream::EngineType::ENGINE_BCS, false);
         }
     }
 
@@ -83,16 +86,13 @@ CommandQueue::~CommandQueue() {
     }
 
     if (device) {
-        auto storageForAllocation = getCommandStreamReceiver().getInternalAllocationStorage();
+        auto storageForAllocation = getGpgpuCommandStreamReceiver().getInternalAllocationStorage();
 
         if (commandStream) {
             storageForAllocation->storeAllocation(std::unique_ptr<GraphicsAllocation>(commandStream->getGraphicsAllocation()), REUSABLE_ALLOCATION);
         }
         delete commandStream;
 
-        if (perfConfigurationData) {
-            delete perfConfigurationData;
-        }
         if (this->perfCountersEnabled) {
             device->getPerformanceCounters()->shutdown();
         }
@@ -106,8 +106,15 @@ CommandQueue::~CommandQueue() {
     }
 }
 
-CommandStreamReceiver &CommandQueue::getCommandStreamReceiver() const {
-    return *engine->commandStreamReceiver;
+CommandStreamReceiver &CommandQueue::getGpgpuCommandStreamReceiver() const {
+    return *gpgpuEngine->commandStreamReceiver;
+}
+
+CommandStreamReceiver *CommandQueue::getBcsCommandStreamReceiver() const {
+    if (bcsEngine) {
+        return bcsEngine->commandStreamReceiver;
+    }
+    return nullptr;
 }
 
 uint32_t CommandQueue::getHwTag() const {
@@ -116,7 +123,7 @@ uint32_t CommandQueue::getHwTag() const {
 }
 
 volatile uint32_t *CommandQueue::getHwTagAddress() const {
-    return getCommandStreamReceiver().getTagAddress();
+    return getGpgpuCommandStreamReceiver().getTagAddress();
 }
 
 bool CommandQueue::isCompleted(uint32_t taskCount) const {
@@ -133,10 +140,19 @@ void CommandQueue::waitUntilComplete(uint32_t taskCountToWait, FlushStamp flushS
 
     bool forcePowerSavingMode = this->throttle == QueueThrottle::LOW;
 
-    getCommandStreamReceiver().waitForTaskCountWithKmdNotifyFallback(taskCountToWait, flushStampToWait, useQuickKmdSleep, forcePowerSavingMode);
+    getGpgpuCommandStreamReceiver().waitForTaskCountWithKmdNotifyFallback(taskCountToWait, flushStampToWait,
+                                                                          useQuickKmdSleep, forcePowerSavingMode);
 
     DEBUG_BREAK_IF(getHwTag() < taskCountToWait);
     latestTaskCountWaited = taskCountToWait;
+
+    getGpgpuCommandStreamReceiver().waitForTaskCountAndCleanAllocationList(taskCountToWait, TEMPORARY_ALLOCATION);
+
+    if (auto bcsCsr = getBcsCommandStreamReceiver()) {
+        auto bcsTaskCount = *bcsCsr->getTagAddress();
+        bcsCsr->waitForTaskCountAndCleanAllocationList(bcsTaskCount, TEMPORARY_ALLOCATION);
+    }
+
     WAIT_LEAVE()
 }
 
@@ -144,10 +160,11 @@ bool CommandQueue::isQueueBlocked() {
     TakeOwnershipWrapper<CommandQueue> takeOwnershipWrapper(*this);
     //check if we have user event and if so, if it is in blocked state.
     if (this->virtualEvent) {
-        if (this->virtualEvent->peekExecutionStatus() <= CL_COMPLETE) {
+        auto executionStatus = this->virtualEvent->peekExecutionStatus();
+        if (executionStatus <= CL_SUBMITTED) {
             UNRECOVERABLE_IF(this->virtualEvent == nullptr);
 
-            if (this->virtualEvent->isStatusCompletedByTermination() == false) {
+            if (this->virtualEvent->isStatusCompletedByTermination(executionStatus) == false) {
                 taskCount = this->virtualEvent->peekTaskCount();
                 flushStamp->setStamp(this->virtualEvent->flushStamp->peekStamp());
                 taskLevel = this->virtualEvent->taskLevel;
@@ -159,7 +176,7 @@ bool CommandQueue::isQueueBlocked() {
                 //at this point we may reset queue TaskCount, since all command previous to this were aborted
                 taskCount = 0;
                 flushStamp->setStamp(0);
-                taskLevel = getCommandStreamReceiver().peekTaskLevel();
+                taskLevel = getGpgpuCommandStreamReceiver().peekTaskLevel();
             }
 
             DebugManager.log(DebugManager.flags.EventsDebugEnable.get(), "isQueueBlocked taskLevel change from", taskLevel, "to new from virtualEvent", this->virtualEvent, "new tasklevel", this->virtualEvent->taskLevel.load());
@@ -201,7 +218,7 @@ LinearStream &CommandQueue::getCS(size_t minRequiredSize) {
 
     minRequiredSize += CSRequirements::minCommandQueueCommandStreamSize;
     constexpr static auto additionalAllocationSize = CSRequirements::minCommandQueueCommandStreamSize + CSRequirements::csOverfetchSize;
-    getCommandStreamReceiver().ensureCommandBufferAllocation(*commandStream, minRequiredSize, additionalAllocationSize);
+    getGpgpuCommandStreamReceiver().ensureCommandBufferAllocation(*commandStream, minRequiredSize, additionalAllocationSize);
     return *commandStream;
 }
 
@@ -275,42 +292,30 @@ bool CommandQueue::setPerfCountersEnabled(bool perfCountersEnabled, cl_uint conf
     if (perfCountersEnabled == this->perfCountersEnabled) {
         return true;
     }
+    // Only dynamic configuration (set 0) is supported.
+    const uint32_t dynamicSet = 0;
+    if (configuration != dynamicSet) {
+        return false;
+    }
     auto perfCounters = device->getPerformanceCounters();
+
     if (perfCountersEnabled) {
         perfCounters->enable();
         if (!perfCounters->isAvailable()) {
             perfCounters->shutdown();
             return false;
         }
-        perfConfigurationData = perfCounters->getPmRegsCfg(configuration);
-        if (perfConfigurationData == nullptr) {
-            perfCounters->shutdown();
-            return false;
-        }
-        InstrReadRegsCfg *pUserCounters = &perfConfigurationData->ReadRegs;
-        for (uint32_t i = 0; i < pUserCounters->RegsCount; ++i) {
-            perfCountersUserRegistersNumber++;
-            if (pUserCounters->Reg[i].BitSize > 32) {
-                perfCountersUserRegistersNumber++;
-            }
-        }
     } else {
-        if (perfCounters->isAvailable()) {
-            perfCounters->shutdown();
-        }
+        perfCounters->shutdown();
     }
-    this->perfCountersConfig = configuration;
+
     this->perfCountersEnabled = perfCountersEnabled;
 
     return true;
-}
+} // namespace NEO
 
 PerformanceCounters *CommandQueue::getPerfCounters() {
     return device->getPerformanceCounters();
-}
-
-bool CommandQueue::sendPerfCountersConfig() {
-    return getPerfCounters()->sendPmRegsCfgCommands(perfConfigurationData, &perfCountersRegsCfgHandle, &perfCountersRegsCfgPending);
 }
 
 cl_int CommandQueue::enqueueWriteMemObjForUnmap(MemObj *memObj, void *mappedPtr, EventsRequest &eventsRequest) {
@@ -336,13 +341,13 @@ cl_int CommandQueue::enqueueWriteMemObjForUnmap(MemObj *memObj, void *mappedPtr,
                                        image->getHostPtrRowPitch(), image->getHostPtrSlicePitch(), mappedPtr, memObj->getMapAllocation(),
                                        eventsRequest.numEventsInWaitList, eventsRequest.eventWaitList, eventsRequest.outEvent);
             bool mustCallFinish = true;
-            if (!(image->getFlags() & CL_MEM_USE_HOST_PTR)) {
+            if (!(image->getMemoryPropertiesFlags() & CL_MEM_USE_HOST_PTR)) {
                 mustCallFinish = true;
             } else {
                 mustCallFinish = (CommandQueue::getTaskLevelFromWaitList(this->taskLevel, eventsRequest.numEventsInWaitList, eventsRequest.eventWaitList) != Event::eventNotReady);
             }
             if (mustCallFinish) {
-                finish(true);
+                finish();
             }
         }
     } else {
@@ -492,7 +497,7 @@ void CommandQueue::enqueueBlockedMapUnmapOperation(const cl_event *eventWaitList
     }
 
     //store task data in event
-    auto cmd = std::unique_ptr<Command>(new CommandMapUnmap(opType, *memObj, copySize, copyOffset, readOnly, getCommandStreamReceiver(), *this));
+    auto cmd = std::unique_ptr<Command>(new CommandMapUnmap(opType, *memObj, copySize, copyOffset, readOnly, *this));
     eventBuilder->getEvent()->setCommand(std::move(cmd));
 
     //bind output event with input events
@@ -507,10 +512,10 @@ void CommandQueue::enqueueBlockedMapUnmapOperation(const cl_event *eventWaitList
 }
 
 bool CommandQueue::setupDebugSurface(Kernel *kernel) {
-    auto debugSurface = getCommandStreamReceiver().getDebugSurfaceAllocation();
+    auto debugSurface = getGpgpuCommandStreamReceiver().getDebugSurfaceAllocation();
 
     if (!debugSurface) {
-        debugSurface = getCommandStreamReceiver().allocateDebugSurface(SipKernel::maxDbgSurfaceSize);
+        debugSurface = getGpgpuCommandStreamReceiver().allocateDebugSurface(SipKernel::maxDbgSurfaceSize);
     }
 
     DEBUG_BREAK_IF(!kernel->requiresSshForBuffers());
@@ -524,35 +529,19 @@ bool CommandQueue::setupDebugSurface(Kernel *kernel) {
 }
 
 IndirectHeap &CommandQueue::getIndirectHeap(IndirectHeap::Type heapType, size_t minRequiredSize) {
-    return getCommandStreamReceiver().getIndirectHeap(heapType, minRequiredSize);
+    return getGpgpuCommandStreamReceiver().getIndirectHeap(heapType, minRequiredSize);
 }
 
 void CommandQueue::allocateHeapMemory(IndirectHeap::Type heapType, size_t minRequiredSize, IndirectHeap *&indirectHeap) {
-    getCommandStreamReceiver().allocateHeapMemory(heapType, minRequiredSize, indirectHeap);
+    getGpgpuCommandStreamReceiver().allocateHeapMemory(heapType, minRequiredSize, indirectHeap);
 }
 
 void CommandQueue::releaseIndirectHeap(IndirectHeap::Type heapType) {
-    getCommandStreamReceiver().releaseIndirectHeap(heapType);
-}
-
-void CommandQueue::dispatchAuxTranslation(MultiDispatchInfo &multiDispatchInfo, MemObjsForAuxTranslation &memObjsForAuxTranslation,
-                                          AuxTranslationDirection auxTranslationDirection) {
-    if (!multiDispatchInfo.empty()) {
-        multiDispatchInfo.rbegin()->setPipeControlRequired(true);
-    }
-    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::AuxTranslation, getContext(), getDevice());
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dispatchParams;
-
-    dispatchParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
-    dispatchParams.auxTranslationDirection = auxTranslationDirection;
-
-    builder.buildDispatchInfos(multiDispatchInfo, dispatchParams);
-
-    multiDispatchInfo.rbegin()->setPipeControlRequired(true);
+    getGpgpuCommandStreamReceiver().releaseIndirectHeap(heapType);
 }
 
 void CommandQueue::obtainNewTimestampPacketNodes(size_t numberOfNodes, TimestampPacketContainer &previousNodes, bool clearAllDependencies) {
-    auto allocator = getCommandStreamReceiver().getTimestampPacketAllocator();
+    auto allocator = getGpgpuCommandStreamReceiver().getTimestampPacketAllocator();
 
     previousNodes.swapNodes(*timestampPacketContainer);
     previousNodes.resolveDependencies(clearAllDependencies);
@@ -584,27 +573,63 @@ bool CommandQueue::bufferCpuCopyAllowed(Buffer *buffer, cl_command_type commandT
            buffer->isReadWriteOnCpuAllowed(blocking, numEventsInWaitList, ptr, size);
 }
 
-cl_int CommandQueue::enqueueReadWriteBufferWithBlitTransfer(cl_command_type commandType, Buffer *buffer,
-                                                            size_t offset, size_t size, void *ptr, cl_uint numEventsInWaitList,
-                                                            const cl_event *eventWaitList, cl_event *event) {
-    auto blitCommandStreamReceiver = context->getCommandStreamReceiverForBlitOperation(*buffer);
-    EventsRequest eventsRequest(numEventsInWaitList, eventWaitList, event);
-    TimestampPacketContainer previousTimestampPacketNodes;
-    CsrDependencies csrDependencies;
-
-    csrDependencies.fillFromEventsRequestAndMakeResident(eventsRequest, *blitCommandStreamReceiver,
-                                                         CsrDependencies::DependenciesType::All);
-
-    obtainNewTimestampPacketNodes(1, previousTimestampPacketNodes, queueDependenciesClearRequired());
-    csrDependencies.push_back(&previousTimestampPacketNodes);
-
-    auto copyDirection = (CL_COMMAND_WRITE_BUFFER == commandType) ? BlitterConstants::BlitWithHostPtrDirection::FromHostPtr
-                                                                  : BlitterConstants::BlitWithHostPtrDirection::ToHostPtr;
-    blitCommandStreamReceiver->blitWithHostPtr(*buffer, ptr, true, offset, size, copyDirection, csrDependencies, *timestampPacketContainer);
-    return CL_SUCCESS;
-}
-
 bool CommandQueue::queueDependenciesClearRequired() const {
     return isOOQEnabled() || DebugManager.flags.OmitTimestampPacketDependencies.get();
+}
+
+bool CommandQueue::blitEnqueueAllowed(cl_command_type cmdType) const {
+    bool blitAllowed = false;
+
+    if (DebugManager.flags.EnableBlitterOperationsForReadWriteBuffers.get() != -1) {
+        blitAllowed = !!DebugManager.flags.EnableBlitterOperationsForReadWriteBuffers.get() &&
+                      device->getExecutionEnvironment()->getHardwareInfo()->capabilityTable.blitterOperationsSupported;
+    }
+
+    bool commandAllowed = (CL_COMMAND_READ_BUFFER == cmdType) || (CL_COMMAND_WRITE_BUFFER == cmdType);
+
+    return commandAllowed && blitAllowed;
+}
+
+bool CommandQueue::isBlockedCommandStreamRequired(uint32_t commandType, const EventsRequest &eventsRequest, bool blockedQueue) const {
+    if (!blockedQueue) {
+        return false;
+    }
+
+    if (isCacheFlushCommand(commandType) || !isCommandWithoutKernel(commandType)) {
+        return true;
+    }
+
+    if ((CL_COMMAND_BARRIER == commandType || CL_COMMAND_MARKER == commandType) &&
+        getGpgpuCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+
+        for (size_t i = 0; i < eventsRequest.numEventsInWaitList; i++) {
+            auto waitlistEvent = castToObjectOrAbort<Event>(eventsRequest.eventWaitList[i]);
+            if (waitlistEvent->getTimestampPacketNodes()) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+void CommandQueue::aubCaptureHook(bool &blocking, bool &clearAllDependencies, const MultiDispatchInfo &multiDispatchInfo) {
+    if (DebugManager.flags.AUBDumpSubCaptureMode.get()) {
+        auto status = getGpgpuCommandStreamReceiver().checkAndActivateAubSubCapture(multiDispatchInfo);
+        if (!status.isActive) {
+            // make each enqueue blocking when subcapture is not active to split batch buffer
+            blocking = true;
+        } else if (!status.wasActiveInPreviousEnqueue) {
+            // omit timestamp packet dependencies dependencies upon subcapture activation
+            clearAllDependencies = true;
+        }
+    }
+
+    if (getGpgpuCommandStreamReceiver().getType() > CommandStreamReceiverType::CSR_HW) {
+        for (auto &dispatchInfo : multiDispatchInfo) {
+            auto kernelName = dispatchInfo.getKernel()->getKernelInfo().name;
+            getGpgpuCommandStreamReceiver().addAubComment(kernelName.c_str());
+        }
+    }
 }
 } // namespace NEO

@@ -31,20 +31,23 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
   public:
     using MemoryManager::allocateGraphicsMemoryForNonSvmHostPtr;
     using MemoryManager::allocateGraphicsMemoryInPreferredPool;
+    using MemoryManager::allocateGraphicsMemoryWithAlignment;
     using MemoryManager::allocateGraphicsMemoryWithProperties;
     using MemoryManager::AllocationData;
-    using MemoryManager::allocator32Bit;
     using MemoryManager::createGraphicsAllocation;
     using MemoryManager::createStorageInfoFromProperties;
     using MemoryManager::getAllocationData;
     using MemoryManager::getBanksCount;
+    using MemoryManager::gfxPartition;
     using MemoryManager::localMemoryUsageBankSelector;
     using MemoryManager::multiContextResourceDestructor;
+    using MemoryManager::pageFaultManager;
     using MemoryManager::registeredEngines;
     using MemoryManager::supportsMultiStorageResources;
     using MemoryManager::useInternal32BitAllocator;
     using OsAgnosticMemoryManager::allocateGraphicsMemoryForImageFromHostPtr;
     using MemoryManagerCreate<OsAgnosticMemoryManager>::MemoryManagerCreate;
+    using MemoryManager::reservedMemory;
 
     MockMemoryManager(ExecutionEnvironment &executionEnvironment) : MockMemoryManager(false, executionEnvironment) {}
 
@@ -98,6 +101,9 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     }
 
     GraphicsAllocation *allocate32BitGraphicsMemory(size_t size, const void *ptr, GraphicsAllocation::AllocationType allocationType);
+    GraphicsAllocation *allocate32BitGraphicsMemoryImpl(const AllocationData &allocationData) override;
+
+    void forceLimitedRangeAllocator(uint64_t range) { gfxPartition->init(range, 0); }
 
     uint32_t freeGraphicsMemoryCalled = 0u;
     uint32_t unlockResourceCalled = 0u;
@@ -113,6 +119,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     bool allocateForImageCalled = false;
     bool failReserveAddress = false;
     bool failAllocateSystemMemory = false;
+    bool failAllocate32Bit = false;
     std::unique_ptr<ExecutionEnvironment> mockExecutionEnvironment;
 };
 
@@ -191,10 +198,6 @@ class FailMemoryManager : public MockMemoryManager {
 
     uint64_t getSystemSharedMemory() override {
         return 0;
-    };
-
-    uint64_t getMaxApplicationAddress() override {
-        return MemoryConstants::max32BitAppAddress;
     };
 
     GraphicsAllocation *createGraphicsAllocation(OsHandleStorage &handleStorage, const AllocationData &allocationData) override {

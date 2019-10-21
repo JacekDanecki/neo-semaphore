@@ -8,12 +8,13 @@
 #include "runtime/mem_obj/mem_obj.h"
 
 #include "common/helpers/bit_helpers.h"
+#include "core/helpers/aligned_memory.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/gmm_helper/gmm.h"
-#include "runtime/helpers/aligned_memory.h"
+#include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/get_info.h"
 #include "runtime/memory_manager/deferred_deleter.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
@@ -26,7 +27,9 @@ namespace NEO {
 
 MemObj::MemObj(Context *context,
                cl_mem_object_type memObjectType,
-               MemoryProperties properties,
+               const MemoryPropertiesFlags &memoryProperties,
+               cl_mem_flags flags,
+               cl_mem_flags_intel flagsIntel,
                size_t size,
                void *memoryStorage,
                void *hostPtr,
@@ -34,7 +37,7 @@ MemObj::MemObj(Context *context,
                bool zeroCopy,
                bool isHostPtrSVM,
                bool isObjectRedescribed)
-    : context(context), memObjectType(memObjectType), properties(properties), size(size),
+    : context(context), memObjectType(memObjectType), memoryProperties(memoryProperties), flags(flags), flagsIntel(flagsIntel), size(size),
       memoryStorage(memoryStorage), hostPtr(hostPtr),
       isZeroCopy(zeroCopy), isHostPtrSVM(isHostPtrSVM), isObjectRedescribed(isObjectRedescribed),
       graphicsAllocation(gfxAllocation) {
@@ -127,8 +130,8 @@ cl_int MemObj::getMemObjectInfo(cl_mem_info paramName,
         break;
 
     case CL_MEM_FLAGS:
-        srcParamSize = sizeof(properties.flags);
-        srcParam = &properties.flags;
+        srcParamSize = sizeof(flags);
+        srcParam = &flags;
         break;
 
     case CL_MEM_SIZE:
@@ -148,7 +151,7 @@ cl_int MemObj::getMemObjectInfo(cl_mem_info paramName,
         break;
 
     case CL_MEM_USES_SVM_POINTER:
-        usesSVMPointer = isHostPtrSVM && isValueSet(properties.flags, CL_MEM_USE_HOST_PTR);
+        usesSVMPointer = isHostPtrSVM && isValueSet(flags, CL_MEM_USE_HOST_PTR);
         srcParamSize = sizeof(cl_bool);
         srcParam = &usesSVMPointer;
         break;
@@ -219,10 +222,6 @@ void MemObj::setAllocatedMapPtr(void *allocatedMapPtr) {
     this->allocatedMapPtr = allocatedMapPtr;
 }
 
-cl_mem_flags MemObj::getFlags() const {
-    return getProperties().flags;
-}
-
 bool MemObj::isMemObjZeroCopy() const {
     return isZeroCopy;
 }
@@ -232,7 +231,11 @@ bool MemObj::isMemObjWithHostPtrSVM() const {
 }
 
 bool MemObj::isMemObjUncacheable() const {
-    return isValueSet(properties.flags_intel, CL_MEM_LOCALLY_UNCACHED_RESOURCE);
+    return isValueSet(flagsIntel, CL_MEM_LOCALLY_UNCACHED_RESOURCE);
+}
+
+bool MemObj::isMemObjUncacheableForSurfaceState() const {
+    return isAnyBitSet(flagsIntel, CL_MEM_LOCALLY_UNCACHED_SURFACE_STATE_RESOURCE | CL_MEM_LOCALLY_UNCACHED_RESOURCE);
 }
 
 GraphicsAllocation *MemObj::getGraphicsAllocation() const {
@@ -250,11 +253,11 @@ void MemObj::resetGraphicsAllocation(GraphicsAllocation *newGraphicsAllocation) 
 }
 
 bool MemObj::readMemObjFlagsInvalid() {
-    return isValueSet(properties.flags, CL_MEM_HOST_WRITE_ONLY) || isValueSet(properties.flags, CL_MEM_HOST_NO_ACCESS);
+    return isValueSet(flags, CL_MEM_HOST_WRITE_ONLY) || isValueSet(flags, CL_MEM_HOST_NO_ACCESS);
 }
 
 bool MemObj::writeMemObjFlagsInvalid() {
-    return isValueSet(properties.flags, CL_MEM_HOST_READ_ONLY) || isValueSet(properties.flags, CL_MEM_HOST_NO_ACCESS);
+    return isValueSet(flags, CL_MEM_HOST_READ_ONLY) || isValueSet(flags, CL_MEM_HOST_NO_ACCESS);
 }
 
 bool MemObj::mapMemObjFlagsInvalid(cl_map_flags mapFlags) {
@@ -268,7 +271,7 @@ void MemObj::setHostPtrMinSize(size_t size) {
 
 void *MemObj::getCpuAddressForMapping() {
     void *ptrToReturn = nullptr;
-    if (isValueSet(properties.flags, CL_MEM_USE_HOST_PTR)) {
+    if (isValueSet(flags, CL_MEM_USE_HOST_PTR)) {
         ptrToReturn = this->hostPtr;
     } else {
         ptrToReturn = this->memoryStorage;
@@ -277,7 +280,7 @@ void *MemObj::getCpuAddressForMapping() {
 }
 void *MemObj::getCpuAddressForMemoryTransfer() {
     void *ptrToReturn = nullptr;
-    if (isValueSet(properties.flags, CL_MEM_USE_HOST_PTR) && this->isMemObjZeroCopy()) {
+    if (isValueSet(flags, CL_MEM_USE_HOST_PTR) && this->isMemObjZeroCopy()) {
         ptrToReturn = this->hostPtr;
     } else {
         ptrToReturn = this->memoryStorage;
@@ -286,7 +289,7 @@ void *MemObj::getCpuAddressForMemoryTransfer() {
 }
 void MemObj::releaseAllocatedMapPtr() {
     if (allocatedMapPtr) {
-        DEBUG_BREAK_IF(isValueSet(properties.flags, CL_MEM_USE_HOST_PTR));
+        DEBUG_BREAK_IF(isValueSet(flags, CL_MEM_USE_HOST_PTR));
         memoryManager->freeSystemMemory(allocatedMapPtr);
     }
     allocatedMapPtr = nullptr;
@@ -306,8 +309,8 @@ void MemObj::destroyGraphicsAllocation(GraphicsAllocation *allocation, bool asyn
     }
 }
 
-bool MemObj::checkIfMemoryTransferIsRequired(size_t offsetInMemObjest, size_t offsetInHostPtr, const void *hostPtr, cl_command_type cmdType) {
-    auto bufferStorage = ptrOffset(this->getCpuAddressForMemoryTransfer(), offsetInMemObjest);
+bool MemObj::checkIfMemoryTransferIsRequired(size_t offsetInMemObject, size_t offsetInHostPtr, const void *hostPtr, cl_command_type cmdType) {
+    auto bufferStorage = ptrOffset(this->getCpuAddressForMemoryTransfer(), offsetInMemObject);
     auto hostStorage = ptrOffset(hostPtr, offsetInHostPtr);
     auto isMemTransferNeeded = !((bufferStorage == hostStorage) &&
                                  (cmdType == CL_COMMAND_WRITE_BUFFER || cmdType == CL_COMMAND_READ_BUFFER ||
@@ -320,7 +323,7 @@ void *MemObj::getBasePtrForMap() {
     if (associatedMemObject) {
         return associatedMemObject->getBasePtrForMap();
     }
-    if (getFlags() & CL_MEM_USE_HOST_PTR) {
+    if (getMemoryPropertiesFlags() & CL_MEM_USE_HOST_PTR) {
         return getHostPtr();
     } else {
         TakeOwnershipWrapper<MemObj> memObjOwnership(*this);
@@ -344,8 +347,13 @@ bool MemObj::addMappedPtr(void *ptr, size_t ptrLength, cl_map_flags &mapFlags,
                                     mipLevel);
 }
 
+bool MemObj::isTiledAllocation() const {
+    auto gmm = graphicsAllocation->getDefaultGmm();
+    return gmm && (gmm->gmmResourceInfo->getTileModeSurfaceState() != 0);
+}
+
 bool MemObj::mappingOnCpuAllowed() const {
-    return !allowTiling() && !peekSharingHandler() && !isMipMapped(this) && !DebugManager.flags.DisableZeroCopyForBuffers.get() &&
+    return !isTiledAllocation() && !peekSharingHandler() && !isMipMapped(this) && !DebugManager.flags.DisableZeroCopyForBuffers.get() &&
            !(graphicsAllocation->getDefaultGmm() && graphicsAllocation->getDefaultGmm()->isRenderCompressed) &&
            MemoryPool::isSystemMemoryPool(graphicsAllocation->getMemoryPool());
 }

@@ -5,7 +5,7 @@
  *
  */
 
-#include "runtime/helpers/aligned_memory.h"
+#include "core/helpers/aligned_memory.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
@@ -72,7 +72,7 @@ TEST_P(ImageRedescribeTest, givenImageWhenItIsRedescribedThenItContainsProperFor
     ASSERT_NE(nullptr, imageNew);
     ASSERT_NE(image, imageNew);
 
-    EXPECT_EQ(static_cast<cl_mem_flags>(CL_MEM_USE_HOST_PTR), imageNew->getFlags() & CL_MEM_USE_HOST_PTR);
+    EXPECT_EQ(static_cast<cl_mem_flags>(CL_MEM_USE_HOST_PTR), imageNew->getMemoryPropertiesFlags() & CL_MEM_USE_HOST_PTR);
     EXPECT_EQ(image->getCpuAddress(), imageNew->getCpuAddress());
     EXPECT_NE(static_cast<cl_channel_type>(CL_FLOAT), imageNew->getSurfaceFormatInfo().OCLImageFormat.image_channel_data_type);
     EXPECT_NE(static_cast<cl_channel_type>(CL_HALF_FLOAT), imageNew->getSurfaceFormatInfo().OCLImageFormat.image_channel_data_type);

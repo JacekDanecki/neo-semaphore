@@ -8,6 +8,7 @@
 #include "runtime/helpers/hw_info.h"
 #include "runtime/os_interface/hw_info_config.h"
 #include "runtime/os_interface/hw_info_config.inl"
+#include "runtime/os_interface/hw_info_config_bdw_plus.inl"
 
 namespace NEO {
 
@@ -28,4 +29,12 @@ int HwInfoConfigHw<IGFX_LAKEFIELD>::configureHardwareCustom(HardwareInfo *hwInfo
 template class HwInfoConfigHw<IGFX_LAKEFIELD>;
 #endif
 
+#ifdef SUPPORT_EHL
+template <>
+int HwInfoConfigHw<IGFX_ELKHARTLAKE>::configureHardwareCustom(HardwareInfo *hwInfo, OSInterface *osIface) {
+    return 0;
+}
+
+template class HwInfoConfigHw<IGFX_ELKHARTLAKE>;
+#endif
 } // namespace NEO

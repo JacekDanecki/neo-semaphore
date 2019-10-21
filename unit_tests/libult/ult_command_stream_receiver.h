@@ -9,6 +9,8 @@
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
+#include "runtime/os_interface/os_context.h"
+#include "unit_tests/helpers/dispatch_flags_helper.h"
 #include "unit_tests/mocks/mock_experimental_command_buffer.h"
 
 #include <map>
@@ -23,19 +25,19 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     using BaseClass = CommandStreamReceiverHw<GfxFamily>;
 
   public:
-    using BaseClass::deviceIndex;
     using BaseClass::dshState;
     using BaseClass::getScratchPatchAddress;
     using BaseClass::getScratchSpaceController;
     using BaseClass::indirectHeap;
     using BaseClass::iohState;
+    using BaseClass::perDssBackedBuffer;
     using BaseClass::programPreamble;
     using BaseClass::programStateSip;
+    using BaseClass::requiresInstructionCacheFlush;
     using BaseClass::sshState;
     using BaseClass::CommandStreamReceiver::bindingTableBaseAddressRequired;
     using BaseClass::CommandStreamReceiver::cleanupResources;
     using BaseClass::CommandStreamReceiver::commandStream;
-    using BaseClass::CommandStreamReceiver::disableL3Cache;
     using BaseClass::CommandStreamReceiver::dispatchMode;
     using BaseClass::CommandStreamReceiver::executionEnvironment;
     using BaseClass::CommandStreamReceiver::experimentalCmdBuffer;
@@ -54,11 +56,14 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     using BaseClass::CommandStreamReceiver::latestSentStatelessMocsConfig;
     using BaseClass::CommandStreamReceiver::latestSentTaskCount;
     using BaseClass::CommandStreamReceiver::mediaVfeStateDirty;
+    using BaseClass::CommandStreamReceiver::osContext;
     using BaseClass::CommandStreamReceiver::perfCounterAllocator;
     using BaseClass::CommandStreamReceiver::profilingTimeStampAllocator;
+    using BaseClass::CommandStreamReceiver::requiredPrivateScratchSize;
     using BaseClass::CommandStreamReceiver::requiredScratchSize;
     using BaseClass::CommandStreamReceiver::requiredThreadArbitrationPolicy;
     using BaseClass::CommandStreamReceiver::samplerCacheFlushRequired;
+    using BaseClass::CommandStreamReceiver::scratchSpaceController;
     using BaseClass::CommandStreamReceiver::stallingPipeControlOnNextFlushRequired;
     using BaseClass::CommandStreamReceiver::submissionAggregator;
     using BaseClass::CommandStreamReceiver::taskCount;
@@ -68,18 +73,10 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     using BaseClass::CommandStreamReceiver::waitForTaskCountAndCleanAllocationList;
 
     virtual ~UltCommandStreamReceiver() override {
-        if (tempPreemptionLocation) {
-            this->setPreemptionCsrAllocation(nullptr);
-        }
     }
 
-    UltCommandStreamReceiver(ExecutionEnvironment &executionEnvironment) : BaseClass(executionEnvironment), recursiveLockCounter(0) {
-        if (executionEnvironment.getHardwareInfo()->capabilityTable.defaultPreemptionMode == PreemptionMode::MidThread) {
-            tempPreemptionLocation = std::make_unique<GraphicsAllocation>(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, 0, 0, 0, MemoryPool::MemoryNull, false);
-            this->preemptionCsrAllocation = tempPreemptionLocation.get();
-        }
-    }
-
+    UltCommandStreamReceiver(ExecutionEnvironment &executionEnvironment) : BaseClass(executionEnvironment), recursiveLockCounter(0),
+                                                                           recordedDispatchFlags(DispatchFlagsHelper::createDefaultDispatchFlags()) {}
     static CommandStreamReceiver *create(bool withAubDump, ExecutionEnvironment &executionEnvironment) {
         return new UltCommandStreamReceiver<GfxFamily>(executionEnvironment);
     }
@@ -105,6 +102,7 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
                               const IndirectHeap &dsh, const IndirectHeap &ioh, const IndirectHeap &ssh,
                               uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) override {
+        recordedDispatchFlags = dispatchFlags;
         this->lastFlushedCommandStream = &commandStream;
         return BaseClass::flushTask(commandStream, commandStreamStart, dsh, ioh, ssh, taskLevel, dispatchFlags, device);
     }
@@ -112,6 +110,7 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     size_t getPreferredTagPoolSize() const override {
         return BaseClass::getPreferredTagPoolSize() + 1;
     }
+    void setPreemptionAllocation(GraphicsAllocation *allocation) { this->preemptionAllocation = allocation; }
 
     bool waitForCompletionWithTimeout(bool enableTimeout, int64_t timeoutMicroseconds, uint32_t taskCountToWait) override {
         latestWaitForCompletionWithTimeoutTaskCount.store(taskCountToWait);
@@ -119,7 +118,7 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     }
 
     void overrideCsrSizeReqFlags(CsrSizeRequestFlags &flags) { this->csrSizeRequestFlags = flags; }
-    GraphicsAllocation *getPreemptionCsrAllocation() const { return this->preemptionCsrAllocation; }
+    GraphicsAllocation *getPreemptionAllocation() const { return this->preemptionAllocation; }
 
     void makeResident(GraphicsAllocation &gfxAllocation) override {
         if (storeMakeResidentAllocations) {
@@ -137,6 +136,14 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
 
     bool isMadeResident(GraphicsAllocation *graphicsAllocation) const {
         return makeResidentAllocations.find(graphicsAllocation) != makeResidentAllocations.end();
+    }
+
+    bool isMadeResident(GraphicsAllocation *graphicsAllocation, uint32_t taskCount) const {
+        auto it = makeResidentAllocations.find(graphicsAllocation);
+        if (it == makeResidentAllocations.end()) {
+            return false;
+        }
+        return (it->first->getTaskCount(osContext->getContextId()) == taskCount);
     }
 
     std::map<GraphicsAllocation *, uint32_t> makeResidentAllocations;
@@ -166,10 +173,23 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
         return CommandStreamReceiverHw<GfxFamily>::obtainUniqueOwnership();
     }
 
-    void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, bool blocking, uint64_t dstOffset, uint64_t srcOffset,
-                    uint64_t copySize, CsrDependencies &csrDependencies, const TimestampPacketContainer &outputTimestampPacket) override {
+    void blitBuffer(const BlitProperties &blitProperites) override {
         blitBufferCalled++;
-        CommandStreamReceiverHw<GfxFamily>::blitBuffer(dstBuffer, srcBuffer, blocking, dstOffset, srcOffset, copySize, csrDependencies, outputTimestampPacket);
+        CommandStreamReceiverHw<GfxFamily>::blitBuffer(blitProperites);
+    }
+
+    bool createPerDssBackedBuffer(Device &device) override {
+        createPerDssBackedBufferCalled++;
+        bool result = BaseClass::createPerDssBackedBuffer(device);
+        if (!perDssBackedBuffer) {
+            AllocationProperties properties{MemoryConstants::pageSize, GraphicsAllocation::AllocationType::INTERNAL_HEAP};
+            perDssBackedBuffer = executionEnvironment.memoryManager->allocateGraphicsMemoryWithProperties(properties);
+        }
+        return result;
+    }
+
+    bool isMultiOsContextCapable() const override {
+        return multiOsContextCapable;
     }
 
     std::atomic<uint32_t> recursiveLockCounter;
@@ -185,10 +205,9 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     BatchBuffer latestFlushedBatchBuffer = {};
     uint32_t latestSentTaskCountValueDuringFlush = 0;
     uint32_t blitBufferCalled = 0;
+    uint32_t createPerDssBackedBufferCalled = 0;
     std::atomic<uint32_t> latestWaitForCompletionWithTimeoutTaskCount{0};
-
-  protected:
-    std::unique_ptr<GraphicsAllocation> tempPreemptionLocation;
+    DispatchFlags recordedDispatchFlags;
+    bool multiOsContextCapable = false;
 };
-
 } // namespace NEO

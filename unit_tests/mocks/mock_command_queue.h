@@ -6,8 +6,8 @@
  */
 
 #pragma once
+#include "core/memory_manager/graphics_allocation.h"
 #include "runtime/command_queue/command_queue_hw.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -18,7 +18,7 @@ namespace NEO {
 class MockCommandQueue : public CommandQueue {
   public:
     using CommandQueue::device;
-    using CommandQueue::engine;
+    using CommandQueue::gpgpuEngine;
     using CommandQueue::multiEngineQueue;
     using CommandQueue::obtainNewTimestampPacketNodes;
     using CommandQueue::requiresCacheFlushAfterWalker;
@@ -32,6 +32,7 @@ class MockCommandQueue : public CommandQueue {
         commandQueueProperties |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
     }
     MockCommandQueue() : CommandQueue(nullptr, nullptr, 0) {}
+    MockCommandQueue(Context &context) : MockCommandQueue(&context, context.getDevice(0), nullptr) {}
     MockCommandQueue(Context *context, Device *device, const cl_queue_properties *props)
         : CommandQueue(context, device, props) {
     }
@@ -73,9 +74,11 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     typedef CommandQueueHw<GfxFamily> BaseClass;
 
   public:
+    using BaseClass::bcsEngine;
     using BaseClass::commandStream;
-    using BaseClass::engine;
+    using BaseClass::gpgpuEngine;
     using BaseClass::multiEngineQueue;
+    using BaseClass::obtainCommandStream;
     using BaseClass::obtainNewTimestampPacketNodes;
     using BaseClass::requiresCacheFlushAfterWalker;
     using BaseClass::timestampPacketContainer;
@@ -86,7 +89,7 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     }
 
     UltCommandStreamReceiver<GfxFamily> &getUltCommandStreamReceiver() {
-        return reinterpret_cast<UltCommandStreamReceiver<GfxFamily> &>(*BaseClass::engine->commandStreamReceiver);
+        return reinterpret_cast<UltCommandStreamReceiver<GfxFamily> &>(*BaseClass::gpgpuEngine->commandStreamReceiver);
     }
 
     cl_int enqueueWriteImage(Image *dstImage,
@@ -125,6 +128,7 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     }
 
     void enqueueHandlerHook(const unsigned int commandType, const MultiDispatchInfo &dispatchInfo) override {
+        kernelParams = dispatchInfo.peekBuiltinOpParams();
         lastCommandType = commandType;
         for (auto &di : dispatchInfo) {
             lastEnqueuedKernels.push_back(di.getKernel());
@@ -146,19 +150,10 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     bool notifyEnqueueReadBufferCalled = false;
     bool notifyEnqueueReadImageCalled = false;
     bool cpuDataTransferHandlerCalled = false;
-    uint32_t completionStampTaskCount = 0;
-    uint32_t deltaTaskCount = 0;
+    BuiltinOpParams kernelParams;
 
     LinearStream *peekCommandStream() {
         return this->commandStream;
-    }
-
-    void updateFromCompletionStamp(const CompletionStamp &completionStamp) override {
-        BaseClass::updateFromCompletionStamp(completionStamp);
-        const uint32_t &referenceToCompletionStampTaskCount = completionStamp.taskCount;
-        uint32_t &nonConstReferenceToCompletionStampTaskCount = const_cast<uint32_t &>(referenceToCompletionStampTaskCount);
-        nonConstReferenceToCompletionStampTaskCount += deltaTaskCount;
-        completionStampTaskCount = referenceToCompletionStampTaskCount;
     }
 };
 } // namespace NEO

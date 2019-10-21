@@ -5,9 +5,9 @@
  *
  */
 
+#include "core/helpers/aligned_memory.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/mem_obj/image.h"
@@ -420,9 +420,9 @@ HWTEST_F(EnqueueThreading, finish) {
     // set something to finish
     pCmdQ->taskCount = 1;
     pCmdQ->taskLevel = 1;
-    auto csr = (CommandStreamReceiverMock<FamilyType> *)&this->pCmdQ->getCommandStreamReceiver();
+    auto csr = (CommandStreamReceiverMock<FamilyType> *)&this->pCmdQ->getGpgpuCommandStreamReceiver();
     csr->expectedToFreeCount = 0u;
 
-    pCmdQ->finish(false);
+    pCmdQ->finish();
 }
 } // namespace ULT

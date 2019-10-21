@@ -25,6 +25,7 @@ class DrmMemoryManagerBasic : public ::testing::Test {
     void SetUp() override {
         executionEnvironment.osInterface = std::make_unique<OSInterface>();
         executionEnvironment.osInterface->get()->setDrm(Drm::get(0));
+        executionEnvironment.memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
     }
 
     MockExecutionEnvironment executionEnvironment;
@@ -32,19 +33,23 @@ class DrmMemoryManagerBasic : public ::testing::Test {
 
 class DrmMemoryManagerFixture : public MemoryManagementFixture {
   public:
+    std::unique_ptr<DrmMockCustom> mock;
     TestedDrmMemoryManager *memoryManager = nullptr;
-    DrmMockCustom *mock;
     MockDevice *device = nullptr;
 
     void SetUp() override {
+        SetUp(new DrmMockCustom, false);
+    }
+
+    void SetUp(DrmMockCustom *mock, bool localMemoryEnabled) {
         MemoryManagementFixture::SetUp();
-        this->mock = new DrmMockCustom;
+        this->mock = std::unique_ptr<DrmMockCustom>(mock);
         executionEnvironment = new MockExecutionEnvironment(*platformDevices);
         executionEnvironment->incRefInternal();
         executionEnvironment->osInterface = std::make_unique<OSInterface>();
         executionEnvironment->osInterface->get()->setDrm(mock);
 
-        memoryManager = new (std::nothrow) TestedDrmMemoryManager(*executionEnvironment);
+        memoryManager = new (std::nothrow) TestedDrmMemoryManager(localMemoryEnabled, false, false, *executionEnvironment);
         //assert we have memory manager
         ASSERT_NE(nullptr, memoryManager);
         if (memoryManager->getgemCloseWorker()) {
@@ -60,8 +65,6 @@ class DrmMemoryManagerFixture : public MemoryManagementFixture {
 
         this->mock->testIoctls();
 
-        delete this->mock;
-        this->mock = nullptr;
         MemoryManagementFixture::TearDown();
     }
 
@@ -69,6 +72,16 @@ class DrmMemoryManagerFixture : public MemoryManagementFixture {
     ExecutionEnvironment *executionEnvironment;
     DrmMockCustom::IoctlResExt ioctlResExt = {0, 0};
     AllocationData allocationData;
+};
+
+class DrmMemoryManagerWithLocalMemoryFixture : public DrmMemoryManagerFixture {
+  public:
+    void SetUp() override {
+        DrmMemoryManagerFixture::SetUp(new DrmMockCustom, true);
+    }
+    void TearDown() override {
+        DrmMemoryManagerFixture::TearDown();
+    }
 };
 
 class DrmMemoryManagerFixtureWithoutQuietIoctlExpectation {

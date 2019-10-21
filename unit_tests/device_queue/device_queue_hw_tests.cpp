@@ -5,13 +5,13 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/utilities/tag_allocator.h"
 #include "unit_tests/fixtures/device_host_queue_fixture.h"
 #include "unit_tests/fixtures/execution_model_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_device.h"
@@ -25,7 +25,7 @@
 using namespace NEO;
 using namespace DeviceHostQueue;
 
-HWTEST_F(DeviceQueueHwTest, resetOnlyExpected) {
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, resetOnlyExpected) {
     // profiling disabled
     deviceQueue = createQueueObject();
     ASSERT_NE(deviceQueue, nullptr);
@@ -54,7 +54,7 @@ HWTEST_F(DeviceQueueHwTest, resetOnlyExpected) {
     delete deviceQueue;
 }
 
-HWTEST_F(DeviceQueueHwTest, resetStack) {
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, resetStack) {
     deviceQueue = createQueueObject();
     ASSERT_NE(deviceQueue, nullptr);
     auto deviceQueueHw = castToHwType<FamilyType>(deviceQueue);
@@ -67,7 +67,7 @@ HWTEST_F(DeviceQueueHwTest, resetStack) {
     delete deviceQueue;
 }
 
-HWTEST_F(DeviceQueueHwTest, acquireEMCriticalSectionDoesNotAcquireWhenNullHardwareIsEnabled) {
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, acquireEMCriticalSectionDoesNotAcquireWhenNullHardwareIsEnabled) {
     DebugManagerStateRestore dbgRestorer;
 
     DebugManager.flags.EnableNullHardware.set(1);
@@ -136,6 +136,17 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, addLriWithoutArbCheck) {
 
     EXPECT_EQ(sizeof(MI_LOAD_REGISTER_IMM), slbCS->getUsed());
     delete mockDeviceQueueHw;
+}
+
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, GivenDeviceQueueHWWhenEventPoolIsCreatedThenTimestampResolutionIsSet) {
+    auto timestampResolution = static_cast<float>(device->getProfilingTimerResolution());
+
+    auto deviceQueue = std::unique_ptr<DeviceQueue>(createQueueObject());
+    ASSERT_NE(deviceQueue, nullptr);
+
+    auto eventPoolBuffer = reinterpret_cast<IGIL_EventPool *>(deviceQueue->getEventPoolBuffer()->getUnderlyingBuffer());
+
+    EXPECT_FLOAT_EQ(timestampResolution, eventPoolBuffer->m_TimestampResolution);
 }
 
 class DeviceQueueSlb : public DeviceQueueHwTest {
@@ -300,7 +311,8 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, cleanupSection) {
     uint32_t taskCount = 7;
 
     mockDeviceQueueHw->buildSlbDummyCommands();
-    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel, nullptr, taskCount);
+    uint64_t tagAddress = 0x123450000;
+    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel, nullptr, tagAddress, taskCount);
 
     HardwareParse hwParser;
     auto *slbCS = mockDeviceQueueHw->getSlbCS();
@@ -322,19 +334,34 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, cleanupSection) {
     hwParser.parseCommands<FamilyType>(*slbCS, cleanupSectionOffsetToParse);
     hwParser.findHardwareCommands<FamilyType>();
 
-    uint64_t cleanUpSectionAddress = (uint64_t)slbCS->getCpuBase() + cleanupSectionOffset;
+    uint64_t cleanUpSectionAddress = mockDeviceQueueHw->getSlbBuffer()->getGpuAddress() + cleanupSectionOffset;
     EXPECT_EQ(cleanUpSectionAddress, igilCmdQueue->m_controls.m_CleanupSectionAddress);
     EXPECT_EQ(slbCS->getUsed() - cleanupSectionOffset, igilCmdQueue->m_controls.m_CleanupSectionSize);
 
     auto pipeControlItor = find<PIPE_CONTROL *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
     EXPECT_NE(hwParser.cmdList.end(), pipeControlItor);
 
+    bool tagWriteFound = false;
+    while (auto pipeControlCmd = genCmdCast<PIPE_CONTROL *>(*(++pipeControlItor))) {
+        if (pipeControlCmd->getPostSyncOperation() == PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA) {
+            auto expectedAddressLow = static_cast<uint32_t>(tagAddress & 0x0000FFFFFFFFULL);
+            auto expectedAddressHigh = static_cast<uint32_t>(tagAddress >> 32);
+
+            if ((expectedAddressLow == pipeControlCmd->getAddress()) && (expectedAddressHigh == pipeControlCmd->getAddressHigh())) {
+                tagWriteFound = true;
+                break;
+            }
+        }
+    }
+
+    EXPECT_TRUE(tagWriteFound);
+
     auto bbEndItor = find<MI_BATCH_BUFFER_END *>(hwParser.cmdList.begin(), hwParser.cmdList.end());
     EXPECT_NE(hwParser.cmdList.end(), bbEndItor);
     MI_BATCH_BUFFER_END *bbEnd = (MI_BATCH_BUFFER_END *)*bbEndItor;
     uint64_t bbEndAddres = (uint64_t)bbEnd;
 
-    EXPECT_LE(mockDeviceQueueHw->getSlbBuffer()->getGpuAddress() + cleanupSectionOffset, bbEndAddres);
+    EXPECT_LE((uint64_t)mockDeviceQueueHw->getSlbBuffer()->getUnderlyingBuffer() + cleanupSectionOffset, bbEndAddres);
 
     delete mockParentKernel;
     delete mockDeviceQueueHw;
@@ -353,9 +380,9 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, AddEMCleanupSectionWithProfiling) {
     MockParentKernel *mockParentKernel = MockParentKernel::create(*pContext);
     uint32_t taskCount = 7;
 
-    auto hwTimeStamp = pCommandQueue->getCommandStreamReceiver().getEventTsAllocator()->getTag();
+    auto hwTimeStamp = pCommandQueue->getGpgpuCommandStreamReceiver().getEventTsAllocator()->getTag();
     mockDeviceQueueHw->buildSlbDummyCommands();
-    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel, hwTimeStamp, taskCount);
+    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel, hwTimeStamp, 0x123, taskCount);
 
     uint64_t eventTimestampAddr = igilCmdQueue->m_controls.m_EventTimestampAddress;
     uint64_t contextCompleteAddr = hwTimeStamp->getGpuAddress() + offsetof(HwTimeStamps, ContextCompleteTS);
@@ -369,7 +396,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, AddEMCleanupSectionWithProfiling) {
     hwParser.parseCommands<FamilyType>(*slbCS, cleanupSectionOffsetToParse);
     hwParser.findHardwareCommands<FamilyType>();
 
-    uint64_t cleanUpSectionAddress = (uint64_t)slbCS->getCpuBase() + cleanupSectionOffset;
+    uint64_t cleanUpSectionAddress = mockDeviceQueueHw->getSlbBuffer()->getGpuAddress() + cleanupSectionOffset;
     EXPECT_EQ(cleanUpSectionAddress, igilCmdQueue->m_controls.m_CleanupSectionAddress);
     EXPECT_EQ(slbCS->getUsed() - cleanupSectionOffset, igilCmdQueue->m_controls.m_CleanupSectionSize);
 
@@ -405,13 +432,13 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueSlb, AddEMCleanupSectionWithProfiling) {
     MI_BATCH_BUFFER_END *bbEnd = (MI_BATCH_BUFFER_END *)*bbEndItor;
     uint64_t bbEndAddres = (uint64_t)bbEnd;
 
-    EXPECT_LE(mockDeviceQueueHw->getSlbBuffer()->getGpuAddress() + cleanupSectionOffset, bbEndAddres);
+    EXPECT_LE((uint64_t)mockDeviceQueueHw->getSlbBuffer()->getUnderlyingBuffer() + cleanupSectionOffset, bbEndAddres);
 
     delete mockParentKernel;
     delete mockDeviceQueueHw;
 }
 
-HWTEST_F(DeviceQueueHwTest, getIndirectHeapDSH) {
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, getIndirectHeapDSH) {
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
 
     deviceQueue = createQueueObject();
@@ -438,7 +465,7 @@ HWTEST_F(DeviceQueueHwTest, getIndirectHeapDSH) {
     delete deviceQueue;
 }
 
-HWTEST_F(DeviceQueueHwTest, getIndirectHeapNonExistent) {
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, getIndirectHeapNonExistent) {
     deviceQueue = createQueueObject();
     ASSERT_NE(deviceQueue, nullptr);
     auto *devQueueHw = castToObject<DeviceQueueHw<FamilyType>>(deviceQueue);
@@ -450,7 +477,7 @@ HWTEST_F(DeviceQueueHwTest, getIndirectHeapNonExistent) {
     delete deviceQueue;
 }
 
-HWTEST_F(DeviceQueueHwTest, getDshOffset) {
+HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, getDshOffset) {
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
 
     deviceQueue = createQueueObject();
@@ -497,7 +524,7 @@ class DeviceQueueHwWithKernel : public ExecutionModelKernelFixture {
     MockContext *context;
 };
 
-HWTEST_P(DeviceQueueHwWithKernel, setupIndirectState) {
+HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectState) {
     if (std::string(pPlatform->getDevice(0)->getDeviceInfo().clVersion).find("OpenCL 2.") != std::string::npos) {
         EXPECT_TRUE(pKernel->isParentKernel);
 
@@ -509,7 +536,7 @@ HWTEST_P(DeviceQueueHwWithKernel, setupIndirectState) {
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
         ASSERT_NE(nullptr, dsh);
 
-        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(const_cast<const Kernel &>(*pKernel));
+        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, const_cast<const Kernel &>(*pKernel));
 
         auto ssh = new IndirectHeap(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
         auto usedBeforeSSH = ssh->getUsed();
@@ -528,7 +555,7 @@ HWTEST_P(DeviceQueueHwWithKernel, setupIndirectState) {
     }
 }
 
-HWTEST_P(DeviceQueueHwWithKernel, setupIndirectStateSetsCorrectStartBlockID) {
+HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectStateSetsCorrectStartBlockID) {
     if (std::string(pPlatform->getDevice(0)->getDeviceInfo().clVersion).find("OpenCL 2.") != std::string::npos) {
         EXPECT_TRUE(pKernel->isParentKernel);
 
@@ -539,7 +566,7 @@ HWTEST_P(DeviceQueueHwWithKernel, setupIndirectStateSetsCorrectStartBlockID) {
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
         ASSERT_NE(nullptr, dsh);
 
-        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(const_cast<const Kernel &>(*pKernel));
+        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, const_cast<const Kernel &>(*pKernel));
 
         auto ssh = new IndirectHeap(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
 
@@ -569,7 +596,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectStateSetsCorre
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
         ASSERT_NE(nullptr, dsh);
 
-        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::template getSizeRequiredForExecutionModel<IndirectHeap::SURFACE_STATE>(const_cast<const Kernel &>(*pKernel));
+        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, const_cast<const Kernel &>(*pKernel));
 
         auto ssh = new IndirectHeap(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
 
@@ -586,6 +613,42 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectStateSetsCorre
         alignedFree(ssh->getCpuBase());
         delete ssh;
         delete devQueueHw;
+    }
+}
+
+HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, GivenHasBarriersSetWhenCallingSetupIndirectStateThenAllIddHaveBarriersEnabled) {
+    using GPGPU_WALKER = typename FamilyType::GPGPU_WALKER;
+    using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
+
+    if (std::string(pPlatform->getDevice(0)->getDeviceInfo().clVersion).find("OpenCL 2.") != std::string::npos) {
+        pKernel->createReflectionSurface();
+
+        MockContext mockContext;
+        auto devQueueHw = std::make_unique<MockDeviceQueueHw<FamilyType>>(&mockContext, device, deviceQueueProperties::minimumProperties[0]);
+        auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
+
+        uint32_t parentCount = 1;
+
+        auto blockManager = pKernel->getProgram()->getBlockKernelManager();
+        auto iddCount = blockManager->getCount();
+        for (uint32_t i = 0; i < iddCount; i++) {
+            ((SPatchExecutionEnvironment *)blockManager->getBlockKernelInfo(i)->patchInfo.executionEnvironment)->HasBarriers = 1u;
+        }
+
+        auto surfaceStateHeapSize =
+            HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE,
+                                                                                 const_cast<const Kernel &>(*pKernel));
+        auto ssh = std::make_unique<IndirectHeap>(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
+
+        devQueueHw->setupIndirectState(*ssh, *dsh, pKernel, parentCount);
+
+        auto iddStartPtr = static_cast<INTERFACE_DESCRIPTOR_DATA *>(ptrOffset(dsh->getCpuBase(), devQueueHw->colorCalcStateSize));
+        auto iddStartIndex = parentCount;
+        for (uint32_t i = 0; i < iddCount; i++) {
+            EXPECT_TRUE(iddStartPtr[iddStartIndex + i].getBarrierEnable());
+        }
+
+        alignedFree(ssh->getCpuBase());
     }
 }
 
@@ -673,7 +736,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, addExecutionModelClea
     mockDeviceQueueHw->buildSlbDummyCommands();
 
     EXPECT_FALSE(mockDeviceQueueHw->addMediaStateClearCmdsCalled);
-    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel.get(), nullptr, taskCount);
+    mockDeviceQueueHw->addExecutionModelCleanUpSection(mockParentKernel.get(), nullptr, 0x123, taskCount);
     EXPECT_TRUE(mockDeviceQueueHw->addMediaStateClearCmdsCalled);
 }
 

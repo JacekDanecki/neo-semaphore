@@ -11,6 +11,7 @@
 #include "runtime/os_interface/windows/os_context_win.h"
 #include "runtime/os_interface/windows/os_interface.h"
 #include "runtime/os_interface/windows/wddm/wddm.h"
+#include "runtime/os_interface/windows/wddm_memory_operations_handler.h"
 #include "runtime/sharings/gl/gl_arb_sync_event.h"
 #include "runtime/sharings/gl/gl_sharing.h"
 #include "unit_tests/mocks/gl/mock_gl_sharing.h"
@@ -134,7 +135,8 @@ TEST_F(GlArbSyncEventOsTest, WhenCreateSynchronizationObjectSucceedsThenAllHAndl
     };
     CreateSyncObjectMock::reset();
 
-    wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
     gdi->createSynchronizationObject.mFunc = CreateSyncObjectMock::createSynchObject;
     gdi->createSynchronizationObject2.mFunc = CreateSyncObjectMock::createSynchObject2;
     auto ret = setupArbSyncObject(sharing, osInterface, syncInfo);
@@ -185,7 +187,8 @@ TEST_F(GlArbSyncEventOsTest, GivenNewGlSyncInfoWhenCreateSynchronizationObjectFa
         }
     };
     CreateSyncObjectMock::reset();
-    wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
     gdi->createSynchronizationObject.mFunc = CreateSyncObjectMock::createSynchObject;
     gdi->createSynchronizationObject2.mFunc = CreateSyncObjectMock::createSynchObject2;
 
@@ -209,7 +212,8 @@ TEST_F(GlArbSyncEventOsTest, GivenNewGlSyncInfoWhenCreateEventFailsThenSetupArbS
     auto wddm = new WddmMock();
     auto gdi = new MockGdi();
     wddm->gdi.reset(gdi);
-    wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
 
     mockOsInterface.get()->setWddm(wddm);
 
@@ -237,7 +241,8 @@ TEST_F(GlArbSyncEventOsTest, GivenInvalidGlSyncInfoWhenCleanupArbSyncObjectIsCal
     auto wddm = new WddmMock();
     auto gdi = new MockGdi();
     wddm->gdi.reset(gdi);
-    wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
 
     MockOSInterface mockOsInterface;
     MockOSInterfaceImpl *mockOsInterfaceImpl = static_cast<MockOSInterfaceImpl *>(mockOsInterface.get());
@@ -266,7 +271,8 @@ TEST_F(GlArbSyncEventOsTest, GivenValidGlSyncInfoWhenCleanupArbSyncObjectIsCalle
     auto wddm = new WddmMock();
     auto gdi = new MockGdi();
     wddm->gdi.reset(gdi);
-    wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
 
     MockOSInterface mockOsInterface;
     MockOSInterfaceImpl *mockOsInterfaceImpl = static_cast<MockOSInterfaceImpl *>(mockOsInterface.get());
@@ -325,7 +331,8 @@ TEST_F(GlArbSyncEventOsTest, GivenCallToSignalArbSyncObjectWhenSignalSynchroniza
     };
     FailSignalSyncObjectMock::reset();
     auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]);
-    wddm->init(preemptionMode);
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
     OsContextWin osContext(*osInterface.get()->getWddm(), 0u, 1, HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances()[0], preemptionMode, false);
 
     CL_GL_SYNC_INFO syncInfo = {};
@@ -384,7 +391,8 @@ TEST_F(GlArbSyncEventOsTest, GivenCallToSignalArbSyncObjectWhenSignalSynchroniza
     };
     FailSignalSyncObjectMock::reset();
     auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]);
-    wddm->init(preemptionMode);
+    auto hwInfo = *platformDevices[0];
+    wddm->init(hwInfo);
     OsContextWin osContext(*osInterface.get()->getWddm(), 0u, 1, HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances()[0], preemptionMode, false);
 
     CL_GL_SYNC_INFO syncInfo = {};

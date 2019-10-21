@@ -6,10 +6,10 @@
  */
 
 #pragma once
-#include "runtime/helpers/aligned_memory.h"
-#include "runtime/helpers/debug_helpers.h"
+#include "core/helpers/aligned_memory.h"
+#include "core/helpers/debug_helpers.h"
+#include "core/utilities/idlist.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/utilities/idlist.h"
 
 #include <atomic>
 #include <cstdint>
@@ -51,9 +51,11 @@ class TagAllocator {
   public:
     using NodeType = TagNode<TagType>;
 
-    TagAllocator(MemoryManager *memMngr, size_t tagCount, size_t tagAlignment) : memoryManager(memMngr),
-                                                                                 tagCount(tagCount),
-                                                                                 tagAlignment(tagAlignment) {
+    TagAllocator(MemoryManager *memMngr, size_t tagCount, size_t tagAlignment, size_t tagSize = sizeof(TagType)) : memoryManager(memMngr),
+                                                                                                                   tagCount(tagCount),
+                                                                                                                   tagAlignment(tagAlignment) {
+
+        this->tagSize = alignUp(tagSize, tagAlignment);
         populateFreeTags();
     }
 
@@ -109,6 +111,7 @@ class TagAllocator {
     MemoryManager *memoryManager;
     size_t tagCount;
     size_t tagAlignment;
+    size_t tagSize;
 
     std::mutex allocatorMutex;
 
@@ -126,7 +129,6 @@ class TagAllocator {
     }
 
     void populateFreeTags() {
-        size_t tagSize = alignUp(sizeof(TagType), tagAlignment);
         size_t allocationSizeRequired = tagCount * tagSize;
 
         auto allocationType = TagType::getAllocationType();

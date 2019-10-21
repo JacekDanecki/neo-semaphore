@@ -8,11 +8,13 @@
 #pragma once
 
 #include "runtime/os_interface/windows/os_interface.h"
+#include "runtime/os_interface/windows/wddm_memory_operations_handler.h"
 #include "test.h"
 #include "unit_tests/helpers/execution_environment_helper.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_gmm.h"
 #include "unit_tests/mocks/mock_gmm_page_table_mngr.h"
+#include "unit_tests/mocks/mock_wddm_residency_allocations_container.h"
 #include "unit_tests/os_interface/windows/mock_gdi_interface.h"
 #include "unit_tests/os_interface/windows/mock_wddm_memory_manager.h"
 #include "unit_tests/os_interface/windows/wddm_fixture.h"
@@ -50,16 +52,19 @@ class MockWddmMemoryManagerFixture {
         wddm->gdi.reset(gdi);
         constexpr uint64_t heap32Base = (is32bit) ? 0x1000 : 0x800000000000;
         wddm->setHeap32(heap32Base, 1000 * MemoryConstants::pageSize - 1);
-        EXPECT_TRUE(wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0])));
+        auto hwInfo = *platformDevices[0];
+        wddm->init(hwInfo);
 
         executionEnvironment->osInterface.reset(new OSInterface());
         executionEnvironment->osInterface->get()->setWddm(wddm);
+        executionEnvironment->memoryOperationsInterface = std::make_unique<WddmMemoryOperationsHandler>(wddm);
 
         memoryManager = std::make_unique<MockWddmMemoryManager>(*executionEnvironment);
         osContext = memoryManager->createAndRegisterOsContext(nullptr, HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances()[0],
                                                               1, PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]), false);
 
         osContext->incRefInternal();
+        mockTemporaryResources = reinterpret_cast<MockWddmResidentAllocationsContainer *>(wddm->getTemporaryResourcesContainer());
     }
 
     void TearDown() {
@@ -69,6 +74,7 @@ class MockWddmMemoryManagerFixture {
     ExecutionEnvironment *executionEnvironment;
     std::unique_ptr<MockWddmMemoryManager> memoryManager;
     WddmMock *wddm = nullptr;
+    MockWddmResidentAllocationsContainer *mockTemporaryResources;
     OsContext *osContext = nullptr;
     MockGdi *gdi = nullptr;
 };
@@ -94,10 +100,11 @@ class WddmMemoryManagerFixtureWithGmockWddm : public ExecutionEnvironmentFixture
         executionEnvironment->osInterface = std::make_unique<OSInterface>();
         ASSERT_NE(nullptr, wddm);
         auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]);
-        EXPECT_TRUE(wddm->init(preemptionMode));
+        auto hwInfo = *platformDevices[0];
+        wddm->init(hwInfo);
         executionEnvironment->osInterface->get()->setWddm(wddm);
+        executionEnvironment->memoryOperationsInterface = std::make_unique<WddmMemoryOperationsHandler>(wddm);
         osInterface = executionEnvironment->osInterface.get();
-        wddm->init(preemptionMode);
         memoryManager = new (std::nothrow) MockWddmMemoryManager(*executionEnvironment);
         //assert we have memory manager
         ASSERT_NE(nullptr, memoryManager);
@@ -127,12 +134,12 @@ class BufferWithWddmMemory : public ::testing::Test,
     void SetUp() {
         WddmMemoryManagerFixture::SetUp();
         tmp = context.getMemoryManager();
-        context.setMemoryManager(memoryManager.get());
+        context.memoryManager = memoryManager.get();
         flags = 0;
     }
 
     void TearDown() {
-        context.setMemoryManager(tmp);
+        context.memoryManager = tmp;
         WddmMemoryManagerFixture::TearDown();
     }
 
@@ -146,7 +153,6 @@ class WddmMemoryManagerSimpleTest : public MockWddmMemoryManagerFixture, public 
   public:
     void SetUp() override {
         MockWddmMemoryManagerFixture::SetUp();
-        wddm->init(PreemptionHelper::getDefaultPreemptionMode(*platformDevices[0]));
     }
     void TearDown() override {
         MockWddmMemoryManagerFixture::TearDown();
@@ -159,6 +165,7 @@ class MockWddmMemoryManagerTest : public ::testing::Test {
         executionEnvironment = getExecutionEnvironmentImpl(hwInfo);
         wddm = new WddmMock();
         executionEnvironment->osInterface->get()->setWddm(wddm);
+        executionEnvironment->memoryOperationsInterface = std::make_unique<WddmMemoryOperationsHandler>(wddm);
     }
 
     HardwareInfo *hwInfo;

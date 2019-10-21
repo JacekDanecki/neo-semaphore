@@ -14,7 +14,7 @@
 using namespace NEO;
 
 typedef HelloWorldTest<HelloWorldFixtureFactory> EventTests;
-TEST_F(EventTests, eventShouldBeReturned) {
+TEST_F(EventTests, WhenEnqueingKernelThenCorrectEventIsReturned) {
 
     cl_event event = nullptr;
     auto retVal = callOneWorkItemNDRKernel(nullptr, 0, &event);
@@ -38,7 +38,7 @@ TEST_F(EventTests, eventShouldBeReturned) {
     delete pEvent;
 }
 
-TEST_F(EventTests, eventReturnedShouldBeMaxOfInputEventsAndCmdQPlus1) {
+TEST_F(EventTests, WhenEnqueingKernelThenEventReturnedShouldBeMaxOfInputEventsAndCmdQPlus1) {
     uint32_t taskLevelCmdQ = 17;
     pCmdQ->taskLevel = taskLevelCmdQ;
 
@@ -65,12 +65,12 @@ TEST_F(EventTests, eventReturnedShouldBeMaxOfInputEventsAndCmdQPlus1) {
     delete pEvent;
 }
 
-TEST_F(EventTests, eventWaitShouldntSendPC) {
+TEST_F(EventTests, WhenWaitingForEventThenPipeControlIsNotInserted) {
     cl_uint numEventsInWaitList = 0;
     cl_event *eventWaitList = nullptr;
     cl_event event = nullptr;
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event);
 
@@ -88,7 +88,7 @@ TEST_F(EventTests, eventWaitShouldntSendPC) {
     // no more tasks after WFE, no need to write PC
     EXPECT_EQ(pEvent->taskLevel + 1, csr.peekTaskLevel());
 
-    pCmdQ->finish(false);
+    pCmdQ->finish();
 
     // Check CL_EVENT_COMMAND_TYPE
     {
@@ -103,13 +103,13 @@ TEST_F(EventTests, eventWaitShouldntSendPC) {
     delete pEvent;
 }
 
-TEST_F(EventTests, waitForArray) {
+TEST_F(EventTests, GivenTwoEnqueuesWhenWaitingForBothEventsThenTaskLevelIsCorrect) {
 
     cl_uint numEventsInWaitList = 0;
     cl_event *eventWaitList = nullptr;
     cl_event event[2] = {};
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event[0]);
 
@@ -132,7 +132,7 @@ TEST_F(EventTests, waitForArray) {
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(pEvent1->taskLevel + 1, csr.peekTaskLevel());
 
-    pCmdQ->finish(false);
+    pCmdQ->finish();
     EXPECT_EQ(pEvent1->taskLevel + 1, csr.peekTaskLevel());
     // Check CL_EVENT_COMMAND_TYPE
     {
@@ -148,12 +148,12 @@ TEST_F(EventTests, waitForArray) {
     delete pEvent1;
 }
 
-TEST_F(EventTests, event_NDR_Wait_NDR_Finish) {
+TEST_F(EventTests, GivenNoEventsWhenEnqueuingKernelThenTaskLevelIsIncremented) {
     cl_uint numEventsInWaitList = 0;
     cl_event *eventWaitList = nullptr;
     cl_event event = nullptr;
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event);
 
@@ -172,7 +172,7 @@ TEST_F(EventTests, event_NDR_Wait_NDR_Finish) {
     ASSERT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(pEvent->taskLevel + 2, csr.peekTaskLevel());
 
-    pCmdQ->finish(false);
+    pCmdQ->finish();
     EXPECT_EQ(pEvent->taskLevel + 2, csr.peekTaskLevel());
 
     // Check CL_EVENT_COMMAND_TYPE
@@ -188,11 +188,11 @@ TEST_F(EventTests, event_NDR_Wait_NDR_Finish) {
     delete pEvent;
 }
 
-TEST_F(EventTests, eventPassedToEnqueueMarkerHasTheSameLevelAsPreviousCommand) {
+TEST_F(EventTests, WhenEnqueuingMarkerThenPassedEventHasTheSameLevelAsPreviousCommand) {
     cl_uint numEventsInWaitList = 0;
     cl_event *eventWaitList = nullptr;
     cl_event event = nullptr;
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
 
     auto retVal = callOneWorkItemNDRKernel(eventWaitList, numEventsInWaitList, &event);
 
@@ -207,9 +207,13 @@ TEST_F(EventTests, eventPassedToEnqueueMarkerHasTheSameLevelAsPreviousCommand) {
 
     retVal = clEnqueueMarkerWithWaitList(pCmdQ, 1, &event, &event2);
 
-    auto pEvent2 = (Event *)event2;
+    auto pEvent2 = castToObject<Event>(event2);
 
-    EXPECT_EQ(pEvent2->taskLevel, pEvent->taskLevel);
+    if (csr.peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(pEvent2->taskLevel, pEvent->taskLevel + 1);
+    } else {
+        EXPECT_EQ(pEvent2->taskLevel, pEvent->taskLevel);
+    }
 
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, event2);
@@ -217,7 +221,11 @@ TEST_F(EventTests, eventPassedToEnqueueMarkerHasTheSameLevelAsPreviousCommand) {
     retVal = clWaitForEvents(1, &event2);
     ASSERT_EQ(CL_SUCCESS, retVal);
 
-    EXPECT_EQ(csr.peekTaskLevel(), pEvent2->taskLevel + 1);
+    if (csr.peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(csr.peekTaskLevel(), pCmdQ->taskLevel + 1);
+    } else {
+        EXPECT_EQ(csr.peekTaskLevel(), pEvent->taskLevel + 1);
+    }
 
     clReleaseEvent(event);
     clReleaseEvent(event2);

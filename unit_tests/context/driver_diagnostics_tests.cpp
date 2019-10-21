@@ -7,7 +7,10 @@
 
 #include "driver_diagnostics_tests.h"
 
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
+#include "runtime/helpers/memory_properties_flags_helpers.h"
+#include "runtime/mem_obj/mem_obj_helper.h"
+#include "unit_tests/mocks/mock_gmm.h"
 
 #include <tuple>
 
@@ -196,14 +199,14 @@ TEST_F(PerformanceHintTest, GivenContextWhenSVMAllocIsCreatingThenContextProvide
 TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableComputeWorkSizeNDIsDefaultWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
     DispatchInfo emptyDispatchInfo;
-    provideLocalWorkGroupSizeHints(nullptr, 0, emptyDispatchInfo);
+    provideLocalWorkGroupSizeHints(nullptr, emptyDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableComputeWorkSizeNDIsTrueWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
     bool isWorkGroupSizeEnabled = DebugManager.flags.EnableComputeWorkSizeND.get();
     DebugManager.flags.EnableComputeWorkSizeND.set(true);
     DispatchInfo emptyDispatchInfo;
-    provideLocalWorkGroupSizeHints(nullptr, 0, emptyDispatchInfo);
+    provideLocalWorkGroupSizeHints(nullptr, emptyDispatchInfo);
     DebugManager.flags.EnableComputeWorkSizeND.set(isWorkGroupSizeEnabled);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableComputeWorkSizeNDIsFalseWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
@@ -211,14 +214,14 @@ TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableCompute
     bool isWorkGroupSizeEnabled = DebugManager.flags.EnableComputeWorkSizeND.get();
     DebugManager.flags.EnableComputeWorkSizeND.set(false);
     DispatchInfo emptyDispatchInfo;
-    provideLocalWorkGroupSizeHints(nullptr, 0, emptyDispatchInfo);
+    provideLocalWorkGroupSizeHints(nullptr, emptyDispatchInfo);
     DebugManager.flags.EnableComputeWorkSizeND.set(isWorkGroupSizeEnabled);
 }
 
 TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableComputeWorkSizeSquaredIsDefaultWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
     DispatchInfo emptyDispatchInfo;
-    provideLocalWorkGroupSizeHints(nullptr, 0, emptyDispatchInfo);
+    provideLocalWorkGroupSizeHints(nullptr, emptyDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableComputeWorkSizeSquaredIsTrueWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
@@ -226,7 +229,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableCompute
     DebugManager.flags.EnableComputeWorkSizeSquared.set(true);
     DebugManager.flags.EnableComputeWorkSizeND.set(false);
     DispatchInfo emptyDispatchInfo;
-    provideLocalWorkGroupSizeHints(nullptr, 0, emptyDispatchInfo);
+    provideLocalWorkGroupSizeHints(nullptr, emptyDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableComputeWorkSizeSquaredIsFalseWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
@@ -234,7 +237,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndEmptyDispatchinfoAndEnableCompute
     DebugManager.flags.EnableComputeWorkSizeSquared.set(false);
     DebugManager.flags.EnableComputeWorkSizeND.set(false);
     DispatchInfo emptyDispatchInfo;
-    provideLocalWorkGroupSizeHints(nullptr, 0, emptyDispatchInfo);
+    provideLocalWorkGroupSizeHints(nullptr, emptyDispatchInfo);
 }
 
 TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableComputeWorkSizeNDIsDefaultWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
@@ -242,7 +245,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableCompu
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableComputeWorkSizeNDIsTrueWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
@@ -251,7 +254,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableCompu
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
     DebugManager.flags.EnableComputeWorkSizeND.set(isWorkGroupSizeEnabled);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableComputeWorkSizeNDIsFalseWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
@@ -261,7 +264,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableCompu
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
     DebugManager.flags.EnableComputeWorkSizeND.set(isWorkGroupSizeEnabled);
 }
 
@@ -270,7 +273,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableCompu
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableComputeWorkSizeSquaredIsTrueWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
@@ -280,7 +283,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableCompu
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableComputeWorkSizeSquaredIsFalseWhenProvideLocalWorkGroupSizeIsCalledThenItDoesntCrash) {
 
@@ -290,7 +293,7 @@ TEST_F(PerformanceHintTest, GivenNullContextAndInvalidDispatchinfoAndEnableCompu
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 
 TEST_F(PerformanceHintTest, GivenContextAndDispatchinfoAndEnableComputeWorkSizeSquaredIsDefaultWhenProvideLocalWorkGroupSizeIsCalledReturnValue) {
@@ -298,7 +301,7 @@ TEST_F(PerformanceHintTest, GivenContextAndDispatchinfoAndEnableComputeWorkSizeS
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 100, {32, 32, 32}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenContextAndDispatchinfoAndEnableComputeWorkSizeSquaredIsTrueWhenProvideLocalWorkGroupSizeIsCalledReturnValue) {
 
@@ -308,7 +311,7 @@ TEST_F(PerformanceHintTest, GivenContextAndDispatchinfoAndEnableComputeWorkSizeS
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 2, {32, 32, 1}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 TEST_F(PerformanceHintTest, GivenContextAndDispatchinfoAndEnableComputeWorkSizeSquaredIsFalseWhenProvideLocalWorkGroupSizeIsCalledReturnValue) {
 
@@ -318,7 +321,7 @@ TEST_F(PerformanceHintTest, GivenContextAndDispatchinfoAndEnableComputeWorkSizeS
     auto pDevice = castToObject<Device>(devices[0]);
     MockKernelWithInternals mockKernel(*pDevice, context);
     DispatchInfo invalidDispatchInfo(mockKernel, 2, {32, 32, 1}, {1, 1, 1}, {0, 0, 0});
-    provideLocalWorkGroupSizeHints(context, 0, invalidDispatchInfo);
+    provideLocalWorkGroupSizeHints(context, invalidDispatchInfo);
 }
 
 TEST_F(PerformanceHintTest, GivenZeroCopyImageAndContextWhenCreateImageThenContextProvidesHintAboutAlignment) {
@@ -350,7 +353,7 @@ TEST_F(PerformanceHintTest, givenPrintDriverDiagnosticValueWhenContextIsCreatedT
     auto context = Context::create<MockContext>(nullptr, DeviceVector(&clDevice, 1), nullptr, nullptr, retVal);
 
     EXPECT_TRUE(!!context->isProvidingPerformanceHints());
-    auto driverDiagnostics = context->getDriverDiagnostics();
+    auto driverDiagnostics = context->driverDiagnostics;
     ASSERT_NE(nullptr, driverDiagnostics);
     EXPECT_TRUE(driverDiagnostics->validFlags(hintLevel));
     context->release();
@@ -418,7 +421,7 @@ TEST_F(PerformanceHintTest, givenPrintDriverDiagnosticsDebugModeEnabledWhenConte
     auto retValue = CL_SUCCESS;
     auto context = Context::create<MockContext>(validProperties, DeviceVector(&clDevice, 1), callbackFunction, (void *)userData, retVal);
     EXPECT_EQ(CL_SUCCESS, retValue);
-    auto driverDiagnostics = context->getDriverDiagnostics();
+    auto driverDiagnostics = context->driverDiagnostics;
     ASSERT_NE(nullptr, driverDiagnostics);
     EXPECT_TRUE(driverDiagnostics->validFlags(hintLevel));
     EXPECT_FALSE(driverDiagnostics->validFlags(2));
@@ -453,6 +456,242 @@ TEST_F(PerformanceHintTest, givenPrintDriverDiagnosticsDebugModeEnabledWhenCallF
     std::string output = testing::internal::GetCapturedStdout();
     EXPECT_NE(0u, output.size());
     EXPECT_TRUE(containsHint(expectedHint, userData));
+}
+
+TEST_F(PerformanceHintTest, given64bitCompressedBufferWhenItsCreatedThenProperPerformanceHintIsProvided) {
+    cl_int retVal;
+    HardwareInfo hwInfo = context->getDevice(0)->getHardwareInfo();
+    hwInfo.capabilityTable.ftrRenderCompressedBuffers = true;
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo));
+    cl_device_id deviceId = static_cast<cl_device_id>(device.get());
+    const MemoryProperties properties(1 << 21);
+    size_t size = 8192u;
+
+    cl_context_properties validProperties[3] = {CL_CONTEXT_SHOW_DIAGNOSTICS_INTEL, CL_CONTEXT_DIAGNOSTICS_LEVEL_ALL_INTEL, 0};
+    auto context = std::unique_ptr<MockContext>(Context::create<NEO::MockContext>(validProperties, DeviceVector(&deviceId, 1), callbackFunction, static_cast<void *>(userData), retVal));
+    context->isSharedContext = false;
+    auto buffer = std::unique_ptr<Buffer>(Buffer::create(context.get(), properties, size, static_cast<void *>(NULL), retVal));
+    snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[BUFFER_IS_COMPRESSED], buffer.get());
+    auto compressionSupported = HwHelper::get(hwInfo.platform.eRenderCoreFamily).obtainRenderBufferCompressionPreference(hwInfo, size) &&
+                                HwHelper::renderCompressedBuffersSupported(hwInfo);
+    if (!is32bit && compressionSupported) {
+        EXPECT_TRUE(containsHint(expectedHint, userData));
+    } else {
+        EXPECT_FALSE(containsHint(expectedHint, userData));
+    }
+}
+
+TEST_F(PerformanceHintTest, givenUncompressedBufferWhenItsCreatedThenProperPerformanceHintIsProvided) {
+    cl_int retVal;
+    HardwareInfo hwInfo = context->getDevice(0)->getHardwareInfo();
+    hwInfo.capabilityTable.ftrRenderCompressedBuffers = true;
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo));
+    cl_device_id deviceId = static_cast<cl_device_id>(device.get());
+    const MemoryProperties properties(CL_MEM_READ_WRITE);
+    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
+
+    size_t size = 0u;
+
+    cl_context_properties validProperties[3] = {CL_CONTEXT_SHOW_DIAGNOSTICS_INTEL, CL_CONTEXT_DIAGNOSTICS_LEVEL_ALL_INTEL, 0};
+    auto context = std::unique_ptr<MockContext>(Context::create<NEO::MockContext>(validProperties, DeviceVector(&deviceId, 1), callbackFunction, static_cast<void *>(userData), retVal));
+    std::unique_ptr<Buffer> buffer;
+    bool isCompressed = true;
+    if (context->getMemoryManager()) {
+        isCompressed = MemObjHelper::isSuitableForRenderCompression(
+                           HwHelper::renderCompressedBuffersSupported(hwInfo),
+                           memoryProperties, *context,
+                           HwHelper::get(hwInfo.platform.eRenderCoreFamily).obtainRenderBufferCompressionPreference(hwInfo, size)) &&
+                       !is32bit && !context->isSharedContext &&
+                       (!isValueSet(properties.flags, CL_MEM_USE_HOST_PTR) || context->getMemoryManager()->isLocalMemorySupported()) &&
+                       !isValueSet(properties.flags, CL_MEM_FORCE_SHARED_PHYSICAL_MEMORY_INTEL);
+
+        buffer = std::unique_ptr<Buffer>(Buffer::create(context.get(), properties, size, static_cast<void *>(NULL), retVal));
+    }
+    snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[BUFFER_IS_NOT_COMPRESSED], buffer.get());
+
+    if (isCompressed) {
+        Buffer::provideCompressionHint(GraphicsAllocation::AllocationType::BUFFER, context.get(), buffer.get());
+    }
+    EXPECT_TRUE(containsHint(expectedHint, userData));
+}
+
+TEST_F(PerformanceHintTest, givenCompressedImageWhenItsCreatedThenProperPerformanceHintIsProvided) {
+    HardwareInfo hwInfo = context->getDevice(0)->getHardwareInfo();
+    hwInfo.capabilityTable.ftrRenderCompressedImages = true;
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo));
+    cl_device_id deviceId = static_cast<cl_device_id>(device.get());
+
+    cl_context_properties validProperties[3] = {CL_CONTEXT_SHOW_DIAGNOSTICS_INTEL, CL_CONTEXT_DIAGNOSTICS_LEVEL_ALL_INTEL, 0};
+    auto context = std::unique_ptr<MockContext>(Context::create<NEO::MockContext>(validProperties, DeviceVector(&deviceId, 1), callbackFunction, static_cast<void *>(userData), retVal));
+
+    const size_t width = 5;
+    const size_t height = 3;
+    const size_t depth = 2;
+    cl_int retVal = CL_SUCCESS;
+    auto const elementSize = 4;
+    char *hostPtr = static_cast<char *>(alignedMalloc(width * height * depth * elementSize * 2, 64));
+
+    cl_image_format imageFormat;
+    cl_image_desc imageDesc;
+    auto mockBuffer = std::unique_ptr<MockBuffer>(new MockBuffer());
+    StorageInfo info;
+    size_t t = 4;
+    auto gmm = std::unique_ptr<Gmm>(new Gmm(static_cast<const void *>(nullptr), t, false, true, true, info));
+    gmm->isRenderCompressed = true;
+
+    mockBuffer->getGraphicsAllocation()->setDefaultGmm(gmm.get());
+    cl_mem mem = mockBuffer.get();
+    imageFormat.image_channel_data_type = CL_UNORM_INT8;
+    imageFormat.image_channel_order = CL_RGBA;
+    imageDesc.num_mip_levels = 0;
+    imageDesc.num_samples = 0;
+    imageDesc.mem_object = mem;
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D_BUFFER;
+    imageDesc.image_width = width;
+    imageDesc.image_height = 0;
+    imageDesc.image_depth = 0;
+    imageDesc.image_array_size = 0;
+    imageDesc.image_row_pitch = 0;
+    imageDesc.image_slice_pitch = 0;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    auto image = std::unique_ptr<Image>(Image::create(
+        context.get(),
+        flags,
+        surfaceFormat,
+        &imageDesc,
+        hostPtr,
+        retVal));
+
+    snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[IMAGE_IS_COMPRESSED], image.get());
+    alignedFree(hostPtr);
+
+    if (HwHelper::renderCompressedImagesSupported(hwInfo)) {
+        EXPECT_TRUE(containsHint(expectedHint, userData));
+    } else {
+        EXPECT_FALSE(containsHint(expectedHint, userData));
+    }
+}
+
+TEST_F(PerformanceHintTest, givenImageWithNoGmmWhenItsCreatedThenNoPerformanceHintIsProvided) {
+    HardwareInfo hwInfo = context->getDevice(0)->getHardwareInfo();
+    hwInfo.capabilityTable.ftrRenderCompressedImages = true;
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo));
+    cl_device_id deviceId = static_cast<cl_device_id>(device.get());
+
+    cl_context_properties validProperties[3] = {CL_CONTEXT_SHOW_DIAGNOSTICS_INTEL, CL_CONTEXT_DIAGNOSTICS_LEVEL_ALL_INTEL, 0};
+    auto context = std::unique_ptr<MockContext>(Context::create<NEO::MockContext>(validProperties, DeviceVector(&deviceId, 1), callbackFunction, static_cast<void *>(userData), retVal));
+
+    const size_t width = 5;
+    const size_t height = 3;
+    const size_t depth = 2;
+    cl_int retVal = CL_SUCCESS;
+    auto const elementSize = 4;
+    char *hostPtr = static_cast<char *>(alignedMalloc(width * height * depth * elementSize * 2, 64));
+
+    cl_image_format imageFormat;
+    cl_image_desc imageDesc;
+
+    auto mockBuffer = std::unique_ptr<MockBuffer>(new MockBuffer());
+    cl_mem mem = mockBuffer.get();
+
+    imageFormat.image_channel_data_type = CL_UNORM_INT8;
+    imageFormat.image_channel_order = CL_RGBA;
+    imageDesc.num_mip_levels = 0;
+    imageDesc.num_samples = 0;
+    imageDesc.mem_object = mem;
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D_BUFFER;
+    imageDesc.image_width = width;
+    imageDesc.image_height = 0;
+    imageDesc.image_depth = 0;
+    imageDesc.image_array_size = 0;
+    imageDesc.image_row_pitch = 0;
+    imageDesc.image_slice_pitch = 0;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    auto image = std::unique_ptr<Image>(Image::create(
+        context.get(),
+        flags,
+        surfaceFormat,
+        &imageDesc,
+        hostPtr,
+        retVal));
+
+    snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[IMAGE_IS_COMPRESSED], image.get());
+    EXPECT_FALSE(containsHint(expectedHint, userData));
+    snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[IMAGE_IS_NOT_COMPRESSED], image.get());
+    EXPECT_FALSE(containsHint(expectedHint, userData));
+
+    alignedFree(hostPtr);
+}
+
+TEST_F(PerformanceHintTest, givenUncompressedImageWhenItsCreatedThenProperPerformanceHintIsProvided) {
+    HardwareInfo hwInfo = context->getDevice(0)->getHardwareInfo();
+    hwInfo.capabilityTable.ftrRenderCompressedImages = true;
+
+    auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(&hwInfo));
+    cl_device_id deviceId = static_cast<cl_device_id>(device.get());
+
+    cl_context_properties validProperties[3] = {CL_CONTEXT_SHOW_DIAGNOSTICS_INTEL, CL_CONTEXT_DIAGNOSTICS_LEVEL_ALL_INTEL, 0};
+    auto context = std::unique_ptr<MockContext>(Context::create<NEO::MockContext>(validProperties, DeviceVector(&deviceId, 1), callbackFunction, static_cast<void *>(userData), retVal));
+
+    const size_t width = 5;
+    const size_t height = 3;
+    const size_t depth = 2;
+    cl_int retVal = CL_SUCCESS;
+    auto const elementSize = 4;
+    char *hostPtr = static_cast<char *>(alignedMalloc(width * height * depth * elementSize * 2, 64));
+
+    cl_image_format imageFormat;
+    cl_image_desc imageDesc;
+    auto mockBuffer = std::unique_ptr<MockBuffer>(new MockBuffer());
+    StorageInfo info;
+    size_t t = 4;
+    auto gmm = std::unique_ptr<Gmm>(new Gmm((const void *)nullptr, t, false, true, true, info));
+    gmm->isRenderCompressed = false;
+
+    mockBuffer->getGraphicsAllocation()->setDefaultGmm(gmm.get());
+    cl_mem mem = mockBuffer.get();
+    imageFormat.image_channel_data_type = CL_UNORM_INT8;
+    imageFormat.image_channel_order = CL_RGBA;
+    imageDesc.num_mip_levels = 0;
+    imageDesc.num_samples = 0;
+    imageDesc.mem_object = mem;
+    imageDesc.image_type = CL_MEM_OBJECT_IMAGE1D_BUFFER;
+    imageDesc.image_width = width;
+    imageDesc.image_height = 0;
+    imageDesc.image_depth = 0;
+    imageDesc.image_array_size = 0;
+    imageDesc.image_row_pitch = 0;
+    imageDesc.image_slice_pitch = 0;
+
+    cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR;
+    auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+
+    auto image = std::unique_ptr<Image>(Image::create(
+        context.get(),
+        flags,
+        surfaceFormat,
+        &imageDesc,
+        hostPtr,
+        retVal));
+
+    snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[IMAGE_IS_NOT_COMPRESSED], image.get());
+    alignedFree(hostPtr);
+
+    if (HwHelper::renderCompressedImagesSupported(hwInfo)) {
+        EXPECT_TRUE(containsHint(expectedHint, userData));
+    } else {
+        EXPECT_FALSE(containsHint(expectedHint, userData));
+    }
 }
 
 TEST_P(PerformanceHintKernelTest, GivenSpillFillWhenKernelIsInitializedThenContextProvidesProperHint) {

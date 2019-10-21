@@ -7,7 +7,10 @@
 
 #include "runtime/memory_manager/memory_manager.h"
 
+#include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
+#include "core/memory_manager/host_ptr_manager.h"
+#include "core/utilities/stackvec.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/event/event.h"
 #include "runtime/event/hw_timestamps.h"
@@ -15,7 +18,6 @@
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/resource_info.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
@@ -23,18 +25,15 @@
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/deferrable_allocation_deletion.h"
 #include "runtime/memory_manager/deferred_deleter.h"
-#include "runtime/memory_manager/host_ptr_manager.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
-#include "runtime/memory_manager/local_memory_usage.h"
 #include "runtime/os_interface/os_context.h"
 #include "runtime/os_interface/os_interface.h"
-#include "runtime/utilities/stackvec.h"
 
 #include <algorithm>
 
 namespace NEO {
 MemoryManager::MemoryManager(ExecutionEnvironment &executionEnvironment) : executionEnvironment(executionEnvironment), hostPtrManager(std::make_unique<HostPtrManager>()),
-                                                                           multiContextResourceDestructor(std::make_unique<DeferredDeleter>()), allocator32Bit(nullptr) {
+                                                                           multiContextResourceDestructor(std::make_unique<DeferredDeleter>()) {
     auto hwInfo = executionEnvironment.getHardwareInfo();
     this->localMemorySupported = HwHelper::get(hwInfo->platform.eRenderCoreFamily).getEnableLocalMemory(*hwInfo);
     this->enable64kbpages = OSInterface::osEnabled64kbPages && hwInfo->capabilityTable.ftr64KBpages;
@@ -42,11 +41,18 @@ MemoryManager::MemoryManager(ExecutionEnvironment &executionEnvironment) : execu
         this->enable64kbpages = DebugManager.flags.Enable64kbpages.get() != 0;
     }
     localMemoryUsageBankSelector.reset(new LocalMemoryUsageBankSelector(getBanksCount()));
+    gfxPartition = std::make_unique<GfxPartition>();
+    if (this->localMemorySupported) {
+        pageFaultManager = PageFaultManager::create();
+    }
 }
 
 MemoryManager::~MemoryManager() {
     for (auto &engine : registeredEngines) {
         engine.osContext->decRefInternal();
+    }
+    if (reservedMemory) {
+        MemoryManager::alignedFreeWrapper(reservedMemory);
     }
 }
 
@@ -121,13 +127,6 @@ void MemoryManager::freeSystemMemory(void *ptr) {
     ::alignedFree(ptr);
 }
 
-void MemoryManager::setForce32BitAllocations(bool newValue) {
-    if (newValue && !this->allocator32Bit) {
-        this->allocator32Bit.reset(new Allocator32bit);
-    }
-    force32bitAllocations = newValue;
-}
-
 void MemoryManager::applyCommonCleanup() {
     if (this->paddingAllocation) {
         this->freeGraphicsMemory(this->paddingAllocation);
@@ -197,7 +196,7 @@ bool MemoryManager::isMemoryBudgetExhausted() const {
 OsContext *MemoryManager::createAndRegisterOsContext(CommandStreamReceiver *commandStreamReceiver, aub_stream::EngineType engineType,
                                                      DeviceBitfield deviceBitfield, PreemptionMode preemptionMode, bool lowPriority) {
     auto contextId = ++latestContextId;
-    auto osContext = OsContext::create(executionEnvironment.osInterface.get(), contextId, deviceBitfield, engineType, preemptionMode, lowPriority);
+    auto osContext = OsContext::create(peekExecutionEnvironment().osInterface.get(), contextId, deviceBitfield, engineType, preemptionMode, lowPriority);
     osContext->incRefInternal();
 
     registeredEngines.emplace_back(commandStreamReceiver, osContext);
@@ -224,6 +223,7 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
     case GraphicsAllocation::AllocationType::PRINTF_SURFACE:
     case GraphicsAllocation::AllocationType::PRIVATE_SURFACE:
     case GraphicsAllocation::AllocationType::SCRATCH_SURFACE:
+    case GraphicsAllocation::AllocationType::WRITE_COMBINED:
         allow64KbPages = true;
         allow32Bit = true;
     default:
@@ -242,6 +242,7 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
     case GraphicsAllocation::AllocationType::BUFFER:
     case GraphicsAllocation::AllocationType::BUFFER_COMPRESSED:
     case GraphicsAllocation::AllocationType::BUFFER_HOST_MEMORY:
+    case GraphicsAllocation::AllocationType::WRITE_COMBINED:
         forcePin = true;
     default:
         break;
@@ -261,6 +262,7 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
     case GraphicsAllocation::AllocationType::SVM_CPU:
     case GraphicsAllocation::AllocationType::SVM_GPU:
     case GraphicsAllocation::AllocationType::SVM_ZERO_COPY:
+    case GraphicsAllocation::AllocationType::WRITE_COMBINED:
         mayRequireL3Flush = true;
     default:
         break;
@@ -271,11 +273,8 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
     case GraphicsAllocation::AllocationType::DEVICE_QUEUE_BUFFER:
     case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
     case GraphicsAllocation::AllocationType::FILL_PATTERN:
-    case GraphicsAllocation::AllocationType::GLOBAL_SURFACE:
     case GraphicsAllocation::AllocationType::MCS:
-    case GraphicsAllocation::AllocationType::PIPE:
     case GraphicsAllocation::AllocationType::PREEMPTION:
-    case GraphicsAllocation::AllocationType::PRINTF_SURFACE:
     case GraphicsAllocation::AllocationType::PROFILING_TAG_BUFFER:
     case GraphicsAllocation::AllocationType::SHARED_CONTEXT_IMAGE:
     case GraphicsAllocation::AllocationType::SVM_CPU:
@@ -333,7 +332,7 @@ GraphicsAllocation *MemoryManager::allocateGraphicsMemory(const AllocationData &
         return allocateGraphicsMemoryForImage(allocationData);
     }
     if (allocationData.type == GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR &&
-        (!executionEnvironment.isFullRangeSvm() || !DebugManager.flags.EnableHostPtrTracking.get())) {
+        (!peekExecutionEnvironment().isFullRangeSvm() || !DebugManager.flags.EnableHostPtrTracking.get())) {
         auto allocation = allocateGraphicsMemoryForNonSvmHostPtr(allocationData);
         if (allocation) {
             allocation->setFlushL3Required(allocationData.flags.flushL3);
@@ -385,8 +384,20 @@ EngineControl *MemoryManager::getRegisteredEngineForCsr(CommandStreamReceiver *c
     return engineCtrl;
 }
 
+void MemoryManager::unregisterEngineForCsr(CommandStreamReceiver *commandStreamReceiver) {
+    auto numRegisteredEngines = registeredEngines.size();
+    for (auto i = 0u; i < numRegisteredEngines; i++) {
+        if (registeredEngines[i].commandStreamReceiver == commandStreamReceiver) {
+            registeredEngines[i].osContext->decRefInternal();
+            std::swap(registeredEngines[i], registeredEngines[numRegisteredEngines - 1]);
+            registeredEngines.pop_back();
+            return;
+        }
+    }
+}
+
 CommandStreamReceiver *MemoryManager::getDefaultCommandStreamReceiver(uint32_t deviceId) const {
-    return executionEnvironment.commandStreamReceivers[deviceId][defaultEngineIndex].get();
+    return peekExecutionEnvironment().commandStreamReceivers[deviceId][defaultEngineIndex].get();
 }
 
 void *MemoryManager::lockResource(GraphicsAllocation *graphicsAllocation) {
@@ -431,7 +442,8 @@ HeapIndex MemoryManager::selectHeap(const GraphicsAllocation *allocation, bool h
     // Limited range allocation goes to STANDARD heap
     return HeapIndex::HEAP_STANDARD;
 }
-bool MemoryManager::copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, uint32_t sizeToCopy) const {
+
+bool MemoryManager::copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, size_t sizeToCopy) {
     if (!graphicsAllocation->getUnderlyingBuffer()) {
         return false;
     }
@@ -458,6 +470,15 @@ void MemoryManager::cleanTemporaryAllocationListOnAllEngines(bool waitForComplet
         }
         csr->getInternalAllocationStorage()->cleanAllocationList(*csr->getTagAddress(), AllocationUsage::TEMPORARY_ALLOCATION);
     }
+}
+
+void *MemoryManager::getReservedMemory(size_t size, size_t alignment) {
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!reservedMemory) {
+        reservedMemory = allocateSystemMemory(size, alignment);
+    }
+    return reservedMemory;
 }
 
 } // namespace NEO

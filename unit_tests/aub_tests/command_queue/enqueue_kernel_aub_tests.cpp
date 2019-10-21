@@ -6,6 +6,7 @@
  */
 
 #include "core/helpers/ptr_math.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/event/event.h"
 #include "runtime/helpers/hardware_commands_helper.h"
@@ -16,7 +17,8 @@
 #include "unit_tests/fixtures/simple_arg_fixture.h"
 #include "unit_tests/fixtures/two_walker_fixture.h"
 #include "unit_tests/gen_common/gen_cmd_parse.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/unit_test_helper.h"
+#include "unit_tests/mocks/mock_buffer.h"
 
 using namespace NEO;
 
@@ -144,6 +146,9 @@ struct AUBHelloWorldIntegrateTest : public HelloWorldFixture<AUBHelloWorldFixtur
 };
 
 HWTEST_P(AUBHelloWorldIntegrateTest, simple) {
+    if (this->simd < UnitTestHelper<FamilyType>::smallestTestableSimdSize) {
+        GTEST_SKIP();
+    }
     cl_uint workDim = 1;
     size_t globalWorkOffset[3] = {0, 0, 0};
     size_t globalWorkSize[3] = {param.globalWorkSizeX, param.globalWorkSizeY, param.globalWorkSizeZ};
@@ -277,7 +282,7 @@ HWTEST_F(AUBSimpleArg, givenAubCommandStreamerReceiverWhenBatchBufferFlateningIs
 
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.FlattenBatchBufferForAUBDump.set(true);
-    pCmdQ->getCommandStreamReceiver().overrideDispatchPolicy(DispatchMode::ImmediateDispatch);
+    pCmdQ->getGpgpuCommandStreamReceiver().overrideDispatchPolicy(DispatchMode::ImmediateDispatch);
 
     auto retVal = pCmdQ->enqueueKernel(
         pKernel,
@@ -455,8 +460,60 @@ struct AUBSimpleArgNonUniformFixture : public KernelAUBFixture<SimpleArgNonUnifo
     HardwareParse hwParser;
 };
 
-using AUBSimpleArgNonUniformTest = Test<AUBSimpleArgNonUniformFixture>;
+using AUBSimpleKernelStatelessTest = Test<KernelAUBFixture<SimpleKernelStatelessFixture>>;
 
+HWTEST_F(AUBSimpleKernelStatelessTest, givenSimpleKernelWhenStatelessPathIsUsedThenExpectCorrectBuffer) {
+
+    constexpr size_t bufferSize = MemoryConstants::pageSize;
+    cl_uint workDim = 1;
+    size_t globalWorkOffset[3] = {0, 0, 0};
+    size_t globalWorkSize[3] = {bufferSize, 1, 1};
+    size_t localWorkSize[3] = {1, 1, 1};
+    cl_uint numEventsInWaitList = 0;
+    cl_event *eventWaitList = nullptr;
+    cl_event *event = nullptr;
+
+    uint8_t bufferData[bufferSize] = {};
+    uint8_t bufferExpected[bufferSize];
+    memset(bufferExpected, 0xCD, bufferSize);
+
+    auto pBuffer = std::unique_ptr<Buffer>(Buffer::create(context,
+                                                          CL_MEM_USE_HOST_PTR | CL_MEM_ALLOW_UNRESTRICTED_SIZE_INTEL,
+                                                          bufferSize,
+                                                          bufferData,
+                                                          retVal));
+    ASSERT_NE(nullptr, pBuffer);
+
+    kernel->setArg(0, pBuffer.get());
+
+    retVal = this->pCmdQ->enqueueKernel(
+        kernel.get(),
+        workDim,
+        globalWorkOffset,
+        globalWorkSize,
+        localWorkSize,
+        numEventsInWaitList,
+        eventWaitList,
+        event);
+
+    ASSERT_EQ(CL_SUCCESS, retVal);
+    EXPECT_THAT(this->pProgram->getInternalOptions(),
+                testing::HasSubstr(std::string("-cl-intel-greater-than-4GB-buffer-required")));
+
+    if (this->device->getDeviceInfo().force32BitAddressess) {
+        EXPECT_THAT(this->pProgram->getInternalOptions(),
+                    testing::HasSubstr(std::string("-m32")));
+    }
+
+    EXPECT_FALSE(this->kernel->getKernelInfo().kernelArgInfo[0].pureStatefulBufferAccess);
+    EXPECT_TRUE(this->kernel->getKernelInfo().patchInfo.executionEnvironment->CompiledForGreaterThan4GBBuffers);
+
+    this->pCmdQ->flush();
+    expectMemory<FamilyType>(reinterpret_cast<void *>(pBuffer->getGraphicsAllocation()->getGpuAddress()),
+                             bufferExpected, bufferSize);
+}
+
+using AUBSimpleArgNonUniformTest = Test<AUBSimpleArgNonUniformFixture>;
 HWTEST_F(AUBSimpleArgNonUniformTest, givenOpenCL20SupportWhenProvidingWork1DimNonUniformGroupThenExpectTwoWalkers) {
     using WALKER_TYPE = WALKER_TYPE<FamilyType>;
     if (deviceClVersionSupport >= 20) {

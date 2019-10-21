@@ -7,9 +7,9 @@
 
 #pragma once
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "test.h"
 #include "unit_tests/fixtures/hello_world_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
 #include "gtest/gtest.h"
 
@@ -40,7 +40,6 @@ class DevicePreemptionTests : public ::testing::Test {
   public:
     void SetUp() override;
     void TearDown() override;
-    void forceWhitelistedRegs(bool whitelisted);
 
     DevicePreemptionTests();
     ~DevicePreemptionTests() override;

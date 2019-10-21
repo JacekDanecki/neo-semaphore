@@ -5,15 +5,17 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/event/user_event.h"
+#include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/os_interface/os_context.h"
 #include "test.h"
 #include "unit_tests/command_queue/command_enqueue_fixture.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/unit_test_helper.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 
@@ -52,9 +54,6 @@ struct EnqueueMapImageParamsTest : public EnqueueMapImageTest,
 };
 
 TEST_F(EnqueueMapImageTest, reuseMappedPtrForTiledImg) {
-    if (!image->allowTiling()) {
-        return;
-    }
     auto mapFlags = CL_MAP_READ;
     const size_t origin[3] = {0, 0, 0};
     const size_t region[3] = {1, 1, 1};
@@ -83,7 +82,10 @@ TEST_F(EnqueueMapImageTest, reuseMappedPtrForTiledImg) {
     EXPECT_EQ(CL_SUCCESS, retVal);
 }
 
-TEST_F(EnqueueMapImageTest, givenAllocatedMapPtrAndMapWithDifferentOriginIsCalledThenReturnDifferentPointers) {
+HWTEST_F(EnqueueMapImageTest, givenAllocatedMapPtrAndMapWithDifferentOriginIsCalledThenReturnDifferentPointers) {
+    if (!UnitTestHelper<FamilyType>::tiledImagesSupported) {
+        GTEST_SKIP();
+    }
     std::unique_ptr<Image> img(Image2dHelper<Image2dDefaults>::create(context));
     auto mapFlags = CL_MAP_READ;
     const size_t origin1[3] = {0, 0, 0};
@@ -184,12 +186,17 @@ struct mockedImage : public ImageHw<GfxFamily> {
 };
 
 HWTEST_F(EnqueueMapImageTest, givenTiledImageWhenMapImageIsCalledThenStorageIsSetWithImageMutexTaken) {
+    if (!UnitTestHelper<FamilyType>::tiledImagesSupported) {
+        GTEST_SKIP();
+    }
     auto imageFormat = image->getImageFormat();
     auto imageDesc = image->getImageDesc();
     auto graphicsAllocation = image->getGraphicsAllocation();
     auto surfaceFormatInfo = image->getSurfaceFormatInfo();
 
     mockedImage<FamilyType> mockImage(context,
+                                      {},
+                                      0,
                                       0,
                                       4096u,
                                       nullptr,
@@ -197,7 +204,6 @@ HWTEST_F(EnqueueMapImageTest, givenTiledImageWhenMapImageIsCalledThenStorageIsSe
                                       imageDesc,
                                       false,
                                       graphicsAllocation,
-                                      true,
                                       true,
                                       0,
                                       0,
@@ -226,8 +232,8 @@ HWTEST_F(EnqueueMapImageTest, givenTiledImageWhenMapImageIsCalledThenStorageIsSe
     EXPECT_NE(nullptr, mapAllocation);
     EXPECT_EQ(apiMapPtr, mapAllocation->getUnderlyingBuffer());
 
-    auto osContextId = pCmdQ->getCommandStreamReceiver().getOsContext().getContextId();
-    auto expectedTaskCount = pCmdQ->getCommandStreamReceiver().peekTaskCount();
+    auto osContextId = pCmdQ->getGpgpuCommandStreamReceiver().getOsContext().getContextId();
+    auto expectedTaskCount = pCmdQ->getGpgpuCommandStreamReceiver().peekTaskCount();
     auto actualMapAllocationTaskCount = mapAllocation->getTaskCount(osContextId);
     EXPECT_EQ(expectedTaskCount, actualMapAllocationTaskCount);
 
@@ -297,7 +303,10 @@ TEST_F(EnqueueMapImageTest, checkRetVal) {
     EXPECT_EQ(imageSlicePitch, imageSlicePitchRef);
 }
 
-TEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEventAndIncraseTaskCountFromWriteImage) {
+HWTEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEventAndIncraseTaskCountFromWriteImage) {
+    if (!UnitTestHelper<FamilyType>::tiledImagesSupported) {
+        GTEST_SKIP();
+    }
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.EnableAsyncEventsHandler.set(false);
     cl_event mapEventReturned = nullptr;
@@ -312,7 +321,7 @@ TEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEven
 
     MockKernelWithInternals kernel(*pDevice);
     *pTagMemory = tagHW;
-    auto &commandStreamReceiver = pCmdQ->getCommandStreamReceiver();
+    auto &commandStreamReceiver = pCmdQ->getGpgpuCommandStreamReceiver();
     auto tag_address = commandStreamReceiver.getTagAddress();
     EXPECT_TRUE(pTagMemory == tag_address);
 
@@ -381,7 +390,10 @@ TEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEven
     clReleaseEvent(unmapEventReturned);
 }
 
-TEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEventAndDontIncraseTaskCountFromWriteImage) {
+HWTEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEventAndDontIncraseTaskCountFromWriteImage) {
+    if (!UnitTestHelper<FamilyType>::tiledImagesSupported) {
+        GTEST_SKIP();
+    }
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.EnableAsyncEventsHandler.set(false);
     cl_event mapEventReturned = nullptr;
@@ -391,7 +403,7 @@ TEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEventAn
     const size_t region[3] = {1, 1, 1};
     *pTagMemory = 5;
 
-    auto &commandStreamReceiver = pCmdQ->getCommandStreamReceiver();
+    auto &commandStreamReceiver = pCmdQ->getGpgpuCommandStreamReceiver();
 
     EXPECT_EQ(1u, commandStreamReceiver.peekTaskCount());
 
@@ -424,6 +436,9 @@ TEST_F(EnqueueMapImageTest, givenReadOnlyMapWithOutEventWhenMappedThenSetEventAn
 }
 
 HWTEST_F(EnqueueMapImageTest, MapImageEventProperties) {
+    if (!UnitTestHelper<FamilyType>::tiledImagesSupported) {
+        GTEST_SKIP();
+    }
     cl_event eventReturned = nullptr;
     auto mapFlags = CL_MAP_READ;
     const size_t origin[3] = {0, 0, 0};
@@ -551,7 +566,7 @@ TEST_F(EnqueueMapImageTest, GivenNonZeroCopyImageWhenMappedWithOffsetThenCorrect
 
     EXPECT_NE(nullptr, ptr);
 
-    if (!image->allowTiling()) {
+    if (!image->isTiledAllocation()) {
         EXPECT_EQ(HostPtrOffseted, ptr); // Returned pointer should be offseted
     }
 
@@ -574,7 +589,7 @@ HWTEST_F(EnqueueMapImageTest, givenSharingHandlerWhenNonReadOnlyMapAndUnmapOnNon
     std::unique_ptr<Image> image(ImageHelper<ImageUseHostPtr<Image1dDefaults>>::create(context));
     ASSERT_NE(nullptr, image);
     image->setSharingHandler(new SharingHandler());
-    EXPECT_FALSE(image->allowTiling());
+    EXPECT_FALSE(image->isTiledAllocation());
 
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.taskCount = 1;
@@ -599,7 +614,7 @@ HWTEST_F(EnqueueMapImageTest, givenSharingHandlerWhenReadOnlyMapAndUnmapOnNonTil
     std::unique_ptr<Image> image(ImageHelper<ImageUseHostPtr<Image1dDefaults>>::create(context));
     ASSERT_NE(nullptr, image);
     image->setSharingHandler(new SharingHandler());
-    EXPECT_FALSE(image->allowTiling());
+    EXPECT_FALSE(image->isTiledAllocation());
 
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.taskCount = 1;
@@ -904,12 +919,12 @@ TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenRetu
     class MockImage : public Image {
       public:
         MockImage(Context *context, cl_mem_flags flags, GraphicsAllocation *allocation, const SurfaceFormatInfo &surfaceFormat,
-                  const cl_image_format &imageFormat, const cl_image_desc &imageDesc) : Image(context, flags,
+                  const cl_image_format &imageFormat, const cl_image_desc &imageDesc) : Image(context, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags({flags}), flags, 0,
                                                                                               0, nullptr,
                                                                                               imageFormat, imageDesc,
                                                                                               true,
                                                                                               allocation,
-                                                                                              false, false, 0, 0,
+                                                                                              false, 0, 0,
                                                                                               surfaceFormat, nullptr) {
         }
 
@@ -1024,7 +1039,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueMapImageTypeTest, blockingEnqueueRequiresPCWi
     auto *cmd = (PIPE_CONTROL *)*itorCmd;
     EXPECT_NE(cmdList.end(), itorCmd);
 
-    if (::renderCoreFamily == IGFX_GEN9_CORE) {
+    if (UnitTestHelper<FamilyType>::isPipeControlWArequired(pDevice->getHardwareInfo())) {
         // SKL: two PIPE_CONTROLs following GPGPU_WALKER: first has DcFlush and second has Write HwTag
         EXPECT_FALSE(cmd->getDcFlushEnable());
         // Move to next PPC

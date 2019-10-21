@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/helpers/basic_math.h"
 #include "runtime/os_interface/windows/wddm_memory_manager.h"
 
 namespace NEO {
@@ -12,10 +13,13 @@ GraphicsAllocation *WddmMemoryManager::allocateGraphicsMemoryInDevicePool(const 
     status = AllocationStatus::RetryInNonDevicePool;
     return nullptr;
 }
-bool WddmMemoryManager::copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, uint32_t sizeToCopy) const {
+bool WddmMemoryManager::copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, size_t sizeToCopy) {
     return MemoryManager::copyMemoryToAllocation(graphicsAllocation, memoryToCopy, sizeToCopy);
 }
 bool WddmMemoryManager::mapGpuVirtualAddress(WddmAllocation *allocation, const void *requiredPtr) {
     return mapGpuVaForOneHandleAllocation(allocation, requiredPtr);
+}
+uint64_t WddmMemoryManager::getLocalMemorySize() {
+    return 0 * GB;
 }
 } // namespace NEO

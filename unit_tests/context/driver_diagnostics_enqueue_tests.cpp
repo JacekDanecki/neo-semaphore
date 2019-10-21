@@ -5,11 +5,11 @@
  *
  */
 
+#include "core/memory_manager/unified_memory_manager.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/event/user_event.h"
-#include "runtime/memory_manager/svm_memory_manager.h"
 #include "unit_tests/context/driver_diagnostics_tests.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
 using namespace NEO;
 
@@ -666,7 +666,7 @@ TEST_F(PerformanceHintEnqueueTest, GivenSVMPointerWhenEnqueueSVMMapIsCallingThen
     }
     void *svmPtr = context->getSVMAllocsManager()->createSVMAlloc(256, {});
 
-    pCmdQ->enqueueSVMMap(CL_FALSE, 0, svmPtr, 256, 0, nullptr, nullptr);
+    pCmdQ->enqueueSVMMap(CL_FALSE, 0, svmPtr, 256, 0, nullptr, nullptr, false);
 
     snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[CL_ENQUEUE_SVM_MAP_DOESNT_REQUIRE_COPY_DATA], svmPtr);
     EXPECT_TRUE(containsHint(expectedHint, userData));

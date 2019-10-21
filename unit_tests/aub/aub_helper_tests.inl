@@ -6,6 +6,7 @@
  */
 
 #include "core/helpers/basic_math.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/aub/aub_helper.h"
 #include "runtime/aub_mem_dump/aub_mem_dump.h"
 #include "runtime/aub_mem_dump/page_table_entry_bits.h"
@@ -13,19 +14,18 @@
 #include "runtime/helpers/device_helpers.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_lrca_helper.h"
 
 #include "gtest/gtest.h"
 
 using namespace NEO;
 
-TEST(AubHelper, WhenGetMemTraceIsCalledWithZeroPDEntryBitsThenTraceNonLocalIsReturned) {
+TEST(AubHelper, GivenZeroPdEntryBitsWhenGetMemTraceIsCalledThenTraceNonLocalIsReturned) {
     int hint = AubHelper::getMemTrace(0u);
     EXPECT_EQ(AubMemDump::AddressSpaceValues::TraceNonlocal, hint);
 }
 
-TEST(AubHelper, WhenGetPTEntryBitsIsCalledThenEntryBitsAreNotMasked) {
+TEST(AubHelper, WhenGetPtEntryBitsIsCalledThenEntryBitsAreNotMasked) {
     uint64_t entryBits = BIT(PageTableEntry::presentBit) |
                          BIT(PageTableEntry::writableBit) |
                          BIT(PageTableEntry::userSupervisorBit);
@@ -33,7 +33,7 @@ TEST(AubHelper, WhenGetPTEntryBitsIsCalledThenEntryBitsAreNotMasked) {
     EXPECT_EQ(entryBits, maskedEntryBits);
 }
 
-TEST(AubHelper, WhenCreateMultipleDevicesIsSetThenGetDevicesCountReturnedCorrectValue) {
+TEST(AubHelper, GivenMultipleDevicesWhenGettingDeviceCountThenCorrectValueIsReturned) {
     DebugManagerStateRestore stateRestore;
     FeatureTable featureTable = {};
     WorkaroundTable workaroundTable = {};
@@ -41,12 +41,12 @@ TEST(AubHelper, WhenCreateMultipleDevicesIsSetThenGetDevicesCountReturnedCorrect
     GT_SYSTEM_INFO sysInfo = {};
     PLATFORM platform = {};
     HardwareInfo hwInfo{&platform, &featureTable, &workaroundTable, &sysInfo, capTable};
-    DebugManager.flags.CreateMultipleDevices.set(2);
+    DebugManager.flags.CreateMultipleRootDevices.set(2);
 
     uint32_t devicesCount = DeviceHelper::getDevicesCount(&hwInfo);
     EXPECT_EQ(devicesCount, 2u);
 
-    DebugManager.flags.CreateMultipleDevices.set(0);
+    DebugManager.flags.CreateMultipleRootDevices.set(0);
     devicesCount = DeviceHelper::getDevicesCount(&hwInfo);
     EXPECT_EQ(devicesCount, 1u);
 }
@@ -125,7 +125,7 @@ HWTEST_F(AubHelperHwTest, GivenEnabledLocalMemoryWhenGetMemTraceForPtEntryIsCall
     EXPECT_EQ(AubMemDump::AddressSpaceValues::TraceLocal, addressSpace);
 }
 
-HWTEST_F(AubHelperHwTest, giverLrcaHelperWhenContextIsInitializedThenContextFlagsAreSet) {
+HWTEST_F(AubHelperHwTest, givenLrcaHelperWhenContextIsInitializedThenContextFlagsAreSet) {
     const auto &csTraits = CommandStreamReceiverSimulatedCommonHw<FamilyType>::getCsTraits(aub_stream::ENGINE_RCS);
     MockLrcaHelper lrcaHelper(csTraits.mmioBase);
 

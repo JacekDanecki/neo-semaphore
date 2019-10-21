@@ -47,10 +47,13 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     size_t getRequiredCmdStreamSizeAligned(const DispatchFlags &dispatchFlags, Device &device);
     size_t getRequiredCmdSizeForPreamble(Device &device) const;
     size_t getCmdSizeForPreemption(const DispatchFlags &dispatchFlags) const;
+    size_t getCmdSizeForEpilogue(const DispatchFlags &dispatchFlags) const;
+    size_t getCmdSizeForEpilogueCommands(const DispatchFlags &dispatchFlags) const;
     size_t getCmdSizeForL3Config() const;
     size_t getCmdSizeForPipelineSelect() const;
     size_t getCmdSizeForComputeMode();
     size_t getCmdSizeForMediaSampler(bool mediaSamplerRequired) const;
+    size_t getCmdSizeForEngineMode(const DispatchFlags &dispatchFlags) const;
     void programComputeMode(LinearStream &csr, DispatchFlags &dispatchFlags);
 
     void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool forcePowerSavingMode) override;
@@ -70,23 +73,28 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
         return CommandStreamReceiverType::CSR_HW;
     }
 
-    void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, bool blocking, uint64_t dstOffset, uint64_t srcOffset,
-                    uint64_t copySize, CsrDependencies &csrDependencies, const TimestampPacketContainer &outputTimestampPacket) override;
+    void blitBuffer(const BlitProperties &blitProperites) override;
+
+    bool isMultiOsContextCapable() const override;
 
   protected:
-    using CommandStreamReceiver::osContext;
-
-    void programPreemption(LinearStream &csr, Device &device, DispatchFlags &dispatchFlags);
+    void programPreemption(LinearStream &csr, DispatchFlags &dispatchFlags);
     void programL3(LinearStream &csr, DispatchFlags &dispatchFlags, uint32_t &newL3Config);
     void programPreamble(LinearStream &csr, Device &device, DispatchFlags &dispatchFlags, uint32_t &newL3Config);
-    void programPipelineSelect(LinearStream &csr, DispatchFlags &dispatchFlags);
+    void programPipelineSelect(LinearStream &csr, PipelineSelectArgs &pipelineSelectArgs);
+    void programEpilogue(LinearStream &csr, void **batchBufferEndLocation, DispatchFlags &dispatchFlags);
+    void programEpliogueCommands(LinearStream &csr, const DispatchFlags &dispatchFlags);
     void programMediaSampler(LinearStream &csr, DispatchFlags &dispatchFlags);
     void programStateSip(LinearStream &cmdStream, Device &device);
     void programVFEState(LinearStream &csr, DispatchFlags &dispatchFlags, uint32_t maxFrontEndThreads);
+    void programStallingPipeControlForBarrier(LinearStream &cmdStream, DispatchFlags &dispatchFlags);
     virtual void initPageTableManagerRegisters(LinearStream &csr){};
+    void programEngineModeCommands(LinearStream &csr, const DispatchFlags &dispatchFlags);
+    void programEngineModeEpliogue(LinearStream &csr, const DispatchFlags &dispatchFlags);
 
     void addClearSLMWorkAround(typename GfxFamily::PIPE_CONTROL *pCmd);
     PIPE_CONTROL *addPipeControlCmd(LinearStream &commandStream);
+    PIPE_CONTROL *addPipeControlBeforeStateBaseAddress(LinearStream &commandStream);
     size_t getSshHeapSize();
 
     uint64_t getScratchPatchAddress();
@@ -101,7 +109,6 @@ class CommandStreamReceiverHw : public CommandStreamReceiver {
     HeapDirtyState sshState;
 
     CsrSizeRequestFlags csrSizeRequestFlags = {};
-    bool localMemoryEnabled;
 };
 
 } // namespace NEO

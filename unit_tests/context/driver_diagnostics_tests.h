@@ -6,9 +6,9 @@
  */
 
 #pragma once
+#include "core/helpers/aligned_memory.h"
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/context/context.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/options.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
@@ -24,7 +24,7 @@
 
 using namespace NEO;
 
-const int maxHintCounter = 4;
+const int maxHintCounter = 6;
 
 bool containsHint(const char *providedHint, char *userData);
 
@@ -114,7 +114,7 @@ struct PerformanceHintCommandQueueTest : public PerformanceHintTest,
         PerformanceHintTest::SetUp();
         std::tie(profilingEnabled, preemptionSupported) = GetParam();
         device = new MockDevice;
-        device->getDeviceInfoToModify()->preemptionSupported = preemptionSupported;
+        device->deviceInfo.preemptionSupported = preemptionSupported;
     }
 
     void TearDown() override {
@@ -228,7 +228,7 @@ struct PerformanceHintEnqueueKernelTest : public PerformanceHintEnqueueTest,
     void SetUp() override {
         PerformanceHintEnqueueTest::SetUp();
         cl_device_id device = pPlatform->getDevice(0);
-        CreateProgramFromBinary<Program>(context, &device, "CopyBuffer_simd32");
+        CreateProgramFromBinary(context, &device, "CopyBuffer_simd32");
         retVal = pProgram->build(1, &device, nullptr, nullptr, nullptr, false);
         ASSERT_EQ(CL_SUCCESS, retVal);
         kernel = Kernel::create<MockKernel>(pProgram, *pProgram->getKernelInfo("CopyBuffer"), &retVal);
@@ -264,7 +264,7 @@ struct PerformanceHintEnqueueKernelPrintfTest : public PerformanceHintEnqueueTes
     void SetUp() override {
         PerformanceHintEnqueueTest::SetUp();
         cl_device_id device = pPlatform->getDevice(0);
-        CreateProgramFromBinary<Program>(context, &device, "printf");
+        CreateProgramFromBinary(context, &device, "printf");
         retVal = pProgram->build(1, &device, nullptr, nullptr, nullptr, false);
         ASSERT_EQ(CL_SUCCESS, retVal);
         kernel = Kernel::create(pProgram, *pProgram->getKernelInfo("test"), &retVal);

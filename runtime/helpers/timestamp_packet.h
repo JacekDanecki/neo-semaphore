@@ -7,9 +7,9 @@
 
 #pragma once
 
+#include "core/helpers/non_copyable_or_moveable.h"
 #include "runtime/helpers/csr_deps.h"
 #include "runtime/helpers/hardware_commands_helper.h"
-#include "runtime/helpers/properties_helper.h"
 #include "runtime/utilities/tag_allocator.h"
 
 #include <atomic>
@@ -43,9 +43,12 @@ struct TimestampPacketStorage {
     }
 
     bool canBeReleased() const {
+        return isCompleted() && implicitDependenciesCount.load() == 0;
+    }
+
+    bool isCompleted() const {
         return packets[0].contextEnd != 1 &&
-               packets[0].globalEnd != 1 &&
-               implicitDependenciesCount.load() == 0;
+               packets[0].globalEnd != 1;
     }
 
     void initialize() {
@@ -80,6 +83,7 @@ class TimestampPacketContainer : public NonCopyableOrMovableClass {
     void assignAndIncrementNodesRefCounts(const TimestampPacketContainer &inputTimestampPacketContainer);
     void resolveDependencies(bool clearAllDependencies);
     void makeResident(CommandStreamReceiver &commandStreamReceiver);
+    bool isCompleted() const;
 
   protected:
     std::vector<Node *> timestampPacketNodes;
@@ -111,13 +115,18 @@ struct TimestampPacketHelper {
     }
 
     template <typename GfxFamily>
+    static size_t getRequiredCmdStreamSizeForNodeDependency() {
+        return sizeof(typename GfxFamily::MI_SEMAPHORE_WAIT) + sizeof(typename GfxFamily::MI_ATOMIC);
+    }
+
+    template <typename GfxFamily>
     static size_t getRequiredCmdStreamSize(const CsrDependencies &csrDependencies) {
         size_t totalNodesCount = 0;
         for (auto timestampPacketContainer : csrDependencies) {
             totalNodesCount += timestampPacketContainer->peekNodes().size();
         }
 
-        return totalNodesCount * (sizeof(typename GfxFamily::MI_SEMAPHORE_WAIT) + sizeof(typename GfxFamily::MI_ATOMIC));
+        return totalNodesCount * getRequiredCmdStreamSizeForNodeDependency<GfxFamily>();
     }
 };
 } // namespace NEO

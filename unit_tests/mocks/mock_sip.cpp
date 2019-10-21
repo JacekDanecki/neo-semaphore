@@ -7,7 +7,7 @@
 
 #include "unit_tests/mocks/mock_sip.h"
 
-#include "runtime/helpers/file_io.h"
+#include "core/helpers/file_io.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/os_interface/os_inc_base.h"
@@ -23,7 +23,7 @@
 namespace NEO {
 std::vector<char> MockSipKernel::dummyBinaryForSip;
 std::vector<char> MockSipKernel::getDummyGenBinary() {
-    if (dummyBinaryForSip.size() == 0) {
+    if (dummyBinaryForSip.empty()) {
         dummyBinaryForSip = getBinary();
     }
     return dummyBinaryForSip;
@@ -32,14 +32,12 @@ std::vector<char> MockSipKernel::getBinary() {
     std::string testFile;
     retrieveBinaryKernelFilename(testFile, "CopyBuffer_simd8_", ".gen");
 
-    void *binary = nullptr;
-    auto binarySize = loadDataFromFile(testFile.c_str(), binary);
-
+    size_t binarySize = 0;
+    auto binary = loadDataFromFile(testFile.c_str(), binarySize);
     UNRECOVERABLE_IF(binary == nullptr);
 
-    std::vector<char> ret{reinterpret_cast<char *>(binary), reinterpret_cast<char *>(binary) + binarySize};
+    std::vector<char> ret{binary.get(), binary.get() + binarySize};
 
-    deleteDataReadFromFile(binary);
     return ret;
 }
 void MockSipKernel::initDummyBinary() {

@@ -5,6 +5,8 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
+#include "core/utilities/arrayref.h"
 #include "runtime/api/api.h"
 #include "runtime/helpers/options.h"
 #include "runtime/mem_obj/image.h"
@@ -16,9 +18,7 @@
 #include "runtime/sharings/d3d/d3d_surface.h"
 #include "runtime/sharings/d3d/d3d_texture.h"
 #include "runtime/sharings/d3d/enable_d3d.h"
-#include "runtime/utilities/arrayref.h"
 #include "unit_tests/fixtures/d3d_test_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_sharing_factory.h"
 
@@ -135,7 +135,7 @@ TYPED_TEST_P(D3DTests, createFromD3DBufferKHRApi) {
     auto bufferObj = static_cast<D3DBuffer<TypeParam> *>(buffer->getSharingHandler().get());
 
     EXPECT_EQ((D3DResource *)&this->dummyD3DBuffer, *bufferObj->getResourceHandler());
-    EXPECT_TRUE(buffer->getFlags() == CL_MEM_READ_WRITE);
+    EXPECT_TRUE(buffer->getMemoryPropertiesFlags() == CL_MEM_READ_WRITE);
 
     clReleaseMemObject(memObj);
 }
@@ -255,7 +255,7 @@ TYPED_TEST_P(D3DTests, createFromD3D2dTextureKHRApi) {
     auto textureObj = static_cast<D3DTexture<TypeParam> *>(image->getSharingHandler().get());
 
     EXPECT_EQ((D3DResource *)&this->dummyD3DTexture, *textureObj->getResourceHandler());
-    EXPECT_TRUE(image->getFlags() == CL_MEM_READ_WRITE);
+    EXPECT_TRUE(image->getMemoryPropertiesFlags() == CL_MEM_READ_WRITE);
     EXPECT_TRUE(image->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE2D);
     EXPECT_EQ(1u, textureObj->getSubresource());
 
@@ -287,7 +287,7 @@ TYPED_TEST_P(D3DTests, createFromD3D3dTextureKHRApi) {
     auto textureObj = static_cast<D3DTexture<TypeParam> *>(image->getSharingHandler().get());
 
     EXPECT_EQ((D3DResource *)&this->dummyD3DTexture, *textureObj->getResourceHandler());
-    EXPECT_TRUE(image->getFlags() == CL_MEM_READ_WRITE);
+    EXPECT_TRUE(image->getMemoryPropertiesFlags() == CL_MEM_READ_WRITE);
     EXPECT_TRUE(image->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE3D);
     EXPECT_EQ(1u, textureObj->getSubresource());
 
@@ -472,13 +472,13 @@ TYPED_TEST_P(D3DTests, getPreferD3DSharedResources) {
     size_t size = 0;
     auto param = this->pickParam(CL_CONTEXT_D3D10_PREFER_SHARED_RESOURCES_KHR, CL_CONTEXT_D3D11_PREFER_SHARED_RESOURCES_KHR);
 
-    ctx->forcePreferD3dSharedResources(1u);
+    ctx->preferD3dSharedResources = 1u;
     auto retVal = ctx->getInfo(param, sizeof(retBool), &retBool, &size);
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(sizeof(cl_bool), size);
     EXPECT_EQ(1u, retBool);
 
-    ctx->forcePreferD3dSharedResources(0u);
+    ctx->preferD3dSharedResources = 0u;
     retVal = ctx->getInfo(param, sizeof(retBool), &retBool, &size);
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(sizeof(cl_bool), size);

@@ -41,7 +41,7 @@ set(IGDRCL_SRCS_tests_local
 )
 
 if(WIN32)
-   list(APPEND IGDRCL_SRCS_tests_local ${IGDRCL_SOURCE_DIR}/unit_tests/os_interface/windows/wddm_create.cpp)
+   list(APPEND IGDRCL_SRCS_tests_local ${NEO_SOURCE_DIR}/unit_tests/os_interface/windows/wddm_create.cpp)
 endif()
 
 add_subdirectory(libult)
@@ -81,15 +81,15 @@ set(NEO_IGDRCL_TESTS__TARGET_OBJECTS
 )
 
 if(DEFINED AUB_STREAM_DIR)
-  add_library (aub_stream_mock_lib OBJECT
-    ${IGDRCL_SOURCE_DIR}/unit_tests/aub_stream_mocks/aub_stream_interface_mock.cpp
+  add_library (aub_stream_mock_lib OBJECT EXCLUDE_FROM_ALL
+    ${NEO_SOURCE_DIR}/unit_tests/aub_stream_mocks/aub_stream_interface_mock.cpp
   )
   list(APPEND NEO_IGDRCL_TESTS__TARGET_OBJECTS
     $<TARGET_OBJECTS:${AUB_STREAM_PROJECT_NAME}_all_hw>
     $<TARGET_OBJECTS:aub_stream_mock_lib>
   )
 else()
-   list(APPEND IGDRCL_SRCS_tests_local ${IGDRCL_SOURCE_DIR}/runtime/aub/aub_stream_interface.cpp)
+   list(APPEND IGDRCL_SRCS_tests_local ${NEO_SOURCE_DIR}/runtime/aub/aub_stream_interface.cpp)
 endif()
 
 add_executable(igdrcl_tests
@@ -104,6 +104,11 @@ if(NOT GTEST_REPEAT)
   set(GTEST_REPEAT 1 CACHE STRING "Google test iterations")
 endif()
 set(GTEST_REPEAT ${GTEST_REPEAT} CACHE STRING "Google test iterations")
+
+if(NOT DEFINED GTEST_XML_OUTPUT_DIR)
+  set(GTEST_XML_OUTPUT_DIR "test_logs")
+endif()
+set(GTEST_XML_OUTPUT_DIR ${GTEST_XML_OUTPUT_DIR} CACHE STRING "Google Test xml output file location")
 
 message(STATUS "GTest repeat count set to ${GTEST_REPEAT}")
 if(NOT GTEST_SHUFFLE)
@@ -137,7 +142,7 @@ else()
 endif()
 
 target_include_directories(igdrcl_tests PRIVATE
-  ${IGDRCL_SOURCE_DIR}/unit_tests/mocks${BRANCH_DIR_SUFFIX}
+  ${NEO_SOURCE_DIR}/unit_tests/mocks${BRANCH_DIR_SUFFIX}
   ${ENGINE_NODE_DIR}
   ${KHRONOS_GL_HEADERS_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -145,7 +150,7 @@ target_include_directories(igdrcl_tests PRIVATE
 
 target_link_libraries(igdrcl_tests gmock-gtest ${IGDRCL_EXTRA_LIBS})
 
-set(BUILT_IN_KERNEL_DIR "${IGDRCL_SOURCE_DIR}/runtime/built_ins")
+set(BUILT_IN_KERNEL_DIR "${NEO_SOURCE_DIR}/runtime/built_ins")
 
 function(neo_copy_test_files target product)
   set(outputdir "${TargetDir}/${product}")
@@ -158,10 +163,10 @@ function(neo_copy_test_files target product)
     COMMAND ${CMAKE_COMMAND} -E make_directory ${outputdir}/cl_cache
     COMMAND echo copying built-in kernel files from ${BUILT_IN_KERNEL_DIR}/kernels to ${outputdir}/test_files
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${BUILT_IN_KERNEL_DIR}/kernels ${outputdir}/test_files
-    COMMAND echo copying test files from ${IGDRCL_SOURCE_DIR}/unit_tests/test_files to ${outputdir}/test_files
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${IGDRCL_SOURCE_DIR}/unit_tests/test_files ${outputdir}/test_files
+    COMMAND echo copying test files from ${NEO_SOURCE_DIR}/unit_tests/test_files to ${outputdir}/test_files
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${NEO_SOURCE_DIR}/unit_tests/test_files ${outputdir}/test_files
     COMMAND WORKING_DIRECTORY ${TargetDir}
-    DEPENDS ${IGDRCL_SOURCE_DIR}/unit_tests/test_files
+    DEPENDS ${NEO_SOURCE_DIR}/unit_tests/test_files
   )
   add_dependencies(${target} copy_compiler_files)
   set_target_properties(${target} PROPERTIES FOLDER "${PLATFORM_SPECIFIC_TARGETS_FOLDER}/${product}")
@@ -181,7 +186,7 @@ endif()
 set_target_properties(unit_tests PROPERTIES FOLDER ${TEST_PROJECTS_FOLDER})
 set_target_properties(run_unit_tests PROPERTIES FOLDER ${TEST_PROJECTS_FOLDER})
 
-target_include_directories(igdrcl_tests BEFORE PRIVATE ${IGDRCL_SOURCE_DIR}/unit_tests/gen_common${BRANCH_DIR_SUFFIX})
+target_include_directories(igdrcl_tests BEFORE PRIVATE ${NEO_SOURCE_DIR}/core/unit_tests/test_macros${BRANCH_DIR_SUFFIX})
 
 if(WIN32)
   set(cloc_cmd_prefix ocloc)
@@ -245,6 +250,39 @@ function(neo_gen_kernels_with_options target platform_name suffix filepath)
       add_custom_command(
         OUTPUT ${output_files}
         COMMAND ${cloc_cmd_prefix} -q -file ${filename} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir} -options ${arg} -options_name
+        WORKING_DIRECTORY ${workdir}
+        DEPENDS ${filearg} ocloc
+      )
+
+      list(APPEND results ${output_files})
+    endforeach()
+  endforeach()
+  add_custom_target(${target} DEPENDS ${results} copy_compiler_files)
+  set_target_properties(${target} PROPERTIES FOLDER "kernels/${suffix}")
+endfunction()
+
+function(neo_gen_kernels_with_internal_options target platform_name suffix filepath)
+  set(results)
+  foreach(filearg ${filepath})
+    get_filename_component(filename ${filearg} NAME)
+    get_filename_component(basename ${filearg} NAME_WE)
+    get_filename_component(base_workdir ${filearg} DIRECTORY)
+
+    set(outputdir "${TargetDir}/${suffix}/test_files/${NEO_ARCH}/")
+    set(workdir "${CMAKE_CURRENT_SOURCE_DIR}/${base_workdir}/")
+
+    foreach(arg ${ARGN})
+
+      set(outputpath_base "${outputdir}/${basename}_${suffix}")
+      set(output_files
+        ${outputpath_base}.spv
+        ${outputpath_base}.bin
+        ${outputpath_base}.gen
+      )
+
+      add_custom_command(
+        OUTPUT ${output_files}
+        COMMAND ${cloc_cmd_prefix} -q -file ${filename} -device ${platform_name} -${NEO_BITS} -out_dir ${outputdir} -internal_options ${arg}
         WORKING_DIRECTORY ${workdir}
         DEPENDS ${filearg} ocloc
       )
@@ -337,6 +375,25 @@ set(TEST_KERNEL_2_0
   test_files/simple_nonuniform.cl
 )
 
+set(TEST_KERNEL_STATELESS_internal_options
+  "-cl-intel-greater-than-4GB-buffer-required"
+)
+
+set(TEST_KERNEL_STATELESS_internal_options_gen9lp
+  "-cl-intel-greater-than-4GB-buffer-required -m32"
+)
+
+
+set(TEST_KERNEL_STATELESS
+  test_files/stateless_kernel.cl
+)
+
+set(TEST_KERNEL_VME
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_files/vme_kernels.cl
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_files/media_kernels_backend.cl
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_files/media_kernels_frontend.cl
+)
+
 set(TEST_KERNEL_SIP_DEBUG_options
   "-cl-include-sip-kernel-debug -cl-include-sip-csr -cl-set-bti:0"
 )
@@ -349,6 +406,9 @@ file(GLOB_RECURSE TEST_KERNELS test_files/*.cl)
 list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/shouldfail.cl")
 list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/simple_block_kernel.cl")
 list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/simple_nonuniform.cl")
+list(REMOVE_ITEM TEST_KERNELS "${CMAKE_CURRENT_SOURCE_DIR}/test_files/stateless_kernel.cl")
+list(REMOVE_ITEM TEST_KERNELS ${TEST_KERNEL_VME}
+)
 
 function(gen_run_tests_with_appverifier product slices subslices eu_per_ss)
   if(${CMAKE_BUILD_TYPE} STREQUAL "Debug" AND "${IGDRCL_OPTION__BITS}" STREQUAL "64" AND APPVERIFIER_ALLOWED)
@@ -375,7 +435,7 @@ function(gen_run_unit_tests product slices subslices eu_per_ss)
     POST_BUILD
     COMMAND WORKING_DIRECTORY ${TargetDir}
     COMMAND echo Running igdrcl_tests ${target} ${slices}x${subslices}x${eu_per_ss} in ${TargetDir}/${product}
-    COMMAND igdrcl_tests --product ${product} --slices ${slices} --subslices ${subslices} --eu_per_ss ${eu_per_ss} ${GTEST_EXCEPTION_OPTIONS} --gtest_repeat=${GTEST_REPEAT} ${GTEST_SHUFFLE} ${IGDRCL_TESTS_LISTENER_OPTION} ${GTEST_FILTER_OPTION}
+    COMMAND ${CMAKE_COMMAND} -E env GTEST_OUTPUT=xml:${GTEST_XML_OUTPUT_DIR}/test_details_${product}_${slices}_${subslices}_${eu_per_ss}.xml $<TARGET_FILE:igdrcl_tests> --product ${product} --slices ${slices} --subslices ${subslices} --eu_per_ss ${eu_per_ss} ${GTEST_EXCEPTION_OPTIONS} --gtest_repeat=${GTEST_REPEAT} ${GTEST_SHUFFLE} ${IGDRCL_TESTS_LISTENER_OPTION} ${GTEST_FILTER_OPTION}
   )
   add_dependencies(run_unit_tests run_${product}_unit_tests)
 endfunction()
@@ -390,11 +450,12 @@ endmacro()
 macro(macro_for_each_platform)
   PLATFORM_TESTED_WITH_APPVERIFIER(${GEN_TYPE} ${PLATFORM_IT} TESTED_WITH_APPVERIFIER)
   apply_macro_for_each_test_config("UNIT_TESTS")
-  foreach(PLATFORM_TYPE "CORE" "LP")
+  foreach(PLATFORM_TYPE ${PLATFORM_TYPES})
     if(${PLATFORM_IT}_IS_${PLATFORM_TYPE})
       get_family_name_with_type(${GEN_TYPE} ${PLATFORM_TYPE})
       add_dependencies(unit_tests test_kernels_${family_name_with_type})
       add_dependencies(unit_tests test_kernel_${family_name_with_type})
+      add_dependencies(unit_tests test_kernel_stateless_${family_name_with_type})
       if(NOT ("${GEN_TYPE_LOWER}" STREQUAL "gen8"))
         add_dependencies(unit_tests test_kernel_debug_enable_${family_name_with_type})
       endif()
@@ -402,28 +463,36 @@ macro(macro_for_each_platform)
       if(PLATFORM_SUPPORTS_2_0)
         add_dependencies(unit_tests test_kernel_2_0_${family_name_with_type})
       endif()
+      PLATFORM_HAS_VME(${GEN_TYPE} ${PLATFORM_IT} PLATFORM_SUPPORTS_VME)
+      if(PLATFORM_SUPPORTS_VME)
+        add_dependencies(unit_tests test_kernel_vme_${family_name_with_type})
+      endif()
     endif()
   endforeach()
 endmacro()
 
 macro(macro_for_each_gen)
-  foreach(PLATFORM_TYPE "CORE" "LP")
+  foreach(PLATFORM_TYPE ${PLATFORM_TYPES})
     if(${GEN_TYPE}_HAS_${PLATFORM_TYPE})
       get_family_name_with_type(${GEN_TYPE} ${PLATFORM_TYPE})
       string(TOLOWER ${PLATFORM_TYPE} PLATFORM_TYPE_LOWER)
       set(PLATFORM_LOWER ${DEFAULT_SUPPORTED_${GEN_TYPE}_${PLATFORM_TYPE}_PLATFORM})
       set(PLATFORM_2_0_LOWER ${DEFAULT_SUPPORTED_2_0_${GEN_TYPE}_${PLATFORM_TYPE}_PLATFORM})
+      set(PLATFORM_VME_LOWER ${DEFAULT_SUPPORTED_VME_${GEN_TYPE}_${PLATFORM_TYPE}_PLATFORM})
 
       if(MSVC OR CMAKE_SIZEOF_VOID_P EQUAL 8)
         neo_gen_kernels(test_kernels_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNELS})
         neo_gen_kernels_with_options(test_kernel_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNEL} ${TEST_KERNEL_options})
-
         # Temporarily disabled debug kernel generation on gen8
         if(NOT ("${GEN_TYPE_LOWER}" STREQUAL "gen8"))
           neo_gen_kernel_with_kernel_debug_options(test_kernel_debug_enable_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNEL})
         endif()
-
-
+        # Gen9lp needs extra -m32 flag
+        if( ("${GEN_TYPE_LOWER}" STREQUAL "gen9") AND ("${PLATFORM_TYPE_LOWER}" STREQUAL "lp"))
+          neo_gen_kernels_with_internal_options(test_kernel_stateless_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNEL_STATELESS} ${TEST_KERNEL_STATELESS_internal_options_gen9lp})
+        else()
+          neo_gen_kernels_with_internal_options(test_kernel_stateless_${family_name_with_type} ${PLATFORM_LOWER} ${family_name_with_type} ${TEST_KERNEL_STATELESS} ${TEST_KERNEL_STATELESS_internal_options})
+        endif()
         set(sip_kernel_file_name)
         set(sip_kernel_output_file)
         set(sip_debug_kernel_output_file)
@@ -444,6 +513,9 @@ macro(macro_for_each_gen)
         if(PLATFORM_2_0_LOWER)
           neo_gen_kernels_with_options(test_kernel_2_0_${family_name_with_type} ${PLATFORM_2_0_LOWER} ${family_name_with_type} "${TEST_KERNEL_2_0}" ${TEST_KERNEL_2_0_options})
         endif()
+        if(PLATFORM_VME_LOWER)
+          neo_gen_kernels(test_kernel_vme_${family_name_with_type} ${PLATFORM_VME_LOWER} ${family_name_with_type} ${TEST_KERNEL_VME})
+        endif()
       endif()
     endif()
   endforeach()
@@ -453,7 +525,7 @@ apply_macro_for_each_gen("TESTED")
 add_subdirectories()
 add_dependencies(unit_tests mock_gmm)
 add_dependencies(igdrcl_tests mock_gmm)
-create_project_source_tree(igdrcl_tests ${IGDRCL_SOURCE_DIR}/runtime)
+create_project_source_tree(igdrcl_tests ${NEO_SOURCE_DIR}/runtime)
 
 set(UltPchHeader "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.h")
 set(UltPchSource "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.cpp")
@@ -477,7 +549,7 @@ elseif(USE_ULT_PCH)
   set(UltPchBinaryGch "${UltPchHeaderInBuildDir}.gch")
   set(UltPchBinary "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/igdrcl_ult_pch.dir/igdrcl_tests_pch.h.o")
 
-  add_library(igdrcl_ult_pch STATIC ${UltPchHeader})
+  add_library(igdrcl_ult_pch STATIC EXCLUDE_FROM_ALL ${UltPchHeader})
   add_dependencies(igdrcl_tests igdrcl_ult_pch)
 
   target_include_directories(igdrcl_ult_pch PRIVATE

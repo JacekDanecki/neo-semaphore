@@ -12,6 +12,7 @@
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/helpers/get_info.h"
+#include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/mem_obj/mem_obj_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -92,8 +93,9 @@ Image *D3DSurface::create(Context *context, cl_dx9_surface_info_khr *surfaceInfo
             imgDesc.image_width /= 2;
             imgDesc.image_height /= 2;
         }
-
-        AllocationProperties allocProperties = MemObjHelper::getAllocationProperties(imgInfo, true, flags);
+        MemoryProperties properties{flags};
+        MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
+        AllocationProperties allocProperties = MemObjHelper::getAllocationPropertiesWithImageInfo(imgInfo, true, memoryProperties);
         allocProperties.allocationType = GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY;
 
         alloc = context->getMemoryManager()->allocateGraphicsMemoryInPreferredPool(allocProperties, nullptr);
@@ -200,6 +202,13 @@ const std::map<const D3DFORMAT, const cl_image_format> D3DSurface::D3DtoClFormat
     {static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', '1', '2')), {CL_R, CL_UNORM_INT8}},
     {static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', 'Y', 'U')), {CL_YVYU_INTEL, CL_UNORM_INT8}},
     {static_cast<D3DFORMAT>(MAKEFOURCC('V', 'Y', 'U', 'Y')), {CL_VYUY_INTEL, CL_UNORM_INT8}}};
+
+const std::vector<D3DFORMAT> D3DSurface::D3DPlane1Formats = {
+    static_cast<D3DFORMAT>(MAKEFOURCC('N', 'V', '1', '2')),
+    static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', '1', '2'))};
+
+const std::vector<D3DFORMAT> D3DSurface::D3DPlane2Formats =
+    {static_cast<D3DFORMAT>(MAKEFOURCC('Y', 'V', '1', '2'))};
 
 cl_int D3DSurface::findImgFormat(D3DFORMAT d3dFormat, cl_image_format &imgFormat, cl_uint plane, OCLPlane &oclPlane) {
     oclPlane = OCLPlane::NO_PLANE;

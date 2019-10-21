@@ -5,14 +5,15 @@
  *
  */
 
+#include "core/memory_manager/memory_constants.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
-#include "runtime/memory_manager/memory_constants.h"
 #include "runtime/os_interface/device_factory.h"
+#include "runtime/os_interface/os_interface.h"
 #include "runtime/os_interface/os_library.h"
 #include "runtime/platform/platform.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
 #include "gtest/gtest.h"
 
@@ -136,11 +137,11 @@ TEST_F(DeviceFactoryTest, givenPointerToHwInfoWhenGetDevicedCalledThenRequiedSur
     EXPECT_EQ(hwInfo->gtSystemInfo.CsrSizeInMb * MemoryConstants::megaByte, hwInfo->capabilityTable.requiredPreemptionSurfaceSize);
 }
 
-TEST_F(DeviceFactoryTest, givenCreateMultipleDevicesDebugFlagWhenGetDevicesIsCalledThenNumberOfReturnedDevicesIsEqualToDebugVariable) {
+TEST_F(DeviceFactoryTest, givenCreateMultipleRootDevicesDebugFlagWhenGetDevicesIsCalledThenNumberOfReturnedDevicesIsEqualToDebugVariable) {
     DeviceFactoryCleaner cleaner;
     DebugManagerStateRestore stateRestore;
     auto requiredDeviceCount = 2u;
-    DebugManager.flags.CreateMultipleDevices.set(requiredDeviceCount);
+    DebugManager.flags.CreateMultipleRootDevices.set(requiredDeviceCount);
 
     size_t numDevices = 0;
     bool success = DeviceFactory::getDevices(numDevices, *executionEnvironment);
@@ -149,11 +150,11 @@ TEST_F(DeviceFactoryTest, givenCreateMultipleDevicesDebugFlagWhenGetDevicesIsCal
     EXPECT_EQ(requiredDeviceCount, numDevices);
 }
 
-TEST_F(DeviceFactoryTest, givenCreateMultipleDevicesDebugFlagWhenGetDevicesForProductFamilyOverrideIsCalledThenNumberOfReturnedDevicesIsEqualToDebugVariable) {
+TEST_F(DeviceFactoryTest, givenCreateMultipleRootDevicesDebugFlagWhenGetDevicesForProductFamilyOverrideIsCalledThenNumberOfReturnedDevicesIsEqualToDebugVariable) {
     DeviceFactoryCleaner cleaner;
     DebugManagerStateRestore stateRestore;
     auto requiredDeviceCount = 2u;
-    DebugManager.flags.CreateMultipleDevices.set(requiredDeviceCount);
+    DebugManager.flags.CreateMultipleRootDevices.set(requiredDeviceCount);
 
     size_t numDevices = 0;
     bool success = DeviceFactory::getDevicesForProductFamilyOverride(numDevices, *executionEnvironment);

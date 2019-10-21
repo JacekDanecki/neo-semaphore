@@ -14,6 +14,7 @@
 #include "runtime/sharings/sharing.h"
 
 #include "mem_obj_types.h"
+#include "memory_properties_flags.h"
 
 #include <atomic>
 #include <cstdint>
@@ -38,7 +39,9 @@ class MemObj : public BaseObject<_cl_mem> {
 
     MemObj(Context *context,
            cl_mem_object_type memObjectType,
-           MemoryProperties properties,
+           const MemoryPropertiesFlags &memoryProperties,
+           cl_mem_flags flags,
+           cl_mem_flags_intel flagsIntel,
            size_t size,
            void *memoryStorage,
            void *hostPtr,
@@ -59,7 +62,6 @@ class MemObj : public BaseObject<_cl_mem> {
     void *getHostPtr() const;
     bool getIsObjectRedescribed() const { return isObjectRedescribed; };
     size_t getSize() const;
-    cl_mem_flags getFlags() const;
 
     bool addMappedPtr(void *ptr, size_t ptrLength, cl_map_flags &mapFlags, MemObjSizeArray &size, MemObjOffsetArray &offset, uint32_t mipLevel);
     bool findMappedPtr(void *mappedPtr, MapInfo &outMapInfo) { return mapOperationsHandler.find(mappedPtr, outMapInfo); }
@@ -76,6 +78,7 @@ class MemObj : public BaseObject<_cl_mem> {
     bool isMemObjZeroCopy() const;
     bool isMemObjWithHostPtrSVM() const;
     bool isMemObjUncacheable() const;
+    bool isMemObjUncacheableForSurfaceState() const;
     virtual void transferDataToHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) { UNRECOVERABLE_IF(true); };
     virtual void transferDataFromHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) { UNRECOVERABLE_IF(true); };
 
@@ -88,7 +91,7 @@ class MemObj : public BaseObject<_cl_mem> {
     bool writeMemObjFlagsInvalid();
     bool mapMemObjFlagsInvalid(cl_map_flags mapFlags);
 
-    virtual bool allowTiling() const { return false; }
+    MOCKABLE_VIRTUAL bool isTiledAllocation() const;
 
     void *getCpuAddressForMapping();
     void *getCpuAddressForMemoryTransfer();
@@ -101,7 +104,7 @@ class MemObj : public BaseObject<_cl_mem> {
     Context *getContext() const { return context; }
 
     void destroyGraphicsAllocation(GraphicsAllocation *allocation, bool asyncDestroy);
-    bool checkIfMemoryTransferIsRequired(size_t offsetInMemObjest, size_t offsetInHostPtr, const void *ptr, cl_command_type cmdType);
+    bool checkIfMemoryTransferIsRequired(size_t offsetInMemObject, size_t offsetInHostPtr, const void *ptr, cl_command_type cmdType);
     bool mappingOnCpuAllowed() const;
     virtual size_t calculateOffsetForMapping(const MemObjOffsetArray &offset) const { return offset[0]; }
     size_t calculateMappedPtrLength(const MemObjSizeArray &size) const { return calculateOffsetForMapping(size); }
@@ -120,14 +123,16 @@ class MemObj : public BaseObject<_cl_mem> {
         return mapAllocation;
     }
 
-    const MemoryProperties &getProperties() const { return properties; }
+    const cl_mem_flags &getMemoryPropertiesFlags() const { return flags; }
 
   protected:
     void getOsSpecificMemObjectInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam);
 
     Context *context;
     cl_mem_object_type memObjectType;
-    MemoryProperties properties;
+    MemoryPropertiesFlags memoryProperties;
+    cl_mem_flags flags = 0;
+    cl_mem_flags_intel flagsIntel = 0;
     size_t size;
     size_t hostPtrMinSize = 0;
     void *memoryStorage;

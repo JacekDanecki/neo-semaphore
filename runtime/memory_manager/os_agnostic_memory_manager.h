@@ -7,8 +7,6 @@
 
 #pragma once
 #include "core/helpers/basic_math.h"
-#include "runtime/helpers/hw_info.h"
-#include "runtime/helpers/options.h"
 #include "runtime/memory_manager/memory_manager.h"
 
 namespace NEO {
@@ -22,9 +20,18 @@ class MemoryAllocation : public GraphicsAllocation {
 
     void setSharedHandle(osHandle handle) { sharingInfo.sharedHandle = handle; }
 
+    MemoryAllocation(AllocationType allocationType, void *cpuPtrIn, uint64_t gpuAddress, uint64_t baseAddress, size_t sizeIn,
+                     MemoryPool::Type pool)
+        : GraphicsAllocation(allocationType, cpuPtrIn, gpuAddress, baseAddress, sizeIn, pool),
+          id(0), uncacheable(false) {}
+
+    MemoryAllocation(AllocationType allocationType, void *cpuPtrIn, size_t sizeIn, osHandle sharedHandleIn, MemoryPool::Type pool)
+        : GraphicsAllocation(allocationType, cpuPtrIn, sizeIn, sharedHandleIn, pool),
+          id(0), uncacheable(false) {}
+
     MemoryAllocation(AllocationType allocationType, void *driverAllocatedCpuPointer, void *pMem, uint64_t gpuAddress, size_t memSize,
-                     uint64_t count, MemoryPool::Type pool, bool multiOsContextCapable, bool uncacheable, bool flushL3Required)
-        : GraphicsAllocation(allocationType, pMem, gpuAddress, 0u, memSize, pool, multiOsContextCapable),
+                     uint64_t count, MemoryPool::Type pool, bool uncacheable, bool flushL3Required)
+        : GraphicsAllocation(allocationType, pMem, gpuAddress, 0u, memSize, pool),
           id(count), uncacheable(uncacheable) {
 
         this->driverAllocatedCpuPointer = driverAllocatedCpuPointer;
@@ -40,12 +47,7 @@ class OsAgnosticMemoryManager : public MemoryManager {
     using MemoryManager::allocateGraphicsMemory;
 
     OsAgnosticMemoryManager(ExecutionEnvironment &executionEnvironment) : OsAgnosticMemoryManager(false, executionEnvironment) {}
-
-    OsAgnosticMemoryManager(bool aubUsage, ExecutionEnvironment &executionEnvironment) : MemoryManager(executionEnvironment) {
-        allocator32Bit.reset(create32BitAllocator(aubUsage));
-        gfxPartition.init(platformDevices[0]->capabilityTable.gpuAddressSpace);
-    }
-
+    OsAgnosticMemoryManager(bool aubUsage, ExecutionEnvironment &executionEnvironment);
     ~OsAgnosticMemoryManager() override;
     GraphicsAllocation *createGraphicsAllocationFromSharedHandle(osHandle handle, const AllocationProperties &properties, bool requireSpecificBitness) override;
     GraphicsAllocation *createGraphicsAllocationFromNTHandle(void *handle) override { return nullptr; }
@@ -58,13 +60,9 @@ class OsAgnosticMemoryManager : public MemoryManager {
     void cleanOsHandles(OsHandleStorage &handleStorage) override;
 
     uint64_t getSystemSharedMemory() override;
-    uint64_t getMaxApplicationAddress() override;
-    uint64_t getInternalHeapBaseAddress() override;
-    uint64_t getExternalHeapBaseAddress() override;
+    uint64_t getLocalMemorySize() override;
 
     void turnOnFakingBigAllocations();
-
-    Allocator32bit *create32BitAllocator(bool enableLocalMemory);
 
     void *reserveCpuAddressRange(size_t size) override;
     void releaseReservedCpuAddressRange(void *reserved, size_t size) override;
@@ -76,13 +74,16 @@ class OsAgnosticMemoryManager : public MemoryManager {
     GraphicsAllocation *allocateGraphicsMemory64kb(const AllocationData &allocationData) override;
     GraphicsAllocation *allocateGraphicsMemoryForImageImpl(const AllocationData &allocationData, std::unique_ptr<Gmm> gmm) override;
 
-    void *lockResourceImpl(GraphicsAllocation &graphicsAllocation) override { return ptrOffset(graphicsAllocation.getUnderlyingBuffer(), static_cast<size_t>(graphicsAllocation.getAllocationOffset())); }
+    void *lockResourceImpl(GraphicsAllocation &graphicsAllocation) override { return graphicsAllocation.getUnderlyingBuffer(); }
     void unlockResourceImpl(GraphicsAllocation &graphicsAllocation) override {}
     GraphicsAllocation *allocate32BitGraphicsMemoryImpl(const AllocationData &allocationData) override;
     GraphicsAllocation *allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) override;
+    MemoryAllocation *createMemoryAllocation(GraphicsAllocation::AllocationType allocationType, void *driverAllocatedCpuPointer, void *pMem, uint64_t gpuAddress, size_t memSize,
+                                             uint64_t count, MemoryPool::Type pool, bool uncacheable, bool flushL3Required, bool requireSpecificBitness);
 
   private:
     unsigned long long counter = 0;
     bool fakeBigAllocations = false;
 };
+
 } // namespace NEO

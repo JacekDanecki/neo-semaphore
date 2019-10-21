@@ -5,9 +5,10 @@
  *
  */
 
-#include "elf/writer.h"
+#include "core/elf/writer.h"
 #include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/compiler_interface/compiler_options.h"
+#include "runtime/device/device.h"
 #include "runtime/helpers/validators.h"
 #include "runtime/platform/platform.h"
 #include "runtime/source_level_debugger/source_level_debugger.h"
@@ -72,14 +73,16 @@ cl_int Program::compile(
         buildStatus = CL_BUILD_IN_PROGRESS;
 
         options = (buildOptions != nullptr) ? buildOptions : "";
-        std::string reraStr = "-cl-intel-gtpin-rera";
-        size_t pos = options.find(reraStr);
-        if (pos != std::string::npos) {
-            // compile option "-cl-intel-gtpin-rera" is present, move it to internalOptions
-            size_t reraLen = reraStr.length();
-            options.erase(pos, reraLen);
-            internalOptions.append(reraStr);
-            internalOptions.append(" ");
+
+        const std::vector<std::string> optionsToExtract{"-cl-intel-gtpin-rera", "-cl-intel-greater-than-4GB-buffer-required"};
+
+        for (const auto &optionString : optionsToExtract) {
+            size_t pos = options.find(optionString);
+            if (pos != std::string::npos) {
+                options.erase(pos, optionString.length());
+                internalOptions.append(optionString);
+                internalOptions.append(" ");
+            }
         }
 
         // create ELF writer to process all sources to be compiled
@@ -127,7 +130,7 @@ cl_int Program::compile(
             break;
         }
 
-        TranslationArgs inputArgs = {};
+        TranslationInput inputArgs = {IGC::CodeType::elf, IGC::CodeType::undefined};
 
         // set parameters for compilation
         internalOptions.append(platform()->peekCompilerExtensions());
@@ -141,19 +144,25 @@ cl_int Program::compile(
             }
         }
 
-        inputArgs.pInput = compileData.data();
-        inputArgs.InputSize = static_cast<uint32_t>(compileDataSize);
-        inputArgs.pOptions = options.c_str();
-        inputArgs.OptionsSize = static_cast<uint32_t>(options.length());
-        inputArgs.pInternalOptions = internalOptions.c_str();
-        inputArgs.InternalOptionsSize = static_cast<uint32_t>(internalOptions.length());
-        inputArgs.pTracingOptions = nullptr;
-        inputArgs.TracingOptionsCount = 0;
+        inputArgs.src = ArrayRef<const char>(compileData.data(), compileDataSize);
+        inputArgs.apiOptions = ArrayRef<const char>(options.c_str(), options.length());
+        inputArgs.internalOptions = ArrayRef<const char>(internalOptions.c_str(), internalOptions.length());
 
-        retVal = pCompilerInterface->compile(*this, inputArgs);
+        TranslationOutput compilerOuput;
+        auto compilerErr = pCompilerInterface->compile(*this->pDevice, inputArgs, compilerOuput);
+        this->updateBuildLog(this->pDevice, compilerOuput.frontendCompilerLog.c_str(), compilerOuput.frontendCompilerLog.size());
+        this->updateBuildLog(this->pDevice, compilerOuput.backendCompilerLog.c_str(), compilerOuput.backendCompilerLog.size());
+        retVal = asClError(compilerErr);
         if (retVal != CL_SUCCESS) {
             break;
         }
+
+        this->irBinary = std::move(compilerOuput.intermediateRepresentation.mem);
+        this->irBinarySize = compilerOuput.intermediateRepresentation.size;
+        this->isSpirV = compilerOuput.intermediateCodeType == IGC::CodeType::spirV;
+        this->debugData = std::move(compilerOuput.debugData.mem);
+        this->debugDataSize = compilerOuput.debugData.size;
+
         updateNonUniformFlag();
     } while (false);
 

@@ -6,6 +6,7 @@
  */
 
 #include "runtime/context/context.h"
+#include "runtime/device/device.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/program/program.h"
 
@@ -89,7 +90,7 @@ T *Program::create(
 
     if (retVal == CL_SUCCESS) {
         program = new T(*device.getExecutionEnvironment());
-        program->setSource((char *)nullTerminatedString);
+        program->sourceCode = nullTerminatedString;
         program->context = context;
         program->isBuiltIn = isBuiltIn;
         if (program->context && !program->isBuiltIn) {
@@ -97,7 +98,7 @@ T *Program::create(
         }
         program->pDevice = &device;
         program->numDevices = 1;
-        if (is32bit || DebugManager.flags.DisableStatelessToStatefulOptimization.get()) {
+        if (is32bit || DebugManager.flags.DisableStatelessToStatefulOptimization.get() || device.areSharedSystemAllocationsAllowed()) {
             program->internalOptions += "-cl-intel-greater-than-4GB-buffer-required";
         }
     }
@@ -127,7 +128,8 @@ T *Program::createFromGenBinary(
     if (CL_SUCCESS == retVal) {
         program = new T(executionEnvironment, context, isBuiltIn);
         program->numDevices = 1;
-        program->storeGenBinary(binary, size);
+        program->genBinary = makeCopy(binary, size);
+        program->genBinarySize = size;
         program->isCreatedFromBinary = true;
         program->programBinaryType = CL_PROGRAM_BINARY_TYPE_EXECUTABLE;
         program->isProgramBinaryResolved = true;

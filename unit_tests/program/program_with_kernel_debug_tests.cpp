@@ -41,13 +41,16 @@ class ProgramWithKernelDebuggingTest : public ProgramSimpleFixture,
     void SetUp() override {
         ProgramSimpleFixture::SetUp();
         device = pDevice;
+        if (!pDevice->getHardwareInfo().capabilityTable.sourceLevelDebuggerSupported) {
+            GTEST_SKIP();
+        }
 
         std::string filename;
         std::string kernelOption(CompilerOptions::debugKernelEnable);
         KernelFilenameHelper::getKernelFilenameFromInternalOption(kernelOption, filename);
 
-        kbHelper = new KernelBinaryHelper(filename, false);
-        CreateProgramWithSource<MockProgram>(
+        kbHelper = std::make_unique<KernelBinaryHelper>(filename, false);
+        CreateProgramWithSource(
             pContext,
             &device,
             "copybuffer.cl");
@@ -56,11 +59,10 @@ class ProgramWithKernelDebuggingTest : public ProgramSimpleFixture,
     }
 
     void TearDown() override {
-        delete kbHelper;
         ProgramSimpleFixture::TearDown();
     }
     cl_device_id device;
-    KernelBinaryHelper *kbHelper = nullptr;
+    std::unique_ptr<KernelBinaryHelper> kbHelper;
     MockProgram *mockProgram = nullptr;
 };
 
@@ -256,10 +258,9 @@ TEST_F(ProgramWithKernelDebuggingTest, givenKernelDebugEnabledWhenProgramIsBuilt
     if (pDevice->getHardwareInfo().platform.eRenderCoreFamily >= IGFX_GEN9_CORE) {
         retVal = pProgram->build(1, &device, nullptr, nullptr, nullptr, false);
 
-        size_t debugDataSize = 0;
-        auto debugData = mockProgram->getDebugDataBinary(debugDataSize);
+        auto debugData = mockProgram->getDebugData();
         EXPECT_NE(nullptr, debugData);
-        EXPECT_NE(0u, debugDataSize);
+        EXPECT_NE(0u, mockProgram->getDebugDataSize());
     }
 }
 

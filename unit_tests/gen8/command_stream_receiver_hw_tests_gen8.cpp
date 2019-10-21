@@ -5,11 +5,12 @@
  *
  */
 
+#include "core/command_stream/linear_stream.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/helpers/dispatch_flags_helper.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
@@ -43,7 +44,8 @@ GEN8TEST_F(CommandStreamReceiverHwTestGen8, GivenChangedL3ConfigWhenL3IsProgramm
     void *buffer = alignedMalloc(bufferSize, 64);
 
     LinearStream stream(buffer, bufferSize);
-    DispatchFlags flags;
+    DispatchFlags flags = DispatchFlagsHelper::createDefaultDispatchFlags();
+
     uint32_t l3Config = 0x12345678;
 
     csr.programL3(stream, flags, l3Config);

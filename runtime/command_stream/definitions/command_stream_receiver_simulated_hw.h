@@ -17,10 +17,11 @@ class CommandStreamReceiverSimulatedHw : public CommandStreamReceiverSimulatedCo
   protected:
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::CommandStreamReceiverSimulatedCommonHw;
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::osContext;
+    using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::getDeviceIndex;
 
   public:
     uint32_t getMemoryBank(GraphicsAllocation *allocation) const {
-        return MemoryBanks::getBank(this->deviceIndex);
+        return MemoryBanks::getBank(getDeviceIndex());
     }
     int getAddressSpace(int hint) {
         return AubMemDump::AddressSpaceValues::TraceNonlocal;
@@ -29,5 +30,18 @@ class CommandStreamReceiverSimulatedHw : public CommandStreamReceiverSimulatedCo
         return new PhysicalAddressAllocator();
     }
     void writeMemoryWithAubManager(GraphicsAllocation &graphicsAllocation) override{};
+
+    void setAubWritable(bool writable, GraphicsAllocation &graphicsAllocation) override {
+        graphicsAllocation.setAubWritable(writable, getMemoryBank(&graphicsAllocation));
+    }
+    bool isAubWritable(GraphicsAllocation &graphicsAllocation) const override {
+        return graphicsAllocation.isAubWritable(getMemoryBank(&graphicsAllocation));
+    }
+    void setTbxWritable(bool writable, GraphicsAllocation &graphicsAllocation) override {
+        graphicsAllocation.setTbxWritable(writable, getMemoryBank(&graphicsAllocation));
+    }
+    bool isTbxWritable(GraphicsAllocation &graphicsAllocation) const override {
+        return graphicsAllocation.isTbxWritable(getMemoryBank(&graphicsAllocation));
+    }
 };
 } // namespace NEO

@@ -5,7 +5,7 @@
  *
  */
 
-#include "runtime/helpers/aligned_memory.h"
+#include "core/helpers/aligned_memory.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/platform/platform.h"
@@ -37,6 +37,9 @@ struct AUBCreateImage
     void SetUp() override {
         CommandDeviceFixture::SetUp(cl_command_queue_properties(0));
         CommandStreamFixture::SetUp(pCmdQ);
+        if (!pDevice->getDeviceInfo().imageSupport) {
+            GTEST_SKIP();
+        }
 
         imageFormat.image_channel_data_type = CL_UNORM_INT8;
         imageFormat.image_channel_order = CL_RGBA;
@@ -54,14 +57,12 @@ struct AUBCreateImage
     }
 
     void TearDown() override {
-        delete image;
-        //delete context;
+        image.reset();
         CommandStreamFixture::TearDown();
         CommandDeviceFixture::TearDown();
     }
 
-    //MockContext *context;
-    Image *image = nullptr;
+    std::unique_ptr<Image> image;
     cl_image_format imageFormat;
     cl_image_desc imageDesc;
     cl_int retVal;
@@ -72,6 +73,9 @@ struct AUBCreateImageArray : public AUBCreateImage,
                              public ::testing::WithParamInterface<uint32_t /*cl_mem_object_type*/> {
     void SetUp() override {
         AUBCreateImage::SetUp();
+        if (!pDevice->getDeviceInfo().imageSupport) {
+            GTEST_SKIP();
+        }
     }
     void TearDown() override {
         AUBCreateImage::TearDown();
@@ -84,6 +88,7 @@ INSTANTIATE_TEST_CASE_P(
     testing::ValuesIn(ImgArrayTypes));
 
 HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
+    auto &hwHelper = HwHelper::get(pDevice->getExecutionEnvironment()->getHardwareInfo()->platform.eRenderCoreFamily);
     imageDesc.image_type = GetParam();
     if (imageDesc.image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY) {
         imageDesc.image_height = 1;
@@ -91,6 +96,7 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
     cl_mem_flags flags = CL_MEM_COPY_HOST_PTR;
     auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
     auto imgInfo = MockGmm::initImgInfo(imageDesc, 0, surfaceFormat);
+    imgInfo.linearStorage = !hwHelper.tilingAllowed(false, imageDesc, false);
     auto queryGmm = MockGmm::queryImgParams(imgInfo);
 
     //allocate host_ptr
@@ -103,13 +109,13 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
         hostPtr[i] = i;
     }
 
-    auto image = Image::create(
+    image.reset(Image::create(
         context,
         flags,
         surfaceFormat,
         &imageDesc,
         hostPtr.get(),
-        retVal);
+        retVal));
 
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, image);
@@ -136,7 +142,7 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
     } else {
         ASSERT_TRUE(false);
     }
-    retVal = pCmdQ->enqueueReadImage(image, CL_FALSE, imgOrigin, imgRegion, imgInfo.rowPitch, imgInfo.slicePitch,
+    retVal = pCmdQ->enqueueReadImage(image.get(), CL_FALSE, imgOrigin, imgRegion, imgInfo.rowPitch, imgInfo.slicePitch,
                                      readMemory.get(), nullptr, 0, nullptr, nullptr);
     EXPECT_EQ(CL_SUCCESS, retVal);
 
@@ -163,13 +169,14 @@ HWTEST_P(AUBCreateImageArray, CheckArrayImages) {
             }
         }
     }
-
-    delete image;
 }
 struct AUBCreateImageHostPtr : public AUBCreateImage,
                                public ::testing::WithParamInterface<uint64_t /*cl_mem_object_type*/> {
     void SetUp() override {
         AUBCreateImage::SetUp();
+        if (!pDevice->getDeviceInfo().imageSupport) {
+            GTEST_SKIP();
+        }
     }
     void TearDown() override {
         AUBCreateImage::TearDown();
@@ -221,7 +228,7 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithDoubledRowPitchThatIsCreatedWithCopyHos
             data += passedRowPitch;
         }
 
-        image = Image::create(context, flags, surfaceFormat, &imageDesc, pHostPtr, retVal);
+        image.reset(Image::create(context, flags, surfaceFormat, &imageDesc, pHostPtr, retVal));
         ASSERT_EQ(CL_SUCCESS, retVal);
         EXPECT_EQ(image->getImageDesc().image_row_pitch, imgInfo.rowPitch);
         EXPECT_EQ(image->getHostPtrRowPitch(), (size_t)passedRowPitch);
@@ -238,11 +245,12 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithDoubledRowPitchThatIsCreatedWithCopyHos
         data = (char *)pHostPtr;
 
         uint8_t *readMemory = nullptr;
-        if (image->allowTiling()) {
+        bool isGpuCopy = image->isTiledAllocation() || !MemoryPool::isSystemMemoryPool(image->getGraphicsAllocation()->getMemoryPool());
+        if (isGpuCopy) {
             readMemory = new uint8_t[testImageDimensions * testImageDimensions * elementSize * 4];
             size_t imgOrigin[] = {0, 0, 0};
             size_t imgRegion[] = {imageDesc.image_width, imageDesc.image_height, imageDesc.image_depth ? imageDesc.image_depth : 1};
-            retVal = pCmdQ->enqueueReadImage(image, CL_FALSE, imgOrigin, imgRegion, 0, 0, readMemory, nullptr, 0, nullptr, nullptr);
+            retVal = pCmdQ->enqueueReadImage(image.get(), CL_FALSE, imgOrigin, imgRegion, 0, 0, readMemory, nullptr, 0, nullptr, nullptr);
             EXPECT_EQ(CL_SUCCESS, retVal);
             retVal = pCmdQ->flush();
             EXPECT_EQ(CL_SUCCESS, retVal);
@@ -251,7 +259,7 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithDoubledRowPitchThatIsCreatedWithCopyHos
 
         while (heightToCopy--) {
             for (unsigned int i = 0; i < imageDesc.image_width * elementSize; i++) {
-                if (image->allowTiling()) {
+                if (isGpuCopy) {
                     AUBCommandStreamFixture::expectMemory<FamilyType>(&imageStorage[i], &data[i], 1);
                 } else {
                     EXPECT_EQ(imageStorage[i], data[i]);
@@ -290,21 +298,14 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithRowPitchCreatedWithUseHostPtrFlagCopied
 
             data += passedRowPitch;
         }
-        image = Image::create(
+        image.reset(Image::create(
             context,
             flags,
             surfaceFormat,
             &imageDesc,
             pUseHostPtr,
-            retVal);
+            retVal));
         ASSERT_EQ(CL_SUCCESS, retVal);
-        EXPECT_EQ(image->getImageDesc().image_row_pitch, imgInfo.rowPitch);
-        EXPECT_EQ(image->getHostPtrRowPitch(), (size_t)passedRowPitch);
-        EXPECT_EQ(image->getSize(), imgInfo.size);
-        EXPECT_EQ(image->getImageDesc().image_slice_pitch, imgInfo.slicePitch);
-        EXPECT_GE(image->getImageDesc().image_slice_pitch, image->getImageDesc().image_row_pitch);
-        EXPECT_EQ(image->getQPitch(), imgInfo.qPitch);
-        EXPECT_EQ(image->getCubeFaceIndex(), static_cast<uint32_t>(__GMM_NO_CUBE_MAP));
 
         //now check if data is properly propagated to image
         auto mapFlags = CL_MAP_READ;
@@ -313,7 +314,7 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithRowPitchCreatedWithUseHostPtrFlagCopied
         size_t imageRowPitch = 0;
         size_t imageSlicePitch = 0;
         auto ptr = pCmdQ->enqueueMapImage(
-            image,
+            image.get(),
             true,
             mapFlags,
             origin,
@@ -348,10 +349,11 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithRowPitchCreatedWithUseHostPtrFlagCopied
         heightToCopy = imageDesc.image_height;
         char *imageStorage = (char *)ptr;
         data = (char *)pUseHostPtr;
+        bool isGpuCopy = image->isTiledAllocation() || !MemoryPool::isSystemMemoryPool(image->getGraphicsAllocation()->getMemoryPool());
 
         while (heightToCopy--) {
             for (unsigned int i = 0; i < imageDesc.image_width * elementSize; i++) {
-                if (image->allowTiling()) {
+                if (isGpuCopy) {
                     AUBCommandStreamFixture::expectMemory<FamilyType>(&imageStorage[i], &data[i], 1);
                 } else {
                     EXPECT_EQ(imageStorage[i], data[i]);
@@ -361,7 +363,7 @@ HWTEST_P(AUBCreateImageHostPtr, imageWithRowPitchCreatedWithUseHostPtrFlagCopied
             imageStorage += imageRowPitch;
         }
 
-        retVal = clEnqueueUnmapMemObject(pCmdQ, image, ptr, 0, nullptr, nullptr);
+        retVal = clEnqueueUnmapMemObject(pCmdQ, image.get(), ptr, 0, nullptr, nullptr);
         EXPECT_EQ(CL_SUCCESS, retVal);
         delete[] pUseHostPtr;
     }
@@ -393,19 +395,20 @@ HWTEST_F(AUBCreateImage, image3DCreatedWithDoubledSlicePitchWhenQueriedForDataRe
     }
     cl_mem_flags flags = CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR;
     auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
-    auto image = Image::create(context, flags, surfaceFormat,
-                               &imageDesc, host_ptr, retVal);
+    image.reset(Image::create(context, flags, surfaceFormat,
+                              &imageDesc, host_ptr, retVal));
 
     depthToCopy = imageDesc.image_depth;
     auto imageStorage = (uint8_t *)image->getCpuAddress();
     data = (char *)host_ptr;
 
     uint8_t *readMemory = nullptr;
-    if (image->allowTiling()) {
+    bool isGpuCopy = image->isTiledAllocation() || !MemoryPool::isSystemMemoryPool(image->getGraphicsAllocation()->getMemoryPool());
+    if (isGpuCopy) {
         readMemory = new uint8_t[imageSize];
         size_t imgOrigin[] = {0, 0, 0};
         size_t imgRegion[] = {imageDesc.image_width, imageDesc.image_height, imageDesc.image_depth};
-        retVal = pCmdQ->enqueueReadImage(image, CL_FALSE, imgOrigin, imgRegion, 0, computedSlicePitch, readMemory, nullptr, 0, nullptr, nullptr);
+        retVal = pCmdQ->enqueueReadImage(image.get(), CL_FALSE, imgOrigin, imgRegion, 0, computedSlicePitch, readMemory, nullptr, 0, nullptr, nullptr);
         EXPECT_EQ(CL_SUCCESS, retVal);
         retVal = pCmdQ->flush();
         EXPECT_EQ(CL_SUCCESS, retVal);
@@ -414,7 +417,7 @@ HWTEST_F(AUBCreateImage, image3DCreatedWithDoubledSlicePitchWhenQueriedForDataRe
 
     while (depthToCopy--) {
         for (unsigned int i = 0; i < imageDesc.image_width * 4 * imageDesc.image_height; i++) {
-            if (image->allowTiling()) {
+            if (isGpuCopy) {
                 AUBCommandStreamFixture::expectMemory<FamilyType>(&imageStorage[i], &data[i], 1);
             } else {
                 EXPECT_EQ(imageStorage[i], data[i]);
@@ -424,7 +427,6 @@ HWTEST_F(AUBCreateImage, image3DCreatedWithDoubledSlicePitchWhenQueriedForDataRe
         imageStorage += computedSlicePitch;
     }
 
-    delete image;
     alignedFree(host_ptr);
     if (readMemory) {
         delete readMemory;

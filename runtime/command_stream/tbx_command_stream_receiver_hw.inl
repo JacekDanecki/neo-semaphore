@@ -5,20 +5,21 @@
  *
  */
 
+#include "core/helpers/aligned_memory.h"
+#include "core/helpers/debug_helpers.h"
 #include "core/helpers/ptr_math.h"
+#include "core/memory_manager/graphics_allocation.h"
+#include "core/memory_manager/memory_constants.h"
 #include "runtime/aub/aub_center.h"
 #include "runtime/aub/aub_helper.h"
 #include "runtime/aub_mem_dump/page_table_entry_bits.h"
 #include "runtime/command_stream/aub_command_stream_receiver.h"
 #include "runtime/command_stream/command_stream_receiver_with_aub_dump.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/aligned_memory.h"
-#include "runtime/helpers/debug_helpers.h"
+#include "runtime/helpers/dispatch_info.h"
 #include "runtime/helpers/hardware_context_controller.h"
 #include "runtime/helpers/hw_helper.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/memory_banks.h"
-#include "runtime/memory_manager/memory_constants.h"
 #include "runtime/memory_manager/physical_address_allocator.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/os_interface/os_context.h"
@@ -153,12 +154,27 @@ CommandStreamReceiver *TbxCommandStreamReceiverHw<GfxFamily>::create(const std::
         auto &hwHelper = HwHelper::get(hwInfo->platform.eRenderCoreFamily);
         auto localMemoryEnabled = hwHelper.getEnableLocalMemory(*hwInfo);
         auto fullName = AUBCommandStreamReceiver::createFullFilePath(*hwInfo, baseName);
+        if (DebugManager.flags.AUBDumpCaptureFileName.get() != "unk") {
+            fullName.assign(DebugManager.flags.AUBDumpCaptureFileName.get());
+        }
         executionEnvironment.initAubCenter(localMemoryEnabled, fullName, CommandStreamReceiverType::CSR_TBX_WITH_AUB);
 
         csr = new CommandStreamReceiverWithAUBDump<TbxCommandStreamReceiverHw<GfxFamily>>(baseName, executionEnvironment);
+
+        auto aubCenter = executionEnvironment.aubCenter.get();
+        UNRECOVERABLE_IF(nullptr == aubCenter);
+
+        auto subCaptureCommon = aubCenter->getSubCaptureCommon();
+        UNRECOVERABLE_IF(nullptr == subCaptureCommon);
+
+        if (subCaptureCommon->subCaptureMode > AubSubCaptureManager::SubCaptureMode::Off) {
+            csr->subCaptureManager = std::make_unique<AubSubCaptureManager>(fullName, *subCaptureCommon);
+        }
+
         if (csr->aubManager) {
             if (!csr->aubManager->isOpen()) {
-                csr->aubManager->open(fullName);
+                MultiDispatchInfo dispatchInfo;
+                csr->aubManager->open(csr->subCaptureManager ? csr->subCaptureManager->getSubCaptureFileName(dispatchInfo) : fullName);
                 UNRECOVERABLE_IF(!csr->aubManager->isOpen());
             }
         }
@@ -179,6 +195,12 @@ CommandStreamReceiver *TbxCommandStreamReceiverHw<GfxFamily>::create(const std::
 
 template <typename GfxFamily>
 FlushStamp TbxCommandStreamReceiverHw<GfxFamily>::flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) {
+    if (subCaptureManager) {
+        if (aubManager) {
+            aubManager->pause(false);
+        }
+    }
+
     initializeEngine();
 
     // Write our batch buffer
@@ -187,26 +209,47 @@ FlushStamp TbxCommandStreamReceiverHw<GfxFamily>::flush(BatchBuffer &batchBuffer
     auto currentOffset = batchBuffer.usedSize;
     DEBUG_BREAK_IF(currentOffset < batchBuffer.startOffset);
     auto sizeBatchBuffer = currentOffset - batchBuffer.startOffset;
+    auto overrideRingHead = false;
 
-    if (this->dispatchMode == DispatchMode::ImmediateDispatch) {
-        CommandStreamReceiver::makeResident(*batchBuffer.commandBufferAllocation);
-    } else {
-        allocationsForResidency.push_back(batchBuffer.commandBufferAllocation);
-        batchBuffer.commandBufferAllocation->updateResidencyTaskCount(this->taskCount, this->osContext->getContextId());
-    }
+    auto submissionTaskCount = this->taskCount + 1;
+    allocationsForResidency.push_back(batchBuffer.commandBufferAllocation);
+    batchBuffer.commandBufferAllocation->updateResidencyTaskCount(submissionTaskCount, this->osContext->getContextId());
+    batchBuffer.commandBufferAllocation->updateTaskCount(submissionTaskCount, osContext->getContextId());
 
     // Write allocations for residency
     processResidency(allocationsForResidency);
 
-    submitBatchBuffer(batchBufferGpuAddress, pBatchBuffer, sizeBatchBuffer, this->getMemoryBank(batchBuffer.commandBufferAllocation), this->getPPGTTAdditionalBits(batchBuffer.commandBufferAllocation));
+    if (subCaptureManager) {
+        if (aubManager) {
+            auto status = subCaptureManager->getSubCaptureStatus();
+            if (!status.wasActiveInPreviousEnqueue && status.isActive) {
+                overrideRingHead = true;
+            }
+            if (!status.wasActiveInPreviousEnqueue && !status.isActive) {
+                aubManager->pause(true);
+            }
+        }
+    }
+
+    submitBatchBuffer(
+        batchBufferGpuAddress, pBatchBuffer, sizeBatchBuffer,
+        this->getMemoryBank(batchBuffer.commandBufferAllocation),
+        this->getPPGTTAdditionalBits(batchBuffer.commandBufferAllocation),
+        overrideRingHead);
+
+    if (subCaptureManager) {
+        pollForCompletion();
+        subCaptureManager->disableSubCapture();
+    }
+
     return 0;
 }
 
 template <typename GfxFamily>
-void TbxCommandStreamReceiverHw<GfxFamily>::submitBatchBuffer(uint64_t batchBufferGpuAddress, const void *batchBuffer, size_t batchBufferSize, uint32_t memoryBank, uint64_t entryBits) {
+void TbxCommandStreamReceiverHw<GfxFamily>::submitBatchBuffer(uint64_t batchBufferGpuAddress, const void *batchBuffer, size_t batchBufferSize, uint32_t memoryBank, uint64_t entryBits, bool overrideRingHead) {
     if (hardwareContextController) {
         if (batchBufferSize) {
-            hardwareContextController->submit(batchBufferGpuAddress, batchBuffer, batchBufferSize, memoryBank, MemoryConstants::pageSize64k);
+            hardwareContextController->submit(batchBufferGpuAddress, batchBuffer, batchBufferSize, memoryBank, MemoryConstants::pageSize64k, overrideRingHead);
         }
         return;
     }
@@ -365,7 +408,7 @@ void TbxCommandStreamReceiverHw<GfxFamily>::writeMemory(uint64_t gpuAddress, voi
 
 template <typename GfxFamily>
 bool TbxCommandStreamReceiverHw<GfxFamily>::writeMemory(GraphicsAllocation &gfxAllocation) {
-    if (!gfxAllocation.isTbxWritable()) {
+    if (!this->isTbxWritable(gfxAllocation)) {
         return false;
     }
 
@@ -383,7 +426,7 @@ bool TbxCommandStreamReceiverHw<GfxFamily>::writeMemory(GraphicsAllocation &gfxA
     }
 
     if (AubHelper::isOneTimeAubWritableAllocationType(gfxAllocation.getAllocationType())) {
-        gfxAllocation.setTbxWritable(false);
+        this->setTbxWritable(false, gfxAllocation);
     }
 
     return true;
@@ -412,13 +455,19 @@ void TbxCommandStreamReceiverHw<GfxFamily>::processEviction() {
 }
 
 template <typename GfxFamily>
-void TbxCommandStreamReceiverHw<GfxFamily>::processResidency(ResidencyContainer &allocationsForResidency) {
+void TbxCommandStreamReceiverHw<GfxFamily>::processResidency(const ResidencyContainer &allocationsForResidency) {
     for (auto &gfxAllocation : allocationsForResidency) {
+        if (dumpTbxNonWritable) {
+            this->setTbxWritable(true, *gfxAllocation);
+        }
         if (!writeMemory(*gfxAllocation)) {
-            DEBUG_BREAK_IF(!((gfxAllocation->getUnderlyingBufferSize() == 0) || !gfxAllocation->isTbxWritable()));
+            DEBUG_BREAK_IF(!((gfxAllocation->getUnderlyingBufferSize() == 0) ||
+                             !this->isTbxWritable(*gfxAllocation)));
         }
         gfxAllocation->updateResidencyTaskCount(this->taskCount + 1, this->osContext->getContextId());
     }
+
+    dumpTbxNonWritable = false;
 }
 
 template <typename GfxFamily>
@@ -450,5 +499,18 @@ uint32_t TbxCommandStreamReceiverHw<GfxFamily>::getMaskAndValueForPollForComplet
 template <typename GfxFamily>
 bool TbxCommandStreamReceiverHw<GfxFamily>::getpollNotEqualValueForPollForCompletion() const {
     return false;
+}
+
+template <typename GfxFamily>
+AubSubCaptureStatus TbxCommandStreamReceiverHw<GfxFamily>::checkAndActivateAubSubCapture(const MultiDispatchInfo &dispatchInfo) {
+    if (!subCaptureManager) {
+        return {false, false};
+    }
+
+    auto status = subCaptureManager->checkAndActivateSubCapture(dispatchInfo);
+    if (status.isActive && !status.wasActiveInPreviousEnqueue) {
+        dumpTbxNonWritable = true;
+    }
+    return status;
 }
 } // namespace NEO

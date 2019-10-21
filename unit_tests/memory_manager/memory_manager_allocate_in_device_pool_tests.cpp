@@ -37,8 +37,8 @@ TEST(MemoryManagerTest, givenImageOrSharedResourceCopyWhenGraphicsAllocationInDe
     GraphicsAllocation::AllocationType types[] = {GraphicsAllocation::AllocationType::IMAGE,
                                                   GraphicsAllocation::AllocationType::SHARED_RESOURCE_COPY};
 
-    for (uint32_t i = 0; i < arrayCount(types); i++) {
-        allocData.type = types[i];
+    for (auto type : types) {
+        allocData.type = type;
         auto allocation = memoryManager.allocateGraphicsMemoryInDevicePool(allocData, status);
         EXPECT_EQ(nullptr, allocation);
         EXPECT_EQ(MemoryManager::AllocationStatus::RetryInNonDevicePool, status);
@@ -63,6 +63,10 @@ TEST(MemoryManagerTest, givenSvmGpuAllocationTypeWhenAllocationSystemMemoryFails
 }
 
 TEST(MemoryManagerTest, givenSvmGpuAllocationTypeWhenAllocationSucceedThenReturnGpuAddressAsHostPtr) {
+    if (platformDevices[0]->capabilityTable.gpuAddressSpace != maxNBitValue<48> && platformDevices[0]->capabilityTable.gpuAddressSpace != maxNBitValue<47>) {
+        return;
+    }
+
     MockExecutionEnvironment executionEnvironment(*platformDevices);
     MockMemoryManager memoryManager(false, false, executionEnvironment);
 
@@ -79,4 +83,11 @@ TEST(MemoryManagerTest, givenSvmGpuAllocationTypeWhenAllocationSucceedThenReturn
     EXPECT_NE(reinterpret_cast<uint64_t>(allocation->getUnderlyingBuffer()), allocation->getGpuAddress());
 
     memoryManager.freeGraphicsMemory(allocation);
+}
+
+TEST(MemoryManagerTest, givenOsAgnosticMemoryManagerWhenGetLocalMemoryIsCalledThenSizeOfLocalMemoryIsReturned) {
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+    MockMemoryManager memoryManager(false, false, executionEnvironment);
+
+    EXPECT_EQ(0 * GB, memoryManager.getLocalMemorySize());
 }

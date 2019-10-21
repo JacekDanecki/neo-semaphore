@@ -58,7 +58,7 @@ struct AUBFixture : public AUBCommandStreamFixture,
 
         CommandStreamReceiverHw<FamilyType>::addBatchBufferEnd(*pCS, nullptr);
         CommandStreamReceiverHw<FamilyType>::alignToCacheLine(*pCS);
-        BatchBuffer batchBuffer{pCS->getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, pCS->getUsed(), pCS};
+        BatchBuffer batchBuffer{pCS->getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, pCS->getUsed(), pCS};
         ResidencyContainer allocationsForResidency;
         pCommandStreamReceiver->flush(batchBuffer, allocationsForResidency);
 
@@ -73,11 +73,11 @@ typedef Test<AUBFixture> AUBcommandstreamTests;
 HWTEST_F(AUBcommandstreamTests, testFlushTwice) {
     CommandStreamReceiverHw<FamilyType>::addBatchBufferEnd(*pCS, nullptr);
     CommandStreamReceiverHw<FamilyType>::alignToCacheLine(*pCS);
-    BatchBuffer batchBuffer{pCS->getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, pCS->getUsed(), pCS};
+    BatchBuffer batchBuffer{pCS->getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, pCS->getUsed(), pCS};
     ResidencyContainer allocationsForResidency;
 
     pCommandStreamReceiver->flush(batchBuffer, allocationsForResidency);
-    BatchBuffer batchBuffer2{pCS->getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, pCS->getUsed(), pCS};
+    BatchBuffer batchBuffer2{pCS->getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, pCS->getUsed(), pCS};
     ResidencyContainer allocationsForResidency2;
     pCommandStreamReceiver->flush(batchBuffer2, allocationsForResidency);
     AUBCommandStreamFixture::getSimulatedCsr<FamilyType>()->pollForCompletion();
@@ -102,7 +102,7 @@ HWTEST_F(AUBcommandstreamTests, testNoopIdVecs) {
 TEST_F(AUBcommandstreamTests, makeResident) {
     uint8_t buffer[0x10000];
     size_t size = sizeof(buffer);
-    auto &commandStreamReceiver = pDevice->getCommandStreamReceiver();
+    auto &commandStreamReceiver = pDevice->getGpgpuCommandStreamReceiver();
     auto graphicsAllocation = createResidentAllocationAndStoreItInCsr(buffer, size);
     ResidencyContainer allocationsForResidency = {graphicsAllocation};
     commandStreamReceiver.processResidency(allocationsForResidency);

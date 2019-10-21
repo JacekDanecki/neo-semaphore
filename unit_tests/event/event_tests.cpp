@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/event/perf_counter.h"
@@ -16,7 +17,6 @@
 #include "runtime/utilities/tag_allocator.h"
 #include "test.h"
 #include "unit_tests/fixtures/image_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_csr.h"
@@ -395,7 +395,7 @@ struct UpdateEventTest : public ::testing::Test {
         memoryManager = new MockMemoryManager(*executionEnvironment);
         hostPtrManager = static_cast<MockHostPtrManager *>(memoryManager->getHostPtrManager());
         executionEnvironment->memoryManager.reset(memoryManager);
-        device.reset(Device::create<Device>(executionEnvironment, 0u));
+        device.reset(Device::create<RootDevice>(executionEnvironment, 0u));
         context = std::make_unique<MockContext>(device.get());
         cl_int retVal = CL_OUT_OF_RESOURCES;
         commandQueue.reset(CommandQueue::create(context.get(), device.get(), nullptr, retVal));
@@ -414,8 +414,8 @@ TEST_F(UpdateEventTest, givenEventContainingCommandQueueWhenItsStatusIsUpdatedTo
     void *ptr = (void *)0x1000;
     size_t size = 4096;
     auto temporary = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, ptr);
-    temporary->updateTaskCount(3, commandQueue->getCommandStreamReceiver().getOsContext().getContextId());
-    commandQueue->getCommandStreamReceiver().getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(temporary), TEMPORARY_ALLOCATION);
+    temporary->updateTaskCount(3, commandQueue->getGpgpuCommandStreamReceiver().getOsContext().getContextId());
+    commandQueue->getGpgpuCommandStreamReceiver().getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>(temporary), TEMPORARY_ALLOCATION);
     Event event(commandQueue.get(), CL_COMMAND_NDRANGE_KERNEL, 3, 3);
 
     EXPECT_EQ(1u, hostPtrManager->getFragmentCount());
@@ -465,34 +465,47 @@ TEST_F(InternalsEventTest, processBlockedCommandsKernelOperation) {
     cmdQ.allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 4096u, dsh);
     cmdQ.allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 4096u, ioh);
     cmdQ.allocateHeapMemory(IndirectHeap::SURFACE_STATE, 4096u, ssh);
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
-    auto blockedCommandsData = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(dsh),
-                                                   UniqueIH(ioh), UniqueIH(ssh),
-                                                   *cmdQ.getCommandStreamReceiver().getInternalAllocationStorage());
+
+    auto blockedCommandsData = std::make_unique<KernelOperation>(cmdStream, *cmdQ.getGpgpuCommandStreamReceiver().getInternalAllocationStorage());
+    blockedCommandsData->setHeaps(dsh, ioh, ssh);
 
     MockKernelWithInternals mockKernelWithInternals(*pDevice);
     auto pKernel = mockKernelWithInternals.mockKernel;
 
-    auto &csr = cmdQ.getCommandStreamReceiver();
+    auto &csr = cmdQ.getGpgpuCommandStreamReceiver();
     std::vector<Surface *> v;
-    SurfaceMock *surface = new SurfaceMock;
-    surface->graphicsAllocation = new MockGraphicsAllocation((void *)0x1234, 100u);
+    MockBuffer buffer;
+    buffer.retain();
+    auto initialRefCount = buffer.getRefApiCount();
+    auto initialInternalCount = buffer.getRefInternalCount();
+
+    auto bufferSurf = new MemObjSurface(&buffer);
+
+    EXPECT_EQ(initialInternalCount + 1, buffer.getRefInternalCount());
+    EXPECT_EQ(initialRefCount, buffer.getRefApiCount());
+
     PreemptionMode preemptionMode = pDevice->getPreemptionMode();
-    v.push_back(surface);
-    auto cmd = new CommandComputeKernel(cmdQ, std::unique_ptr<KernelOperation>(blockedCommandsData), v, false, false, false, nullptr, preemptionMode, pKernel, 1);
+    v.push_back(bufferSurf);
+    auto cmd = new CommandComputeKernel(cmdQ, blockedCommandsData, v, false, false, false, nullptr, preemptionMode, pKernel, 1);
     event.setCommand(std::unique_ptr<Command>(cmd));
 
     auto taskLevelBefore = csr.peekTaskLevel();
 
+    auto refCount = buffer.getRefApiCount();
+    auto refInternal = buffer.getRefInternalCount();
+
     event.submitCommand(false);
+
+    EXPECT_EQ(refCount, buffer.getRefApiCount());
+    EXPECT_EQ(refInternal - 1, buffer.getRefInternalCount());
 
     auto taskLevelAfter = csr.peekTaskLevel();
 
     EXPECT_EQ(taskLevelBefore + 1, taskLevelAfter);
 
-    EXPECT_EQ(surface->resident, 1u);
-    EXPECT_FALSE(surface->graphicsAllocation->isResident(csr.getOsContext().getContextId()));
-    delete surface->graphicsAllocation;
+    auto graphicsAllocation = buffer.getGraphicsAllocation();
+
+    EXPECT_FALSE(graphicsAllocation->isResident(csr.getOsContext().getContextId()));
 }
 
 TEST_F(InternalsEventTest, processBlockedCommandsAbortKernelOperation) {
@@ -504,20 +517,19 @@ TEST_F(InternalsEventTest, processBlockedCommandsAbortKernelOperation) {
     cmdQ.allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 4096u, dsh);
     cmdQ.allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 4096u, ioh);
     cmdQ.allocateHeapMemory(IndirectHeap::SURFACE_STATE, 4096u, ssh);
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
-    auto blockedCommandsData = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(dsh),
-                                                   UniqueIH(ioh), UniqueIH(ssh),
-                                                   *cmdQ.getCommandStreamReceiver().getInternalAllocationStorage());
+
+    auto blockedCommandsData = std::make_unique<KernelOperation>(cmdStream, *cmdQ.getGpgpuCommandStreamReceiver().getInternalAllocationStorage());
+    blockedCommandsData->setHeaps(dsh, ioh, ssh);
 
     MockKernelWithInternals mockKernelWithInternals(*pDevice);
     auto pKernel = mockKernelWithInternals.mockKernel;
 
-    auto &csr = cmdQ.getCommandStreamReceiver();
+    auto &csr = cmdQ.getGpgpuCommandStreamReceiver();
     std::vector<Surface *> v;
     NullSurface *surface = new NullSurface;
     v.push_back(surface);
     PreemptionMode preemptionMode = pDevice->getPreemptionMode();
-    auto cmd = new CommandComputeKernel(cmdQ, std::unique_ptr<KernelOperation>(blockedCommandsData), v, false, false, false, nullptr, preemptionMode, pKernel, 1);
+    auto cmd = new CommandComputeKernel(cmdQ, blockedCommandsData, v, false, false, false, nullptr, preemptionMode, pKernel, 1);
     event.setCommand(std::unique_ptr<Command>(cmd));
 
     auto taskLevelBefore = csr.peekTaskLevel();
@@ -539,10 +551,9 @@ TEST_F(InternalsEventTest, givenBlockedKernelWithPrintfWhenSubmittedThenPrintOut
     cmdQ.allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 4096u, dsh);
     cmdQ.allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 4096u, ioh);
     cmdQ.allocateHeapMemory(IndirectHeap::SURFACE_STATE, 4096u, ssh);
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
-    auto blockedCommandsData = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(dsh),
-                                                   UniqueIH(ioh), UniqueIH(ssh),
-                                                   *cmdQ.getCommandStreamReceiver().getInternalAllocationStorage());
+
+    auto blockedCommandsData = std::make_unique<KernelOperation>(cmdStream, *cmdQ.getGpgpuCommandStreamReceiver().getInternalAllocationStorage());
+    blockedCommandsData->setHeaps(dsh, ioh, ssh);
 
     SPatchAllocateStatelessPrintfSurface *pPrintfSurface = new SPatchAllocateStatelessPrintfSurface();
     pPrintfSurface->DataParamOffset = 0;
@@ -569,10 +580,12 @@ TEST_F(InternalsEventTest, givenBlockedKernelWithPrintfWhenSubmittedThenPrintOut
 
     std::vector<Surface *> v;
     PreemptionMode preemptionMode = pDevice->getPreemptionMode();
-    auto cmd = new CommandComputeKernel(cmdQ, std::unique_ptr<KernelOperation>(blockedCommandsData), v, false, false, false, std::move(printfHandler), preemptionMode, pKernel, 1);
+    auto cmd = new CommandComputeKernel(cmdQ, blockedCommandsData, v, false, false, false, std::move(printfHandler), preemptionMode, pKernel, 1);
     event.setCommand(std::unique_ptr<Command>(cmd));
 
     event.submitCommand(false);
+
+    EXPECT_EQ(1u, cmdQ.latestTaskCountWaited);
 
     std::string output = testing::internal::GetCapturedStdout();
     EXPECT_STREQ("test", output.c_str());
@@ -582,15 +595,15 @@ TEST_F(InternalsEventTest, givenBlockedKernelWithPrintfWhenSubmittedThenPrintOut
 }
 
 TEST_F(InternalsEventTest, processBlockedCommandsMapOperation) {
+    auto pCmdQ = make_releaseable<CommandQueue>(mockContext, pDevice, nullptr);
     MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
-    CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, 0);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
     auto buffer = new MockBuffer;
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(MAP, *buffer, size, offset, false, csr, *pCmdQ)));
+    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(MAP, *buffer, size, offset, false, *pCmdQ)));
 
     auto taskLevelBefore = csr.peekTaskLevel();
 
@@ -600,19 +613,18 @@ TEST_F(InternalsEventTest, processBlockedCommandsMapOperation) {
 
     EXPECT_EQ(taskLevelBefore + 1, taskLevelAfter);
     buffer->decRefInternal();
-    delete pCmdQ;
 }
 
 TEST_F(InternalsEventTest, processBlockedCommandsMapOperationNonZeroCopyBuffer) {
+    auto pCmdQ = make_releaseable<CommandQueue>(mockContext, pDevice, nullptr);
     MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
-    CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, 0);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
     auto buffer = new UnalignedBuffer;
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(MAP, *buffer, size, offset, false, csr, *pCmdQ)));
+    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(MAP, *buffer, size, offset, false, *pCmdQ)));
 
     auto taskLevelBefore = csr.peekTaskLevel();
 
@@ -622,7 +634,6 @@ TEST_F(InternalsEventTest, processBlockedCommandsMapOperationNonZeroCopyBuffer) 
 
     EXPECT_EQ(taskLevelBefore + 1, taskLevelAfter);
     buffer->decRefInternal();
-    delete pCmdQ;
 }
 
 uint32_t commands[] = {
@@ -694,12 +705,12 @@ TEST_F(InternalsEventTest, GIVENProfilingWHENMapOperationTHENTimesSet) {
 
     MockEvent<Event> *event = new MockEvent<Event>(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
     UnalignedBuffer buffer;
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    event->setCommand(std::unique_ptr<Command>(new CommandMapUnmap(MAP, buffer, size, offset, false, csr, *pCmdQ)));
+    event->setCommand(std::unique_ptr<Command>(new CommandMapUnmap(MAP, buffer, size, offset, false, *pCmdQ)));
 
     auto taskLevelBefore = csr.peekTaskLevel();
 
@@ -716,16 +727,16 @@ TEST_F(InternalsEventTest, GIVENProfilingWHENMapOperationTHENTimesSet) {
 }
 
 TEST_F(InternalsEventTest, processBlockedCommandsUnMapOperation) {
-    MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, 0, 0};
-    CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
+    auto pCmdQ = make_releaseable<CommandQueue>(mockContext, pDevice, props);
+    MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
     auto buffer = new UnalignedBuffer;
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, *buffer, size, offset, false, csr, *pCmdQ)));
+    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, *buffer, size, offset, false, *pCmdQ)));
 
     auto taskLevelBefore = csr.peekTaskLevel();
 
@@ -735,20 +746,38 @@ TEST_F(InternalsEventTest, processBlockedCommandsUnMapOperation) {
 
     EXPECT_EQ(taskLevelBefore + 1, taskLevelAfter);
     buffer->decRefInternal();
-    delete pCmdQ;
 }
 
-TEST_F(InternalsEventTest, processBlockedCommandsUnMapOperationNonZeroCopyBuffer) {
-    MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
+TEST_F(InternalsEventTest, givenBlockedMapCommandWhenSubmitIsCalledItReleasesMemObjectReference) {
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, 0, 0};
-    CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
+    auto pCmdQ = std::make_unique<CommandQueue>(mockContext, pDevice, props);
+    MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
+    auto buffer = new UnalignedBuffer;
+
+    auto currentBufferRefInternal = buffer->getRefInternalCount();
+
+    MemObjSizeArray size = {{1, 1, 1}};
+    MemObjOffsetArray offset = {{0, 0, 0}};
+    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, *buffer, size, offset, false, *pCmdQ)));
+    EXPECT_EQ(currentBufferRefInternal + 1, buffer->getRefInternalCount());
+
+    event.submitCommand(false);
+
+    EXPECT_EQ(currentBufferRefInternal, buffer->getRefInternalCount());
+    buffer->decRefInternal();
+}
+TEST_F(InternalsEventTest, processBlockedCommandsUnMapOperationNonZeroCopyBuffer) {
+    const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, 0, 0};
+    auto pCmdQ = std::make_unique<CommandQueue>(mockContext, pDevice, props);
+    MockEvent<Event> event(nullptr, CL_COMMAND_NDRANGE_KERNEL, 0, 0);
+
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
     auto buffer = new UnalignedBuffer;
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, *buffer, size, offset, false, csr, *pCmdQ)));
+    event.setCommand(std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, *buffer, size, offset, false, *pCmdQ)));
 
     auto taskLevelBefore = csr.peekTaskLevel();
 
@@ -758,7 +787,6 @@ TEST_F(InternalsEventTest, processBlockedCommandsUnMapOperationNonZeroCopyBuffer
 
     EXPECT_EQ(taskLevelBefore + 1, taskLevelAfter);
     buffer->decRefInternal();
-    delete pCmdQ;
 }
 
 HWTEST_F(InternalsEventTest, givenCpuProfilingPathWhenEnqueuedMarkerThenDontUseTimeStampNode) {
@@ -767,9 +795,7 @@ HWTEST_F(InternalsEventTest, givenCpuProfilingPathWhenEnqueuedMarkerThenDontUseT
     MockEvent<Event> *event = new MockEvent<Event>(pCmdQ, CL_COMMAND_MARKER, 0, 0);
     event->setCPUProfilingPath(true);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
-
-    event->setCommand(std::unique_ptr<Command>(new CommandMarker(*pCmdQ, csr, CL_COMMAND_MARKER, 4096u)));
+    event->setCommand(std::unique_ptr<Command>(new CommandWithoutKernel(*pCmdQ)));
 
     event->submitCommand(false);
 
@@ -792,7 +818,6 @@ struct InternalsEventWithPerfCountersTest
         PerformanceCountersFixture::SetUp();
         InternalsEventTest::SetUp();
         createPerfCounters();
-        performanceCountersBase->initialize(platformDevices[0]);
         pDevice->setPerfCounters(performanceCountersBase.get());
     }
 
@@ -806,16 +831,14 @@ HWTEST_F(InternalsEventWithPerfCountersTest, givenCpuProfilingPerfCountersPathWh
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
     CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
     bool ret = false;
-    ret = pCmdQ->setPerfCountersEnabled(true, 1);
+    ret = pCmdQ->setPerfCountersEnabled(true, 0);
     EXPECT_TRUE(ret);
-    ret = pCmdQ->setPerfCountersEnabled(true, 1);
+    ret = pCmdQ->setPerfCountersEnabled(true, 0);
     EXPECT_TRUE(ret);
     MockEvent<Event> *event = new MockEvent<Event>(pCmdQ, CL_COMMAND_MARKER, 0, 0);
     event->setCPUProfilingPath(true);
 
-    auto &csr = pCmdQ->getCommandStreamReceiver();
-
-    event->setCommand(std::unique_ptr<Command>(new CommandMarker(*pCmdQ, csr, CL_COMMAND_MARKER, 4096u)));
+    event->setCommand(std::unique_ptr<Command>(new CommandWithoutKernel(*pCmdQ)));
 
     event->submitCommand(false);
 
@@ -834,16 +857,15 @@ HWTEST_F(InternalsEventWithPerfCountersTest, givenCpuProfilingPerfCountersPathWh
 HWTEST_F(InternalsEventWithPerfCountersTest, givenCpuProfilingPerfCountersPathWhenEnqueuedMarkerThenUseTimeStampNodePerfCounterNode) {
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
     CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
-    pCmdQ->setPerfCountersEnabled(true, 1);
+    pCmdQ->setPerfCountersEnabled(true, 0);
     MockEvent<Event> *event = new MockEvent<Event>(pCmdQ, CL_COMMAND_MARKER, 0, 0);
     event->setCPUProfilingPath(true);
     HwPerfCounter *perfCounter = event->getHwPerfCounterNode()->tagForCpuAccess;
     ASSERT_NE(nullptr, perfCounter);
     HwTimeStamps *timeStamps = event->getHwTimeStampNode()->tagForCpuAccess;
     ASSERT_NE(nullptr, timeStamps);
-    auto &csr = pCmdQ->getCommandStreamReceiver();
 
-    event->setCommand(std::unique_ptr<Command>(new CommandMarker(*pCmdQ, csr, CL_COMMAND_MARKER, 4096u)));
+    event->setCommand(std::unique_ptr<Command>(new CommandWithoutKernel(*pCmdQ)));
 
     event->submitCommand(false);
 
@@ -862,7 +884,7 @@ HWTEST_F(InternalsEventWithPerfCountersTest, givenCpuProfilingPerfCountersPathWh
 TEST_F(InternalsEventWithPerfCountersTest, IsPerfCounter_Enabled) {
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
     CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
-    pCmdQ->setPerfCountersEnabled(true, 2);
+    pCmdQ->setPerfCountersEnabled(true, 0);
     Event *ev = new Event(pCmdQ, CL_COMMAND_COPY_BUFFER, 3, 0);
     EXPECT_TRUE(ev->isProfilingEnabled());
     EXPECT_TRUE(ev->isPerfCountersEnabled());
@@ -877,12 +899,11 @@ TEST(Event, GivenNoContextOnDeletionDeletesSelf) {
 }
 
 HWTEST_F(EventTest, givenVirtualEventWhenCommandSubmittedThenLockCSROccurs) {
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
     class MockCommandComputeKernel : public CommandComputeKernel {
       public:
         using CommandComputeKernel::eventsWaitlist;
-        MockCommandComputeKernel(CommandQueue &commandQueue, KernelOperation *kernelResources, std::vector<Surface *> &surfaces, Kernel *kernel)
-            : CommandComputeKernel(commandQueue, std::unique_ptr<KernelOperation>(kernelResources), surfaces, false, false, false, nullptr, PreemptionMode::Disabled, kernel, 0) {}
+        MockCommandComputeKernel(CommandQueue &commandQueue, std::unique_ptr<KernelOperation> &kernelOperation, std::vector<Surface *> &surfaces, Kernel *kernel)
+            : CommandComputeKernel(commandQueue, kernelOperation, surfaces, false, false, false, nullptr, PreemptionMode::Disabled, kernel, 0) {}
     };
     class MockEvent : public Event {
       public:
@@ -901,8 +922,8 @@ HWTEST_F(EventTest, givenVirtualEventWhenCommandSubmittedThenLockCSROccurs) {
     auto cmdStream = new LinearStream(pDevice->getMemoryManager()->allocateGraphicsMemoryWithProperties({4096, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
 
     std::vector<Surface *> surfaces;
-    auto kernelOperation = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(ih1), UniqueIH(ih2), UniqueIH(ih3),
-                                               *pDevice->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage());
+    auto kernelOperation = std::make_unique<KernelOperation>(cmdStream, *pDevice->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage());
+    kernelOperation->setHeaps(ih1, ih2, ih3);
 
     std::unique_ptr<MockCommandComputeKernel> command = std::make_unique<MockCommandComputeKernel>(*pCmdQ, kernelOperation, surfaces, kernel);
 
@@ -953,46 +974,44 @@ HWTEST_F(InternalsEventTest, GivenBufferWithoutZeroCopyOnCommandMapOrUnmapFlushe
     };
 
     int32_t executionStamp = 0;
+    auto csr = new MockCsr<FamilyType>(executionStamp, *pDevice->executionEnvironment);
+    pDevice->resetCommandStreamReceiver(csr);
+
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, 0, 0};
-    CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
+    auto pCmdQ = make_releaseable<CommandQueue>(mockContext, pDevice, props);
+
     MockNonZeroCopyBuff buffer(executionStamp);
-    MockCsr<FamilyType> csr(executionStamp, *pDevice->executionEnvironment);
-    csr.setTagAllocation(pDevice->getDefaultEngine().commandStreamReceiver->getTagAllocation());
-    csr.setupContext(*pDevice->getDefaultEngine().osContext);
 
     MemObjSizeArray size = {{4, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    auto commandMap = std::unique_ptr<Command>(new CommandMapUnmap(MAP, buffer, size, offset, false, csr, *pCmdQ));
+    auto commandMap = std::unique_ptr<Command>(new CommandMapUnmap(MAP, buffer, size, offset, false, *pCmdQ));
     EXPECT_EQ(0, executionStamp);
-    EXPECT_EQ(-1, csr.flushTaskStamp);
+    EXPECT_EQ(-1, csr->flushTaskStamp);
     EXPECT_EQ(-1, buffer.dataTransferedStamp);
 
-    auto latestSentFlushTaskCount = csr.peekLatestSentTaskCount();
+    auto latestSentFlushTaskCount = csr->peekLatestSentTaskCount();
 
     commandMap->submit(0, false);
     EXPECT_EQ(1, executionStamp);
-    EXPECT_EQ(0, csr.flushTaskStamp);
+    EXPECT_EQ(0, csr->flushTaskStamp);
     EXPECT_EQ(1, buffer.dataTransferedStamp);
-    auto latestSentFlushTaskCountAfterSubmit = csr.peekLatestSentTaskCount();
+    auto latestSentFlushTaskCountAfterSubmit = csr->peekLatestSentTaskCount();
     EXPECT_GT(latestSentFlushTaskCountAfterSubmit, latestSentFlushTaskCount);
 
     executionStamp = 0;
-    csr.flushTaskStamp = -1;
+    csr->flushTaskStamp = -1;
     buffer.dataTransferedStamp = -1;
     buffer.swapCopyDirection();
 
-    auto commandUnMap = std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, buffer, size, offset, false, csr, *pCmdQ));
+    auto commandUnMap = std::unique_ptr<Command>(new CommandMapUnmap(UNMAP, buffer, size, offset, false, *pCmdQ));
     EXPECT_EQ(0, executionStamp);
-    EXPECT_EQ(-1, csr.flushTaskStamp);
+    EXPECT_EQ(-1, csr->flushTaskStamp);
     EXPECT_EQ(-1, buffer.dataTransferedStamp);
     commandUnMap->submit(0, false);
     EXPECT_EQ(1, executionStamp);
-    EXPECT_EQ(0, csr.flushTaskStamp);
+    EXPECT_EQ(0, csr->flushTaskStamp);
     EXPECT_EQ(1, buffer.dataTransferedStamp);
     EXPECT_EQ(nullptr, commandUnMap->getCommandStream());
-
-    pCmdQ->getCommandStreamReceiver().setTagAllocation(nullptr);
-    delete pCmdQ;
 }
 
 TEST(EventCallback, CallbackAfterStatusOverrideUsesNewStatus) {
@@ -1136,57 +1155,6 @@ TEST_F(EventTest, hwTimeStampsMemoryIsPlacedInGraphicsAllocation) {
     EXPECT_LE(timeStamps + 1, ptrOffset(memoryStorage, graphicsAllocationSize));
 }
 
-TEST_F(EventTest, getHwPerfCounterReturnsValidPointer) {
-    std::unique_ptr<Event> event(new Event(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 0, 0));
-    ASSERT_NE(nullptr, event);
-
-    HwPerfCounter *perfCounter = event->getHwPerfCounterNode()->tagForCpuAccess;
-    ASSERT_NE(nullptr, perfCounter);
-
-    ASSERT_EQ(0ULL, perfCounter->HWTimeStamp.GlobalStartTS);
-    ASSERT_EQ(0ULL, perfCounter->HWTimeStamp.ContextStartTS);
-    ASSERT_EQ(0ULL, perfCounter->HWTimeStamp.GlobalEndTS);
-    ASSERT_EQ(0ULL, perfCounter->HWTimeStamp.ContextEndTS);
-    ASSERT_EQ(0ULL, perfCounter->HWTimeStamp.GlobalCompleteTS);
-    ASSERT_EQ(0ULL, perfCounter->HWTimeStamp.ContextCompleteTS);
-
-    EXPECT_TRUE(perfCounter->canBeReleased());
-
-    HwPerfCounter *perfCounter2 = event->getHwPerfCounterNode()->tagForCpuAccess;
-    ASSERT_EQ(perfCounter, perfCounter2);
-}
-
-TEST_F(EventTest, getHwPerfCounterAllocationReturnsValidPointer) {
-    std::unique_ptr<Event> event(new Event(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 0, 0));
-    ASSERT_NE(nullptr, event);
-
-    GraphicsAllocation *allocation = event->getHwPerfCounterNode()->getBaseGraphicsAllocation();
-    ASSERT_NE(nullptr, allocation);
-
-    void *memoryStorage = allocation->getUnderlyingBuffer();
-    size_t memoryStorageSize = allocation->getUnderlyingBufferSize();
-
-    EXPECT_NE(nullptr, memoryStorage);
-    EXPECT_GT(memoryStorageSize, 0u);
-}
-
-TEST_F(EventTest, hwPerfCounterMemoryIsPlacedInGraphicsAllocation) {
-    std::unique_ptr<Event> event(new Event(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 0, 0));
-    ASSERT_NE(nullptr, event);
-
-    HwPerfCounter *perfCounter = event->getHwPerfCounterNode()->tagForCpuAccess;
-    ASSERT_NE(nullptr, perfCounter);
-
-    GraphicsAllocation *allocation = event->getHwPerfCounterNode()->getBaseGraphicsAllocation();
-    ASSERT_NE(nullptr, allocation);
-
-    void *memoryStorage = allocation->getUnderlyingBuffer();
-    size_t graphicsAllocationSize = allocation->getUnderlyingBufferSize();
-
-    EXPECT_GE(perfCounter, memoryStorage);
-    EXPECT_LE(perfCounter + 1, ptrOffset(memoryStorage, graphicsAllocationSize));
-}
-
 TEST_F(EventTest, IsPerfCounter_DisabledByNullQueue) {
     Event ev(nullptr, CL_COMMAND_COPY_BUFFER, 3, 0);
     EXPECT_FALSE(ev.isProfilingEnabled());
@@ -1211,47 +1179,30 @@ TEST_F(InternalsEventTest, IsPerfCounter_DisabledByNoPerfCounter) {
     delete pCmdQ;
 }
 
-TEST_F(InternalsEventWithPerfCountersTest, SetPerfCounter_negativeInvalidASInterface) {
-    const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
-    CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
-    performanceCountersBase->setAutoSamplingStartFunc(autoSamplingStartFailing);
-    bool ret = false;
-    ret = pCmdQ->setPerfCountersEnabled(true, 1);
-    EXPECT_FALSE(ret);
-    delete pCmdQ;
-}
-
 TEST_F(InternalsEventWithPerfCountersTest, SetPerfCounter_AvailFalse) {
     const cl_queue_properties props[3] = {CL_QUEUE_PROPERTIES, CL_QUEUE_PROFILING_ENABLE, 0};
     CommandQueue *pCmdQ = new CommandQueue(mockContext, pDevice, props);
 
     bool ret = false;
-    ret = pCmdQ->setPerfCountersEnabled(true, 1);
+    ret = pCmdQ->setPerfCountersEnabled(true, 0);
     EXPECT_TRUE(ret);
-    performanceCountersBase->setAvailableFlag(false);
     ret = pCmdQ->setPerfCountersEnabled(false, 0);
     EXPECT_TRUE(ret);
     performanceCountersBase->shutdown();
     delete pCmdQ;
 }
 
-TEST_F(EventTest, GivenNullptrWhenpeekIsSubmittedThenFalse) {
-    Event ev(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 3, 0);
-    bool executionStatus = ev.peekIsSubmitted(nullptr);
-    EXPECT_NE(true, executionStatus);
-}
-
 TEST_F(EventTest, GivenCL_SUBMITTEDWhenpeekIsSubmittedThenTrue) {
     Event ev(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 3, 0);
     int32_t executionStatusSnapshot = CL_SUBMITTED;
-    bool executionStatus = ev.peekIsSubmitted(&executionStatusSnapshot);
+    bool executionStatus = ev.peekIsSubmitted(executionStatusSnapshot);
     EXPECT_EQ(true, executionStatus);
 }
 
 TEST_F(EventTest, GivenCompletedEventWhenQueryingExecutionStatusAfterFlushThenCsrIsNotFlushed) {
     cl_int ret;
     Event ev(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 3, 3);
-    auto &csr = this->pCmdQ->getCommandStreamReceiver();
+    auto &csr = this->pCmdQ->getGpgpuCommandStreamReceiver();
     *csr.getTagAddress() = 3;
     auto previousTaskLevel = csr.peekTaskLevel();
     EXPECT_GT(3u, previousTaskLevel);
@@ -1416,7 +1367,7 @@ HWTEST_F(EventTest, givenEventWithNotReadyTaskLevelWhenUnblockedThenGetTaskLevel
     Event childEvent0(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, Event::eventNotReady, Event::eventNotReady);
     Event childEvent1(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, Event::eventNotReady, Event::eventNotReady);
 
-    auto &csr = reinterpret_cast<UltCommandStreamReceiver<FamilyType> &>(pCmdQ->getCommandStreamReceiver());
+    auto &csr = reinterpret_cast<UltCommandStreamReceiver<FamilyType> &>(pCmdQ->getGpgpuCommandStreamReceiver());
     csr.taskLevel = initialTaskLevel;
 
     parentEventWithGreaterTaskLevel.addChild(childEvent0);
@@ -1502,7 +1453,7 @@ HWTEST_F(InternalsEventTest, givenCommandWhenSubmitCalledThenUpdateFlushStamp) {
 
     FlushStamp expectedFlushStamp = 0;
     EXPECT_EQ(expectedFlushStamp, event->flushStamp->peekStamp());
-    event->setCommand(std::unique_ptr<Command>(new CommandMarker(*pCmdQ.get(), csr, CL_COMMAND_MARKER, 4096u)));
+    event->setCommand(std::unique_ptr<Command>(new CommandWithoutKernel(*pCmdQ)));
     event->submitCommand(false);
     EXPECT_EQ(csr.flushStamp->peekStamp(), event->flushStamp->peekStamp());
     delete event;
@@ -1522,12 +1473,11 @@ HWTEST_F(InternalsEventTest, givenAbortedCommandWhenSubmitCalledThenDontUpdateFl
     pCmdQ->allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 4096u, dsh);
     pCmdQ->allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 4096u, ioh);
     pCmdQ->allocateHeapMemory(IndirectHeap::SURFACE_STATE, 4096u, ssh);
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
-    auto blockedCommandsData = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(dsh),
-                                                   UniqueIH(ioh), UniqueIH(ssh), *pCmdQ->getCommandStreamReceiver().getInternalAllocationStorage());
+    auto blockedCommandsData = std::make_unique<KernelOperation>(cmdStream, *pCmdQ->getGpgpuCommandStreamReceiver().getInternalAllocationStorage());
+    blockedCommandsData->setHeaps(dsh, ioh, ssh);
     PreemptionMode preemptionMode = pDevice->getPreemptionMode();
     std::vector<Surface *> v;
-    auto cmd = new CommandComputeKernel(*pCmdQ, std::unique_ptr<KernelOperation>(blockedCommandsData), v, false, false, false, nullptr, preemptionMode, pKernel, 1);
+    auto cmd = new CommandComputeKernel(*pCmdQ, blockedCommandsData, v, false, false, false, nullptr, preemptionMode, pKernel, 1);
     event->setCommand(std::unique_ptr<Command>(cmd));
 
     FlushStamp expectedFlushStamp = 0;

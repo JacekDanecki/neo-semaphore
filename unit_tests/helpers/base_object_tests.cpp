@@ -74,7 +74,7 @@ class MockObject : public MockObjectBase<BaseType> {};
 template <>
 class MockObject<Buffer> : public MockObjectBase<Buffer> {
   public:
-    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) override {}
+    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3, bool alignSizeForAuxTranslation, bool isReadOnly) override {}
 };
 
 template <>
@@ -227,13 +227,13 @@ TYPED_TEST(BaseObjectTests, WhenAlreadyOwnedByThreadOnTakeOrReleaseOwnershipUses
     TypeParam obj;
     EXPECT_FALSE(obj.hasOwnership());
 
-    obj.takeOwnership(false);
+    obj.takeOwnership();
     EXPECT_TRUE(obj.hasOwnership());
 
-    obj.takeOwnership(false);
+    obj.takeOwnership();
     EXPECT_TRUE(obj.hasOwnership());
 
-    obj.takeOwnership(false);
+    obj.takeOwnership();
     EXPECT_TRUE(obj.hasOwnership());
 
     obj.releaseOwnership();
@@ -275,33 +275,12 @@ TEST(CastToImage, fromMemObj) {
 extern std::thread::id tempThreadID;
 class MockBuffer : public MockBufferStorage, public Buffer {
   public:
-    MockBuffer() : MockBufferStorage(), Buffer(nullptr, CL_MEM_USE_HOST_PTR, sizeof(data), &data, &data, &mockGfxAllocation, true, false, false) {
+    MockBuffer() : MockBufferStorage(), Buffer(nullptr, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags({CL_MEM_USE_HOST_PTR}), CL_MEM_USE_HOST_PTR, 0, sizeof(data), &data, &data, &mockGfxAllocation, true, false, false) {
     }
 
-    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3Cache) override {
-    }
-
-    void setFakeOwnership() {
-        this->owner = tempThreadID;
+    void setArgStateful(void *memory, bool forceNonAuxMode, bool disableL3, bool alignSizeForAuxTranslation, bool isReadOnly) override {
     }
 };
-
-TEST(BaseObjectTest, takeOwnership) {
-    MockBuffer buffer;
-    EXPECT_FALSE(buffer.hasOwnership());
-    buffer.takeOwnership(false);
-    EXPECT_TRUE(buffer.hasOwnership());
-    buffer.takeOwnership(false);
-    EXPECT_TRUE(buffer.hasOwnership());
-    buffer.releaseOwnership();
-    EXPECT_TRUE(buffer.hasOwnership());
-    buffer.releaseOwnership();
-    EXPECT_FALSE(buffer.hasOwnership());
-    buffer.setFakeOwnership();
-    EXPECT_FALSE(buffer.hasOwnership());
-    buffer.takeOwnership(false);
-    EXPECT_FALSE(buffer.hasOwnership());
-}
 
 TEST(BaseObjectTest, takeOwnershipWrapper) {
     MockBuffer buffer;
@@ -327,7 +306,7 @@ TYPED_TEST(BaseObjectTests, getCond) {
 TYPED_TEST(BaseObjectTests, convertToInternalObject) {
     class ObjectForTest : public NEO::MemObj {
       public:
-        ObjectForTest() : MemObj(nullptr, 0, 0, 0u, nullptr, nullptr, nullptr, false, false, false) {
+        ObjectForTest() : MemObj(nullptr, 0, {}, 0, 0, 0u, nullptr, nullptr, nullptr, false, false, false) {
         }
 
         void convertToInternalObject(void) {

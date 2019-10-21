@@ -7,11 +7,11 @@
 
 #include "offline_compiler.h"
 
-#include "elf/writer.h"
-#include "runtime/helpers/debug_helpers.h"
-#include "runtime/helpers/file_io.h"
+#include "core/elf/writer.h"
+#include "core/helpers/debug_helpers.h"
+#include "core/helpers/file_io.h"
+#include "core/helpers/string.h"
 #include "runtime/helpers/hw_info.h"
-#include "runtime/helpers/string.h"
 #include "runtime/helpers/validators.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/os_interface/os_inc_base.h"
@@ -130,7 +130,8 @@ int OfflineCompiler::buildSourceCode() {
         bool inputIsIntermediateRepresentation = inputFileLlvm || inputFileSpirV;
         if (false == inputIsIntermediateRepresentation) {
             UNRECOVERABLE_IF(fclDeviceCtx == nullptr);
-            IGC::CodeType::CodeType_t intermediateRepresentation = useLlvmText ? IGC::CodeType::llvmLl : preferredIntermediateRepresentation;
+            IGC::CodeType::CodeType_t intermediateRepresentation = useLlvmText ? IGC::CodeType::llvmLl
+                                                                               : (useLlvmBc ? IGC::CodeType::llvmBc : preferredIntermediateRepresentation);
             // sourceCode.size() returns the number of characters without null terminated char
             auto fclSrc = CIF::Builtins::CreateConstBuffer(fclMain.get(), sourceCode.c_str(), sourceCode.size() + 1);
             auto fclOptions = CIF::Builtins::CreateConstBuffer(fclMain.get(), options.c_str(), options.size());
@@ -244,7 +245,7 @@ int OfflineCompiler::getHardwareInfo(const char *pDeviceName) {
                 hwInfo = hardwareInfoTable[productId];
                 familyNameWithType.clear();
                 familyNameWithType.append(familyName[hwInfo->platform.eRenderCoreFamily]);
-                familyNameWithType.append(getPlatformType(*hwInfo));
+                familyNameWithType.append(hwInfo->capabilityTable.platformType);
                 retVal = CL_SUCCESS;
                 break;
             }
@@ -278,8 +279,8 @@ std::string OfflineCompiler::getStringWithinDelimiters(const std::string &src) {
 ////////////////////////////////////////////////////////////////////////////////
 int OfflineCompiler::initialize(size_t numArgs, const std::vector<std::string> &allArgs) {
     int retVal = CL_SUCCESS;
-    const char *pSource = nullptr;
-    void *pSourceFromFile = nullptr;
+    const char *source = nullptr;
+    std::unique_ptr<char[]> sourceFromFile;
     size_t sourceFromFileSize = 0;
 
     retVal = parseCommandLine(numArgs, allArgs);
@@ -314,11 +315,7 @@ int OfflineCompiler::initialize(size_t numArgs, const std::vector<std::string> &
     }
 
     // set up the device inside the program
-    sourceFromFileSize = loadDataFromFile(inputFile.c_str(), pSourceFromFile);
-    struct Helper {
-        static void deleter(void *ptr) { deleteDataReadFromFile(ptr); }
-    };
-    auto sourceRaii = std::unique_ptr<void, decltype(&Helper::deleter)>{pSourceFromFile, Helper::deleter};
+    sourceFromFile = loadDataFromFile(inputFile.c_str(), sourceFromFileSize);
     if (sourceFromFileSize == 0) {
         retVal = INVALID_FILE;
         return retVal;
@@ -326,11 +323,11 @@ int OfflineCompiler::initialize(size_t numArgs, const std::vector<std::string> &
 
     if (inputFileLlvm || inputFileSpirV) {
         // use the binary input "as is"
-        sourceCode.assign(reinterpret_cast<char *>(pSourceFromFile), sourceFromFileSize);
+        sourceCode.assign(sourceFromFile.get(), sourceFromFileSize);
     } else {
         // for text input, we also accept files used as runtime builtins
-        pSource = strstr((const char *)pSourceFromFile, "R\"===(");
-        sourceCode = (pSource != nullptr) ? getStringWithinDelimiters((char *)pSourceFromFile) : (char *)pSourceFromFile;
+        source = strstr((const char *)sourceFromFile.get(), "R\"===(");
+        sourceCode = (source != nullptr) ? getStringWithinDelimiters(sourceFromFile.get()) : sourceFromFile.get();
     }
 
     if ((inputFileSpirV == false) && (inputFileLlvm == false)) {
@@ -465,8 +462,10 @@ int OfflineCompiler::parseCommandLine(size_t numArgs, const std::vector<std::str
     }
 
     for (uint32_t argIndex = 1; argIndex < numArgs; argIndex++) {
-        if ((stringsAreEqual(argv[argIndex], "-file")) &&
-            (argIndex + 1 < numArgs)) {
+        if (stringsAreEqual(argv[argIndex], "compile")) {
+            //skip it
+        } else if ((stringsAreEqual(argv[argIndex], "-file")) &&
+                   (argIndex + 1 < numArgs)) {
             inputFile = argv[argIndex + 1];
             argIndex++;
         } else if ((stringsAreEqual(argv[argIndex], "-output")) &&
@@ -487,6 +486,8 @@ int OfflineCompiler::parseCommandLine(size_t numArgs, const std::vector<std::str
             argIndex++;
         } else if (stringsAreEqual(argv[argIndex], "-llvm_text")) {
             useLlvmText = true;
+        } else if (stringsAreEqual(argv[argIndex], "-llvm_bc")) {
+            useLlvmBc = true;
         } else if (stringsAreEqual(argv[argIndex], "-llvm_input")) {
             inputFileLlvm = true;
         } else if (stringsAreEqual(argv[argIndex], "-spirv_input")) {
@@ -509,7 +510,9 @@ int OfflineCompiler::parseCommandLine(size_t numArgs, const std::vector<std::str
             argIndex++;
         } else if (stringsAreEqual(argv[argIndex], "-q")) {
             quiet = true;
-        } else if (stringsAreEqual(argv[argIndex], "-?")) {
+        } else if (stringsAreEqual(argv[argIndex], "-output_no_suffix")) {
+            outputNoSuffix = true;
+        } else if (stringsAreEqual(argv[argIndex], "--help")) {
             printUsage();
             retVal = PRINT_USAGE;
         } else {
@@ -561,6 +564,7 @@ void OfflineCompiler::setStatelessToStatefullBufferOffsetFlag() {
 
 void OfflineCompiler::parseDebugSettings() {
     setStatelessToStatefullBufferOffsetFlag();
+    resolveExtraSettings();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -655,36 +659,90 @@ std::string getDevicesTypes() {
 // PrintUsage
 ////////////////////////////////////////////////////////////////////////////////
 void OfflineCompiler::printUsage() {
+    printf(R"===(Compiles input file to Intel OpenCL GPU device binary (*.bin).
+Additionally, outputs intermediate representation (e.g. spirV).
+Different input and intermediate file formats are available.
 
-    printf("Compiles CL files into llvm (.bc or .ll), gen isa (.gen), and binary files (.bin)\n\n");
-    printf("ocloc -file <filename> -device <device_type> [OPTIONS]\n\n");
-    printf("  -file <filename>             Indicates the CL kernel file to be compiled.\n");
-    printf("  -device <device_type>        Indicates which device for which we will compile.\n");
-    printf("                               <device_type> can be: %s\n", getDevicesTypes().c_str());
-    printf("\n");
-    printf("  -multi <filename>            Indicates the txt file with multi commands\n");
-    printf("                               where each line is a single build in format:\n");
-    printf("                               '-file <filename> -device <device_type> [OPTIONS]'\n");
-    printf("                               Argument '-multi' must be first argument. \n");
-    printf("                               Result of builds will be output in directory named \n");
-    printf("                               like .txt file with build commands.\n");
-    printf("\n");
-    printf("  -output <filename>           Indicates output files core name.\n");
-    printf("  -out_dir <output_dir>        Indicates the directory into which the compiled files\n");
-    printf("                               will be placed.\n");
-    printf("  -cpp_file                    Cpp file with scheduler program binary will be generated.\n");
-    printf("\n");
-    printf("  -32                          Force compile to 32-bit binary.\n");
-    printf("  -64                          Force compile to 64-bit binary.\n");
-    printf("  -internal_options <options>  Compiler internal options.\n");
-    printf("  -llvm_text                   Readable LLVM text will be output in a .ll file instead of\n");
-    printf("                               through the default lllvm binary (.bc) file.\n");
-    printf("  -llvm_input                  Indicates input file is llvm source\n");
-    printf("  -spirv_input                  Indicates input file is a SpirV binary\n");
-    printf("  -options <options>           Compiler options.\n");
-    printf("  -options_name                Add suffix with compile options to filename\n");
-    printf("  -q                           Be more quiet. print only warnings and errors.\n");
-    printf("  -?                           Print this usage message.\n");
+Usage: ocloc [compile] -file <filename> -device <device_type> [-output <filename>] [-out_dir <output_dir>] [-options <options>] [-32|-64] [-internal_options <options>] [-llvm_text|-llvm_input|-spirv_input] [-options_name] [-q] [-cpp_file] [-output_no_suffix] [--help]
+
+  -file <filename>              The input file to be compiled
+                                (by default input source format is
+                                OpenCL C kernel language).
+                                
+  -device <device_type>         Target device.
+                                <device_type> can be: %s
+
+  -output <filename>            Optional output file base name.
+                                Default is input file's base name.
+                                This base name will be used for all output
+                                files. Proper sufixes (describing file formats)
+                                will be added automatically.
+
+  -out_dir <output_dir>         Optional output directory.
+                                Default is current working directory.
+
+  -options <options>            Optional OpenCL C compilation options
+                                as defined by OpenCL specification.
+
+  -32                           Forces target architecture to 32-bit pointers.
+                                Default pointer size is inherited from
+                                ocloc's pointer size.         
+                                This option is exclusive with -64.
+
+  -64                           Forces target architecture to 64-bit pointers.
+                                Default pointer size is inherited from
+                                ocloc's pointer size.
+                                This option is exclusive with -32.
+
+  -internal_options <options>   Optional compiler internal options
+                                as defined by compilers used underneath.
+                                Check intel-graphics-compiler (IGC) project
+                                for details on available internal options.
+
+  -llvm_text                    Forces intermediate representation (IR) format
+                                to human-readable LLVM IR (.ll).
+                                This option affects only output files
+                                and should not be used in combination with
+                                '-llvm_input' option.
+                                Default IR is spirV.
+                                This option is exclusive with -spirv_input.
+                                This option is exclusive with -llvm_input.
+
+  -llvm_input                   Indicates that input file is an llvm binary.
+                                Default is OpenCL C kernel language.
+                                This option is exclusive with -spirv_input.
+                                This option is exclusive with -llvm_text.
+
+  -spirv_input                  Indicates that input file is a spirV binary.
+                                Default is OpenCL C kernel language format.
+                                This option is exclusive with -llvm_input.
+                                This option is exclusive with -llvm_text.
+
+  -options_name                 Will add suffix to output files.
+                                This suffix will be generated based on input
+                                options (useful when rebuilding with different 
+                                set of options so that results won't get
+                                overwritten).
+                                This suffix is added always as the last part
+                                of the filename (even after file's extension).
+                                It does not affect '--output' parameter and can
+                                be used along with it ('--output' parameter
+                                defines the base name - i.e. prefix).
+
+  -q                            Will silence most of output messages.
+
+  -cpp_file                     Will generate c++ file with C-array
+                                containing Intel OpenCL device binary.
+
+  -output_no_suffix             Prevents ocloc from adding family name suffix.
+
+  --help                        Print this usage message.
+
+Examples :
+  Compile file to Intel OpenCL GPU device binary (out = source_file_Gen9core.bin)
+    ocloc -file source_file.cl -device skl
+)===",
+           NEO::getDevicesTypes().c_str());
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -743,10 +801,18 @@ bool OfflineCompiler::generateElfBinary() {
 void OfflineCompiler::writeOutAllFiles() {
     std::string fileBase;
     std::string fileTrunk = getFileNameTrunk(inputFile);
-    if (outputFile.empty()) {
-        fileBase = fileTrunk + "_" + familyNameWithType;
+    if (outputNoSuffix) {
+        if (outputFile.empty()) {
+            fileBase = fileTrunk;
+        } else {
+            fileBase = outputFile;
+        }
     } else {
-        fileBase = outputFile + "_" + familyNameWithType;
+        if (outputFile.empty()) {
+            fileBase = fileTrunk + "_" + familyNameWithType;
+        } else {
+            fileBase = outputFile + "_" + familyNameWithType;
+        }
     }
 
     if (outputDirectory != "") {
@@ -791,8 +857,12 @@ void OfflineCompiler::writeOutAllFiles() {
     }
 
     if (!elfBinary.empty()) {
-        std::string elfOutputFile = generateFilePath(outputDirectory, fileBase, ".bin") + generateOptsSuffix();
-
+        std::string elfOutputFile;
+        if (outputNoSuffix) {
+            elfOutputFile = generateFilePath(outputDirectory, fileBase, "");
+        } else {
+            elfOutputFile = generateFilePath(outputDirectory, fileBase, ".bin") + generateOptsSuffix();
+        }
         writeDataToFile(
             elfOutputFile.c_str(),
             elfBinary.data(),
@@ -813,11 +883,11 @@ bool OfflineCompiler::readOptionsFromFile(std::string &options, const std::strin
     if (!fileExists(file)) {
         return false;
     }
-    void *pOptions = nullptr;
-    size_t optionsSize = loadDataFromFile(file.c_str(), pOptions);
+    size_t optionsSize = 0U;
+    auto optionsFromFile = loadDataFromFile(file.c_str(), optionsSize);
     if (optionsSize > 0) {
         // Remove comment containing copyright header
-        options = (char *)pOptions;
+        options = optionsFromFile.get();
         size_t commentBegin = options.find_first_of("/*");
         size_t commentEnd = options.find_last_of("*/");
         if (commentBegin != std::string::npos && commentEnd != std::string::npos) {
@@ -830,7 +900,6 @@ bool OfflineCompiler::readOptionsFromFile(std::string &options, const std::strin
         auto trimPos = options.find_last_not_of(" \n\r");
         options = options.substr(0, trimPos + 1);
     }
-    deleteDataReadFromFile(pOptions);
     return true;
 }
 

@@ -7,11 +7,11 @@
 
 #include "offline_compiler_tests.h"
 
-#include "runtime/helpers/file_io.h"
+#include "core/helpers/file_io.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/os_interface/debug_settings_manager.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_compilers.h"
 
 #include "environment.h"
@@ -381,7 +381,7 @@ TEST_F(OfflineCompilerTests, GoodBuildTestWithOutputDir) {
 TEST_F(OfflineCompilerTests, PrintUsage) {
     std::vector<std::string> argv = {
         "ocloc",
-        "-?"};
+        "--help"};
 
     testing::internal::CaptureStdout();
     pOfflineCompiler = OfflineCompiler::create(argv.size(), argv, retVal);
@@ -590,10 +590,10 @@ TEST(OfflineCompilerTest, getStringWithinDelimiters) {
     auto mockOfflineCompiler = std::unique_ptr<MockOfflineCompiler>(new MockOfflineCompiler());
     ASSERT_NE(nullptr, mockOfflineCompiler);
 
-    void *ptrSrc = nullptr;
-    size_t srcSize = loadDataFromFile("test_files/copy_buffer_to_buffer.igdrcl_built_in", ptrSrc);
+    size_t srcSize = 0;
+    auto ptrSrc = loadDataFromFile("test_files/copy_buffer_to_buffer.igdrcl_built_in", srcSize);
 
-    const std::string src = (const char *)ptrSrc;
+    const std::string src = ptrSrc.get();
     ASSERT_EQ(srcSize, src.size());
 
     // assert that pattern was found
@@ -609,8 +609,6 @@ TEST(OfflineCompilerTest, getStringWithinDelimiters) {
     // expect that pattern was not found
     EXPECT_EQ(std::string::npos, dst.find("R\"===("));
     EXPECT_EQ(std::string::npos, dst.find(")===\""));
-
-    delete[] reinterpret_cast<char *>(ptrSrc);
 }
 
 TEST(OfflineCompilerTest, convertToPascalCase) {

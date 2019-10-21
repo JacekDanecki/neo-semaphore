@@ -6,15 +6,16 @@
  */
 
 #include "core/helpers/ptr_math.h"
+#include "core/memory_manager/unified_memory_manager.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/gmm_helper/gmm.h"
+#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/memory_manager/svm_memory_manager.h"
 #include "test.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_program.h"
 
@@ -139,6 +140,32 @@ HWTEST_F(BufferSetArgTest, givenSetArgBufferWhenNullArgStatefulThenProgramNullSu
     EXPECT_EQ(surfacetype, SURFACE_FORMAT::SURFACE_FORMAT_RAW);
 }
 
+HWTEST_F(BufferSetArgTest, givenSetKernelArgOnReadOnlyBufferThatIsMisalingedWhenSurfaceStateIsSetThenCachingIsOn) {
+    using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
+
+    auto surfaceState = reinterpret_cast<const RENDER_SURFACE_STATE *>(
+        ptrOffset(pKernel->getSurfaceStateHeap(),
+                  pKernelInfo->kernelArgInfo[0].offsetHeap));
+
+    pKernelInfo->requiresSshForBuffers = true;
+    pKernelInfo->kernelArgInfo[0].isReadOnly = true;
+
+    auto graphicsAllocation = castToObject<Buffer>(buffer)->getGraphicsAllocation();
+    graphicsAllocation->setSize(graphicsAllocation->getUnderlyingBufferSize() - 1);
+
+    cl_mem clMemBuffer = buffer;
+
+    cl_int ret = pKernel->setArgBuffer(0, sizeof(cl_mem), &clMemBuffer);
+
+    EXPECT_EQ(CL_SUCCESS, ret);
+
+    auto mocs = surfaceState->getMemoryObjectControlState();
+    auto gmmHelper = pDevice->getGmmHelper();
+    auto expectedMocs = gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
+    auto expectedMocs2 = gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER_CONST);
+    EXPECT_TRUE(expectedMocs == mocs || expectedMocs2 == mocs);
+}
+
 HWTEST_F(BufferSetArgTest, givenSetArgBufferWithNullArgStatelessThenDontProgramNullSurfaceState) {
     using RENDER_SURFACE_STATE = typename FamilyType::RENDER_SURFACE_STATE;
     using SURFACE_FORMAT = typename RENDER_SURFACE_STATE::SURFACE_FORMAT;
@@ -194,7 +221,7 @@ TEST_F(BufferSetArgTest, givenBufferWhenOffsetedSubbufferIsPassedToSetKernelArgT
     region.origin = 0xc0;
     region.size = 32;
     cl_int error = 0;
-    auto subBuffer = buffer->createSubBuffer(buffer->getFlags(), &region, error);
+    auto subBuffer = buffer->createSubBuffer(buffer->getMemoryPropertiesFlags(), &region, error);
 
     ASSERT_NE(nullptr, subBuffer);
 

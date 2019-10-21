@@ -6,11 +6,13 @@
  */
 
 #pragma once
-#include "runtime/memory_manager/memory_manager.h"
+#include "core/helpers/basic_math.h"
 #include "runtime/os_interface/linux/engine_info.h"
 #include "runtime/os_interface/linux/memory_info.h"
 #include "runtime/utilities/api_intercept.h"
 
+#include "drm/i915_drm.h"
+#include "engine_node.h"
 #include "igfxfmid.h"
 
 #include <cerrno>
@@ -28,7 +30,7 @@ namespace NEO {
 class DeviceFactory;
 struct HardwareInfo;
 
-struct DeviceDescriptor {
+struct DeviceDescriptor { // NOLINT(clang-analyzer-optin.performance.Padding)
     unsigned short deviceId;
     const HardwareInfo *pHwInfo;
     void (*setupHardwareInfo)(HardwareInfo *, bool);
@@ -65,22 +67,27 @@ class Drm {
     uint32_t createDrmContext();
     void destroyDrmContext(uint32_t drmContextId);
     void setLowPriorityContextParam(uint32_t drmContextId);
-    int bindDrmContext(uint32_t drmContextId, DeviceBitfield deviceBitfield, aub_stream::EngineType engineType);
+    unsigned int bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType);
 
     void setGtType(GTTYPE eGtType) { this->eGtType = eGtType; }
     GTTYPE getGtType() const { return this->eGtType; }
     MOCKABLE_VIRTUAL int getErrno();
-    void setSimplifiedMocsTableUsage(bool value);
-    bool getSimplifiedMocsTableUsage() const;
+    bool setQueueSliceCount(uint64_t sliceCount);
+    void checkQueueSliceSupport();
+    uint64_t getSliceMask(uint64_t sliceCount);
     void queryEngineInfo();
     void queryMemoryInfo();
+    int setEngines();
+    int setMemoryRegions();
 
     MemoryInfo *getMemoryInfo() const {
         return memoryInfo.get();
     }
 
   protected:
-    bool useSimplifiedMocsTable = false;
+    int getQueueSliceCount(drm_i915_gem_context_param_sseu *sseu);
+    bool sliceCountChangeSupported = false;
+    drm_i915_gem_context_param_sseu sseu{};
     bool preemptionSupported = false;
     int fd;
     int deviceId = 0;
@@ -98,6 +105,9 @@ class Drm {
 
     std::string getSysFsPciPath(int deviceID);
     void *query(uint32_t queryId);
+
+    static inline uint16_t getMemoryTypeFromRegion(uint32_t region) { return Math::log2(region >> 16); };
+    static inline uint16_t getInstanceFromRegion(uint32_t region) { return Math::log2(region & 0xFFFF); };
 
 #pragma pack(1)
     struct PCIConfig {

@@ -7,6 +7,7 @@
 
 #include "runtime/execution_environment/execution_environment.h"
 
+#include "core/memory_manager/memory_operations_handler.h"
 #include "runtime/aub/aub_center.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/sip.h"
@@ -59,7 +60,6 @@ bool ExecutionEnvironment::initializeCommandStreamReceiver(uint32_t deviceIndex,
     if (HwHelper::get(hwInfo->platform.eRenderCoreFamily).isPageTableManagerSupported(*hwInfo)) {
         commandStreamReceiver->createPageTableManager();
     }
-    commandStreamReceiver->setDeviceIndex(deviceIndex);
     this->commandStreamReceivers[deviceIndex][deviceCsrIndex] = std::move(commandStreamReceiver);
     return true;
 }
@@ -105,7 +105,7 @@ CompilerInterface *ExecutionEnvironment::getCompilerInterface() {
     if (this->compilerInterface.get() == nullptr) {
         std::lock_guard<std::mutex> autolock(this->mtx);
         if (this->compilerInterface.get() == nullptr) {
-            this->compilerInterface.reset(CompilerInterface::createInstance());
+            this->compilerInterface.reset(CompilerInterface::createInstance(true));
         }
     }
     return this->compilerInterface.get();
@@ -128,4 +128,7 @@ EngineControl *ExecutionEnvironment::getEngineControlForSpecialCsr() {
     return engine;
 }
 
+bool ExecutionEnvironment::isFullRangeSvm() const {
+    return hwInfo->capabilityTable.gpuAddressSpace >= maxNBitValue<47>;
+}
 } // namespace NEO

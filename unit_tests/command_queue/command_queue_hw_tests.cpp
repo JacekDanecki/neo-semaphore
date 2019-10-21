@@ -5,6 +5,8 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
+#include "core/unit_tests/utilities/base_object_utils.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
 #include "runtime/helpers/dispatch_info_builder.h"
 #include "test.h"
@@ -12,14 +14,14 @@
 #include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/context_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/fixtures/image_fixture.h"
 #include "unit_tests/helpers/unit_test_helper.h"
 #include "unit_tests/mocks/mock_buffer.h"
+#include "unit_tests/mocks/mock_builtins.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_csr.h"
 #include "unit_tests/mocks/mock_event.h"
 #include "unit_tests/mocks/mock_kernel.h"
-#include "unit_tests/utilities/base_object_utils.h"
 
 using namespace NEO;
 
@@ -74,7 +76,7 @@ struct OOQueueHwTest : public DeviceFixture,
     }
 };
 
-HWTEST_F(CommandQueueHwTest, enqueueBlockedMapUnmapOperationCreatesVirtualEvent) {
+HWTEST_F(CommandQueueHwTest, WhenEnqueuingBlockedMapUnmapOperationThenVirtualEventIsCreated) {
 
     CommandQueueHw<FamilyType> *pHwQ = reinterpret_cast<CommandQueueHw<FamilyType> *>(pCmdQ);
 
@@ -148,7 +150,7 @@ HWTEST_F(CommandQueueHwTest, givenNoReturnEventWhenCallingEnqueueBlockedMapUnmap
     pHwQ->virtualEvent = nullptr;
 }
 
-HWTEST_F(CommandQueueHwTest, addMapUnmapToWaitlistEventsDoesntAddDependenciesIntoChild) {
+HWTEST_F(CommandQueueHwTest, WhenAddMapUnmapToWaitlistEventsThenDependenciesAreNotAddedIntoChild) {
     auto buffer = new MockBuffer;
     CommandQueueHw<FamilyType> *pHwQ = reinterpret_cast<CommandQueueHw<FamilyType> *>(pCmdQ);
     auto returnEvent = new Event(pHwQ, CL_COMMAND_MAP_BUFFER, 0, 0);
@@ -177,8 +179,30 @@ HWTEST_F(CommandQueueHwTest, addMapUnmapToWaitlistEventsDoesntAddDependenciesInt
     buffer->decRefInternal();
 }
 
-HWTEST_F(CommandQueueHwTest, givenMapCommandWhenZeroStateCommandIsSubmittedThenTaskCountIsBeingWaited) {
+HWTEST_F(CommandQueueHwTest, givenMapCommandWhenZeroStateCommandIsSubmittedThenTaskCountIsNotBeingWaited) {
     auto buffer = new MockBuffer;
+    CommandQueueHw<FamilyType> *pHwQ = reinterpret_cast<CommandQueueHw<FamilyType> *>(pCmdQ);
+
+    MockEventBuilder eventBuilder;
+    MemObjSizeArray size = {{1, 1, 1}};
+    MemObjOffsetArray offset = {{0, 0, 0}};
+    pHwQ->enqueueBlockedMapUnmapOperation(nullptr,
+                                          0,
+                                          MAP,
+                                          buffer,
+                                          size, offset, false,
+                                          eventBuilder);
+
+    EXPECT_NE(nullptr, pHwQ->virtualEvent);
+    pHwQ->virtualEvent->setStatus(CL_COMPLETE);
+
+    EXPECT_EQ(std::numeric_limits<uint32_t>::max(), pHwQ->latestTaskCountWaited);
+    buffer->decRefInternal();
+}
+
+HWTEST_F(CommandQueueHwTest, givenMapCommandWhenZeroStateCommandIsSubmittedOnNonZeroCopyBufferThenTaskCountIsBeingWaited) {
+    auto buffer = new MockBuffer;
+    buffer->isZeroCopy = false;
     CommandQueueHw<FamilyType> *pHwQ = reinterpret_cast<CommandQueueHw<FamilyType> *>(pCmdQ);
 
     MockEventBuilder eventBuilder;
@@ -198,7 +222,7 @@ HWTEST_F(CommandQueueHwTest, givenMapCommandWhenZeroStateCommandIsSubmittedThenT
     buffer->decRefInternal();
 }
 
-HWTEST_F(CommandQueueHwTest, enqueueBlockedMapUnmapOperationInjectedCommand) {
+HWTEST_F(CommandQueueHwTest, GivenEventWhenEnqueuingBlockedMapUnmapOperationThenEventIsRetained) {
     CommandQueueHw<FamilyType> *pHwQ = reinterpret_cast<CommandQueueHw<FamilyType> *>(pCmdQ);
     Event *returnEvent = new Event(pHwQ, CL_COMMAND_MAP_BUFFER, 0, 0);
     auto buffer = new MockBuffer;
@@ -220,12 +244,11 @@ HWTEST_F(CommandQueueHwTest, enqueueBlockedMapUnmapOperationInjectedCommand) {
     // CommandQueue has retained this event, release it
     returnEvent->release();
     pHwQ->virtualEvent = nullptr;
-    // now delete
     delete returnEvent;
     buffer->decRefInternal();
 }
 
-HWTEST_F(CommandQueueHwTest, enqueueBlockedMapUnmapOperationPreviousEventHasNotInjectedChild) {
+HWTEST_F(CommandQueueHwTest, GivenEventWhenEnqueuingBlockedMapUnmapOperationThenChildIsUnaffected) {
     auto buffer = new MockBuffer;
     CommandQueueHw<FamilyType> *pHwQ = reinterpret_cast<CommandQueueHw<FamilyType> *>(pCmdQ);
     Event *returnEvent = new Event(pHwQ, CL_COMMAND_MAP_BUFFER, 0, 0);
@@ -260,7 +283,7 @@ HWTEST_F(CommandQueueHwTest, GivenNonEmptyQueueOnBlockingMapBufferWillWaitForPre
             : CommandQueueHw<FamilyType>(context, device, 0) {
             finishWasCalled = false;
         }
-        cl_int finish(bool dcFlush) override {
+        cl_int finish() override {
             finishWasCalled = true;
             return 0;
         }
@@ -660,7 +683,7 @@ HWTEST_F(CommandQueueHwTest, GivenEventThatIsNotCompletedWhenFinishIsCalledAndIt
     auto ev = new Event(this->pCmdQ, CL_COMMAND_COPY_BUFFER, 3, Event::eventNotReady + 1);
     clSetEventCallback(ev, CL_COMPLETE, ClbFuncTempStruct::ClbFuncT, &Value);
 
-    auto &csr = this->pCmdQ->getCommandStreamReceiver();
+    auto &csr = this->pCmdQ->getGpgpuCommandStreamReceiver();
     EXPECT_GT(3u, csr.peekTaskCount());
     *csr.getTagAddress() = Event::eventNotReady + 1;
     ret = clFinish(this->pCmdQ);
@@ -682,6 +705,7 @@ struct MockBuilder : BuiltinDispatchInfoBuilder {
     }
     bool buildDispatchInfos(MultiDispatchInfo &d, const BuiltinOpParams &conf) const override {
         wasBuildDispatchInfosWithBuiltinOpParamsCalled = true;
+        paramsReceived.multiDispatchInfo.setBuiltinOpParams(conf);
         return true;
     }
     bool buildDispatchInfos(MultiDispatchInfo &d, Kernel *kernel,
@@ -715,6 +739,178 @@ struct MockBuilder : BuiltinDispatchInfoBuilder {
     Params paramsToUse;
 };
 
+struct BuiltinParamsCommandQueueHwTests : public CommandQueueHwTest {
+
+    void SetUpImpl(EBuiltInOps::Type operation) {
+        auto builtIns = new MockBuiltins();
+        pCmdQ->getDevice().getExecutionEnvironment()->builtins.reset(builtIns);
+
+        auto swapBuilder = builtIns->setBuiltinDispatchInfoBuilder(
+            operation,
+            *pContext,
+            *pDevice,
+            std::unique_ptr<NEO::BuiltinDispatchInfoBuilder>(new MockBuilder(*builtIns)));
+
+        mockBuilder = static_cast<MockBuilder *>(&builtIns->getBuiltinDispatchInfoBuilder(
+            operation,
+            *pContext,
+            *pDevice));
+    }
+
+    MockBuilder *mockBuilder;
+};
+
+HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadWriteBufferCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
+
+    SetUpImpl(EBuiltInOps::CopyBufferToBuffer);
+    BufferDefaults::context = context;
+    auto buffer = clUniquePtr(BufferHelper<>::create());
+
+    char array[3 * MemoryConstants::cacheLineSize];
+    char *ptr = &array[MemoryConstants::cacheLineSize];
+    ptr = alignUp(ptr, MemoryConstants::cacheLineSize);
+    ptr -= 1;
+
+    cl_int status = pCmdQ->enqueueReadBuffer(buffer.get(), CL_FALSE, 0, 0, ptr, nullptr, 0, 0, nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    void *alignedPtr = alignDown(ptr, 4);
+    size_t ptrOffset = ptrDiff(ptr, alignedPtr);
+    Vec3<size_t> offset = {0, 0, 0};
+
+    auto builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+
+    EXPECT_EQ(alignedPtr, builtinParams.dstPtr);
+    EXPECT_EQ(ptrOffset, builtinParams.dstOffset.x);
+    EXPECT_EQ(offset, builtinParams.srcOffset);
+
+    status = pCmdQ->enqueueWriteBuffer(buffer.get(), CL_FALSE, 0, 0, ptr, nullptr, 0, 0, nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+
+    EXPECT_EQ(alignedPtr, builtinParams.srcPtr);
+    EXPECT_EQ(ptrOffset, builtinParams.srcOffset.x);
+    EXPECT_EQ(offset, builtinParams.dstOffset);
+}
+
+HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueWriteImageCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
+
+    SetUpImpl(EBuiltInOps::CopyBufferToImage3d);
+
+    std::unique_ptr<Image> dstImage(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
+
+    auto imageDesc = dstImage->getImageDesc();
+    size_t origin[] = {0, 0, 0};
+    size_t region[] = {imageDesc.image_width, imageDesc.image_height, 0};
+
+    size_t rowPitch = dstImage->getHostPtrRowPitch();
+    size_t slicePitch = dstImage->getHostPtrSlicePitch();
+
+    char array[3 * MemoryConstants::cacheLineSize];
+    char *ptr = &array[MemoryConstants::cacheLineSize];
+    ptr = alignUp(ptr, MemoryConstants::cacheLineSize);
+    ptr -= 1;
+
+    void *alignedPtr = alignDown(ptr, 4);
+    size_t ptrOffset = ptrDiff(ptr, alignedPtr);
+    Vec3<size_t> offset = {0, 0, 0};
+
+    cl_int status = pCmdQ->enqueueWriteImage(dstImage.get(),
+                                             CL_FALSE,
+                                             origin,
+                                             region,
+                                             rowPitch,
+                                             slicePitch,
+                                             ptr,
+                                             nullptr,
+                                             0,
+                                             0,
+                                             nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    auto builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+    EXPECT_EQ(alignedPtr, builtinParams.srcPtr);
+    EXPECT_EQ(ptrOffset, builtinParams.srcOffset.x);
+    EXPECT_EQ(offset, builtinParams.dstOffset);
+}
+
+HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadImageCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
+
+    SetUpImpl(EBuiltInOps::CopyImage3dToBuffer);
+
+    std::unique_ptr<Image> dstImage(ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context));
+
+    auto imageDesc = dstImage->getImageDesc();
+    size_t origin[] = {0, 0, 0};
+    size_t region[] = {imageDesc.image_width, imageDesc.image_height, 0};
+
+    size_t rowPitch = dstImage->getHostPtrRowPitch();
+    size_t slicePitch = dstImage->getHostPtrSlicePitch();
+
+    char array[3 * MemoryConstants::cacheLineSize];
+    char *ptr = &array[MemoryConstants::cacheLineSize];
+    ptr = alignUp(ptr, MemoryConstants::cacheLineSize);
+    ptr -= 1;
+
+    void *alignedPtr = alignDown(ptr, 4);
+    size_t ptrOffset = ptrDiff(ptr, alignedPtr);
+    Vec3<size_t> offset = {0, 0, 0};
+
+    cl_int status = pCmdQ->enqueueReadImage(dstImage.get(),
+                                            CL_FALSE,
+                                            origin,
+                                            region,
+                                            rowPitch,
+                                            slicePitch,
+                                            ptr,
+                                            nullptr,
+                                            0,
+                                            0,
+                                            nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    auto builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+    EXPECT_EQ(alignedPtr, builtinParams.dstPtr);
+    EXPECT_EQ(ptrOffset, builtinParams.dstOffset.x);
+    EXPECT_EQ(offset, builtinParams.srcOffset);
+}
+
+HWTEST_F(BuiltinParamsCommandQueueHwTests, givenEnqueueReadWriteBufferRectCallWhenBuiltinParamsArePassedThenCheckValuesCorectness) {
+
+    SetUpImpl(EBuiltInOps::CopyBufferRect);
+
+    BufferDefaults::context = context;
+    auto buffer = clUniquePtr(BufferHelper<>::create());
+
+    size_t bufferOrigin[3] = {0, 0, 0};
+    size_t hostOrigin[3] = {0, 0, 0};
+    size_t region[3] = {0, 0, 0};
+
+    char array[3 * MemoryConstants::cacheLineSize];
+    char *ptr = &array[MemoryConstants::cacheLineSize];
+    ptr = alignUp(ptr, MemoryConstants::cacheLineSize);
+    ptr -= 1;
+
+    cl_int status = pCmdQ->enqueueReadBufferRect(buffer.get(), CL_FALSE, bufferOrigin, hostOrigin, region, 0, 0, 0, 0, ptr, 0, 0, nullptr);
+
+    void *alignedPtr = alignDown(ptr, 4);
+    size_t ptrOffset = ptrDiff(ptr, alignedPtr);
+    Vec3<size_t> offset = {0, 0, 0};
+    auto builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+
+    EXPECT_EQ(alignedPtr, builtinParams.dstPtr);
+    EXPECT_EQ(ptrOffset, builtinParams.dstOffset.x);
+    EXPECT_EQ(offset, builtinParams.srcOffset);
+
+    status = pCmdQ->enqueueWriteBufferRect(buffer.get(), CL_FALSE, bufferOrigin, hostOrigin, region, 0, 0, 0, 0, ptr, 0, 0, nullptr);
+    EXPECT_EQ(CL_SUCCESS, status);
+
+    builtinParams = mockBuilder->paramsReceived.multiDispatchInfo.peekBuiltinOpParams();
+    EXPECT_EQ(alignedPtr, builtinParams.srcPtr);
+    EXPECT_EQ(offset, builtinParams.dstOffset);
+    EXPECT_EQ(ptrOffset, builtinParams.srcOffset.x);
+}
 HWTEST_F(CommandQueueHwTest, givenCommandQueueThatIsBlockedAndUsesCpuCopyWhenEventIsReturnedItIsNotReady) {
     CommandQueueHw<FamilyType> *cmdQHw = static_cast<CommandQueueHw<FamilyType> *>(this->pCmdQ);
     MockBuffer buffer;
@@ -731,19 +927,38 @@ HWTEST_F(CommandQueueHwTest, givenCommandQueueThatIsBlockedAndUsesCpuCopyWhenEve
     clReleaseEvent(returnEvent);
 }
 
-HWTEST_F(CommandQueueHwTest, givenEventWithRecordedCommandWhenSubmitCommandIsCalledThenTaskCountIsNotUpdated) {
+HWTEST_F(CommandQueueHwTest, givenEventWithRecordedCommandWhenSubmitCommandIsCalledThenTaskCountMustBeUpdatedFromOtherThread) {
+    std::atomic_bool go{false};
+
     struct mockEvent : public Event {
         using Event::Event;
         using Event::eventWithoutCommand;
         using Event::submitCommand;
+        void synchronizeTaskCount() override {
+            *atomicFence = true;
+            Event::synchronizeTaskCount();
+        }
+        uint32_t synchronizeCallCount = 0u;
+        std::atomic_bool *atomicFence = nullptr;
     };
 
     mockEvent neoEvent(this->pCmdQ, CL_COMMAND_MAP_BUFFER, Event::eventNotReady, Event::eventNotReady);
+    neoEvent.atomicFence = &go;
     EXPECT_TRUE(neoEvent.eventWithoutCommand);
     neoEvent.eventWithoutCommand = false;
 
-    neoEvent.submitCommand(false);
     EXPECT_EQ(Event::eventNotReady, neoEvent.peekTaskCount());
+
+    std::thread t([&]() {
+        while (!go)
+            ;
+        neoEvent.updateTaskCount(77u);
+    });
+
+    neoEvent.submitCommand(false);
+
+    EXPECT_EQ(77u, neoEvent.peekTaskCount());
+    t.join();
 }
 
 HWTEST_F(CommandQueueHwTest, GivenBuiltinKernelWhenBuiltinDispatchInfoBuilderIsProvidedThenThisBuilderIsUsedForCreatingDispatchInfo) {
@@ -842,22 +1057,11 @@ HWTEST_F(CommandQueueHwTest, givenBlockedInOrderCmdQueueAndAsynchronouslyComplet
     size_t offset = 0;
     size_t size = 1;
 
-    class MockEventWithSetCompleteOnUpdate : public Event {
-      public:
-        MockEventWithSetCompleteOnUpdate(CommandQueue *cmdQueue, cl_command_type cmdType,
-                                         uint32_t taskLevel, uint32_t taskCount) : Event(cmdQueue, cmdType, taskLevel, taskCount) {
-        }
-        void updateExecutionStatus() override {
-            setStatus(CL_COMPLETE);
-        }
-    };
-
     auto event = new Event(cmdQHw, CL_COMMAND_NDRANGE_KERNEL, 10, 0);
 
     uint32_t virtualEventTaskLevel = 77;
     uint32_t virtualEventTaskCount = 80;
-    auto virtualEvent = new MockEventWithSetCompleteOnUpdate(cmdQHw, CL_COMMAND_NDRANGE_KERNEL, virtualEventTaskLevel, virtualEventTaskCount);
-    virtualEvent->setStatus(CL_SUBMITTED);
+    auto virtualEvent = new Event(cmdQHw, CL_COMMAND_NDRANGE_KERNEL, virtualEventTaskLevel, virtualEventTaskCount);
 
     cl_event blockedEvent = event;
 
@@ -866,22 +1070,58 @@ HWTEST_F(CommandQueueHwTest, givenBlockedInOrderCmdQueueAndAsynchronouslyComplet
     virtualEvent->incRefInternal();
     cmdQHw->virtualEvent = virtualEvent;
 
+    *mockCSR->getTagAddress() = 0u;
     cmdQHw->taskLevel = 23;
     cmdQHw->enqueueKernel(mockKernel, 1, &offset, &size, &size, 1, &blockedEvent, nullptr);
     //new virtual event is created on enqueue, bind it to the created virtual event
     EXPECT_NE(cmdQHw->virtualEvent, virtualEvent);
 
+    EXPECT_EQ(virtualEvent->peekExecutionStatus(), CL_QUEUED);
     event->setStatus(CL_SUBMITTED);
+    EXPECT_EQ(virtualEvent->peekExecutionStatus(), CL_SUBMITTED);
 
-    virtualEvent->Event::updateExecutionStatus();
     EXPECT_FALSE(cmdQHw->isQueueBlocked());
     // +1 for next level after virtualEvent is unblocked
     // +1 as virtualEvent was a parent for event with actual command that is being submitted
     EXPECT_EQ(virtualEventTaskLevel + 2, cmdQHw->taskLevel);
     //command being submitted was dependant only on virtual event hence only +1
     EXPECT_EQ(virtualEventTaskLevel + 1, mockCSR->lastTaskLevelToFlushTask);
+    *mockCSR->getTagAddress() = initialHardwareTag;
     virtualEvent->decRefInternal();
     event->decRefInternal();
+}
+
+HWTEST_F(CommandQueueHwTest, givenBlockedOutOfOrderQueueWhenUserEventIsSubmittedThenNDREventIsSubmittedAsWell) {
+    CommandQueueHw<FamilyType> *cmdQHw = static_cast<CommandQueueHw<FamilyType> *>(this->pCmdQ);
+    auto &mockCsr = pDevice->getUltCommandStreamReceiver<FamilyType>();
+
+    MockKernelWithInternals mockKernelWithInternals(*pDevice);
+    auto mockKernel = mockKernelWithInternals.mockKernel;
+    size_t offset = 0;
+    size_t size = 1;
+
+    cl_event userEvent = clCreateUserEvent(this->pContext, nullptr);
+    cl_event blockedEvent = nullptr;
+
+    *mockCsr.getTagAddress() = 0u;
+    cmdQHw->enqueueKernel(mockKernel, 1, &offset, &size, &size, 1, &userEvent, &blockedEvent);
+
+    auto neoEvent = castToObject<Event>(blockedEvent);
+    EXPECT_EQ(neoEvent->peekExecutionStatus(), CL_QUEUED);
+
+    neoEvent->updateExecutionStatus();
+
+    EXPECT_EQ(neoEvent->peekExecutionStatus(), CL_QUEUED);
+    EXPECT_EQ(neoEvent->peekTaskCount(), Event::eventNotReady);
+
+    clSetUserEventStatus(userEvent, 0u);
+
+    EXPECT_EQ(neoEvent->peekExecutionStatus(), CL_SUBMITTED);
+    EXPECT_EQ(neoEvent->peekTaskCount(), 1u);
+
+    *mockCsr.getTagAddress() = initialHardwareTag;
+    clReleaseEvent(blockedEvent);
+    clReleaseEvent(userEvent);
 }
 
 HWTEST_F(OOQueueHwTest, givenBlockedOutOfOrderCmdQueueAndAsynchronouslyCompletedEventWhenEnqueueCompletesVirtualEventThenUpdatedTaskLevelIsPassedToEnqueueAndFlushTask) {
@@ -911,7 +1151,6 @@ HWTEST_F(OOQueueHwTest, givenBlockedOutOfOrderCmdQueueAndAsynchronouslyCompleted
     uint32_t virtualEventTaskLevel = 77;
     uint32_t virtualEventTaskCount = 80;
     MockEventWithSetCompleteOnUpdate virtualEvent(cmdQHw, CL_COMMAND_NDRANGE_KERNEL, virtualEventTaskLevel, virtualEventTaskCount);
-    virtualEvent.setStatus(CL_SUBMITTED);
 
     cl_event blockedEvent = &event;
 

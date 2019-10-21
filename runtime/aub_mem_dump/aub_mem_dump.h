@@ -108,7 +108,7 @@ struct AubStream {
     virtual void writeMemory(uint64_t physAddress, const void *memory, size_t sizeToDumpThisIteration, uint32_t addressSpace, uint32_t hint) = 0;
     virtual void writeMemoryWriteHeader(uint64_t physAddress, size_t size, uint32_t addressSpace, uint32_t hint) = 0;
     virtual void writeMemoryWriteHeader(uint64_t physAddress, size_t size, uint32_t addressSpace) {
-        return writeMemoryWriteHeader(physAddress, size, addressSpace, CmdServicesMemTraceMemoryWrite::DataTypeHintValues::TraceNotype);
+        writeMemoryWriteHeader(physAddress, size, addressSpace, CmdServicesMemTraceMemoryWrite::DataTypeHintValues::TraceNotype);
     }
     virtual void writePTE(uint64_t physAddress, uint64_t entry, uint32_t addressSpace) = 0;
     virtual void writeGTT(uint32_t offset, uint64_t entry) = 0;
@@ -389,6 +389,13 @@ struct LrcaHelperVecs : public LrcaHelper {
     LrcaHelperVecs(uint32_t base) : LrcaHelper(base) {
         aubHintLRCA = DataTypeHintValues::TraceLogicalRingContextVecs;
         name = "VECS";
+    }
+};
+
+struct LrcaHelperCcs : public LrcaHelper {
+    LrcaHelperCcs(uint32_t base) : LrcaHelper(base) {
+        aubHintLRCA = DataTypeHintValues::TraceLogicalRingContextCcs;
+        name = "CCS";
     }
 };
 

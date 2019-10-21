@@ -7,6 +7,7 @@
 
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
+#include "runtime/device/device.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 
 #include "os_inc.h"
@@ -15,14 +16,16 @@
 
 namespace NEO {
 
-const char *getBuiltinAsString(EBuiltInOps builtin) {
+const char *getBuiltinAsString(EBuiltInOps::Type builtin) {
     switch (builtin) {
     default:
-        return "unknown";
+        return getUnknownBuiltinAsString(builtin);
     case EBuiltInOps::AuxTranslation:
         return "aux_translation.igdrcl_built_in";
     case EBuiltInOps::CopyBufferToBuffer:
         return "copy_buffer_to_buffer.igdrcl_built_in";
+    case EBuiltInOps::CopyBufferToBufferStateless:
+        return "copy_buffer_to_buffer_stateless.igdrcl_built_in";
     case EBuiltInOps::CopyBufferRect:
         return "copy_buffer_rect.igdrcl_built_in";
     case EBuiltInOps::FillBuffer:
@@ -62,7 +65,7 @@ BuiltinResourceT createBuiltinResource(const BuiltinResourceT &r) {
     return BuiltinResourceT(r);
 }
 
-std::string createBuiltinResourceName(EBuiltInOps builtin, const std::string &extension,
+std::string createBuiltinResourceName(EBuiltInOps::Type builtin, const std::string &extension,
                                       const std::string &platformName, uint32_t deviceRevId) {
     std::string ret;
     if (platformName.size() > 0) {
@@ -141,7 +144,7 @@ BuiltinsLib::BuiltinsLib() {
     allStorages.push_back(std::unique_ptr<Storage>(new FileStorage(getDriverInstallationPath())));
 }
 
-BuiltinCode BuiltinsLib::getBuiltinCode(EBuiltInOps builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
+BuiltinCode BuiltinsLib::getBuiltinCode(EBuiltInOps::Type builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
     std::lock_guard<std::mutex> lockRaii{mutex};
 
     BuiltinResourceT bc;
@@ -192,11 +195,11 @@ std::unique_ptr<Program> BuiltinsLib::createProgramFromCode(const BuiltinCode &b
     return ret;
 }
 
-BuiltinResourceT BuiltinsLib::getBuiltinResource(EBuiltInOps builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
+BuiltinResourceT BuiltinsLib::getBuiltinResource(EBuiltInOps::Type builtin, BuiltinCode::ECodeType requestedCodeType, Device &device) {
     BuiltinResourceT bc;
     std::string resourceNameGeneric = createBuiltinResourceName(builtin, BuiltinCode::getExtension(requestedCodeType));
-    std::string resourceNameForPlatformType = createBuiltinResourceName(builtin, BuiltinCode::getExtension(requestedCodeType), device.getFamilyNameWithType());
-    std::string resourceNameForPlatformTypeAndStepping = createBuiltinResourceName(builtin, BuiltinCode::getExtension(requestedCodeType), device.getFamilyNameWithType(),
+    std::string resourceNameForPlatformType = createBuiltinResourceName(builtin, BuiltinCode::getExtension(requestedCodeType), getFamilyNameWithType(device.getHardwareInfo()));
+    std::string resourceNameForPlatformTypeAndStepping = createBuiltinResourceName(builtin, BuiltinCode::getExtension(requestedCodeType), getFamilyNameWithType(device.getHardwareInfo()),
                                                                                    device.getHardwareInfo().platform.usRevId);
 
     for (auto &rn : {resourceNameForPlatformTypeAndStepping, resourceNameForPlatformType, resourceNameGeneric}) { // first look for dedicated version, only fallback to generic one

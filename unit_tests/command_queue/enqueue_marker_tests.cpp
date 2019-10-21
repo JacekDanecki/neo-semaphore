@@ -10,23 +10,11 @@
 #include "test.h"
 #include "unit_tests/command_queue/command_enqueue_fixture.h"
 #include "unit_tests/gen_common/gen_cmd_parse.h"
+#include "unit_tests/mocks/mock_kernel.h"
 
 using namespace NEO;
 
-struct MarkerFixture : public CommandEnqueueFixture {
-  public:
-    void SetUp() override {
-        CommandEnqueueFixture::SetUp();
-        WhitelistedRegisters forceRegs = {0};
-        pDevice->setForceWhitelistedRegs(true, &forceRegs);
-    }
-
-    void TearDown() override {
-        CommandEnqueueFixture::TearDown();
-    }
-};
-
-typedef Test<MarkerFixture> MarkerTest;
+using MarkerTest = Test<CommandEnqueueFixture>;
 
 HWTEST_F(MarkerTest, CS_EQ_CQ_ShouldntAddPipeControl) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
@@ -137,12 +125,13 @@ HWTEST_F(MarkerTest, returnedEventShouldHaveEqualDepthToLastCommandPacketInComma
 
 HWTEST_F(MarkerTest, eventWithWaitDependenciesShouldSync) {
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
+    uint32_t initialTaskLevel = 7;
 
     // In N:1, CSR is always highest task level.
-    commandStreamReceiver.taskLevel = 7;
+    commandStreamReceiver.taskLevel = initialTaskLevel;
 
     // In N:1, pCmdQ.level <= CSR.level
-    pCmdQ->taskLevel = 7;
+    pCmdQ->taskLevel = initialTaskLevel;
 
     // In N:1, event.level <= pCmdQ.level
     Event event1(pCmdQ, CL_COMMAND_NDRANGE_KERNEL, 5, 15);
@@ -164,7 +153,12 @@ HWTEST_F(MarkerTest, eventWithWaitDependenciesShouldSync) {
     std::unique_ptr<Event> pEvent((Event *)(event));
 
     // Should sync CSR & CmdQ levels.
-    EXPECT_EQ(commandStreamReceiver.peekTaskLevel(), pCmdQ->taskLevel);
+    if (pCmdQ->getGpgpuCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(initialTaskLevel, pCmdQ->taskLevel);
+        EXPECT_EQ(initialTaskLevel + 1, commandStreamReceiver.peekTaskLevel());
+    } else {
+        EXPECT_EQ(commandStreamReceiver.peekTaskLevel(), pCmdQ->taskLevel);
+    }
     EXPECT_EQ(pCmdQ->taskLevel, pEvent->taskLevel);
     EXPECT_EQ(7u, pEvent->taskLevel);
 }
@@ -181,6 +175,8 @@ TEST_F(MarkerTest, givenMultipleEventWhenTheyArePassedToMarkerThenOutputEventHas
             &event3};
     cl_uint numEventsInWaitList = sizeof(eventWaitList) / sizeof(eventWaitList[0]);
     cl_event event = nullptr;
+    auto initialTaskCount = pCmdQ->taskCount;
+
     pCmdQ->enqueueMarkerWithWaitList(
         numEventsInWaitList,
         eventWaitList,
@@ -188,8 +184,13 @@ TEST_F(MarkerTest, givenMultipleEventWhenTheyArePassedToMarkerThenOutputEventHas
 
     std::unique_ptr<Event> pEvent((Event *)(event));
 
-    EXPECT_EQ(16u, pCmdQ->taskCount);
-    EXPECT_EQ(16u, pEvent->peekTaskCount());
+    if (pCmdQ->getGpgpuCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(initialTaskCount + 1, pCmdQ->taskCount);
+        EXPECT_EQ(initialTaskCount + 1, pEvent->peekTaskCount());
+    } else {
+        EXPECT_EQ(16u, pCmdQ->taskCount);
+        EXPECT_EQ(16u, pEvent->peekTaskCount());
+    }
 }
 
 TEST_F(MarkerTest, givenMultipleEventsAndCompletedUserEventWhenTheyArePassedToMarkerThenOutputEventHasHighestTaskCount) {
@@ -208,6 +209,8 @@ TEST_F(MarkerTest, givenMultipleEventsAndCompletedUserEventWhenTheyArePassedToMa
             &userEvent};
     cl_uint numEventsInWaitList = sizeof(eventWaitList) / sizeof(eventWaitList[0]);
     cl_event event = nullptr;
+    auto initialTaskCount = pCmdQ->taskCount;
+
     pCmdQ->enqueueMarkerWithWaitList(
         numEventsInWaitList,
         eventWaitList,
@@ -215,6 +218,35 @@ TEST_F(MarkerTest, givenMultipleEventsAndCompletedUserEventWhenTheyArePassedToMa
 
     std::unique_ptr<Event> pEvent((Event *)(event));
 
-    EXPECT_EQ(16u, pCmdQ->taskCount);
-    EXPECT_EQ(16u, pEvent->peekTaskCount());
+    if (pCmdQ->getGpgpuCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(initialTaskCount + 1, pCmdQ->taskCount);
+        EXPECT_EQ(initialTaskCount + 1, pEvent->peekTaskCount());
+    } else {
+        EXPECT_EQ(16u, pCmdQ->taskCount);
+        EXPECT_EQ(16u, pEvent->peekTaskCount());
+    }
+}
+
+HWTEST_F(MarkerTest, givenMarkerCallFollowingNdrangeCallInBatchedModeWhenWaitForEventsIsCalledThenFlushStampIsProperlyUpdated) {
+    MockKernelWithInternals mockKernel(*this->pDevice, this->context);
+
+    auto &ultCommandStreamReceiver = this->pDevice->getUltCommandStreamReceiver<FamilyType>();
+
+    ultCommandStreamReceiver.overrideDispatchPolicy(DispatchMode::BatchedDispatch);
+
+    cl_event eventFromNdr = nullptr;
+    size_t gws[] = {1};
+    pCmdQ->enqueueKernel(mockKernel.mockKernel, 1, nullptr, gws, nullptr, 0, nullptr, &eventFromNdr);
+    cl_event eventFromMarker = nullptr;
+    pCmdQ->enqueueMarkerWithWaitList(1u, &eventFromNdr, &eventFromMarker);
+
+    ultCommandStreamReceiver.flushStamp->setStamp(1u);
+
+    clEnqueueWaitForEvents(pCmdQ, 1u, &eventFromMarker);
+
+    auto neoEvent = castToObject<Event>(eventFromMarker);
+    EXPECT_EQ(1u, neoEvent->flushStamp->peekStamp());
+
+    clReleaseEvent(eventFromMarker);
+    clReleaseEvent(eventFromNdr);
 }

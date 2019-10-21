@@ -5,22 +5,25 @@
  *
  */
 
+#include "core/helpers/aligned_memory.h"
+#include "core/helpers/preamble.h"
+#include "core/memory_manager/graphics_allocation.h"
+#include "core/memory_manager/memory_constants.h"
 #include "runtime/aub_mem_dump/aub_mem_dump.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/gmm_helper.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/hw_info.h"
-#include "runtime/memory_manager/graphics_allocation.h"
-#include "runtime/memory_manager/memory_constants.h"
 #include "runtime/os_interface/os_interface.h"
 
 namespace NEO {
 
 template <typename Family>
-bool HwHelperHw<Family>::obtainRenderBufferCompressionPreference(const size_t size) const {
+const aub_stream::EngineType HwHelperHw<Family>::lowPriorityEngineType = aub_stream::EngineType::ENGINE_RCS;
+
+template <typename Family>
+bool HwHelperHw<Family>::obtainRenderBufferCompressionPreference(const HardwareInfo &hwInfo, const size_t size) const {
     return size > KB;
 }
 
@@ -35,6 +38,11 @@ void HwHelperHw<Family>::setupHardwareCapabilities(HardwareCapabilities *caps, c
 }
 
 template <typename Family>
+bool HwHelperHw<Family>::isL3Configurable(const HardwareInfo &hwInfo) {
+    return PreambleHelper<Family>::isL3Configurable(hwInfo);
+}
+
+template <typename Family>
 SipKernelType HwHelperHw<Family>::getSipKernelType(bool debuggingActive) {
     if (!debuggingActive) {
         return SipKernelType::Csr;
@@ -43,13 +51,13 @@ SipKernelType HwHelperHw<Family>::getSipKernelType(bool debuggingActive) {
 }
 
 template <typename Family>
-bool HwHelperHw<Family>::setupPreemptionRegisters(HardwareInfo *pHwInfo, bool enable) {
-    return enable;
+size_t HwHelperHw<Family>::getMaxBarrierRegisterPerSlice() const {
+    return 32;
 }
 
 template <typename Family>
-size_t HwHelperHw<Family>::getMaxBarrierRegisterPerSlice() const {
-    return 32;
+uint32_t HwHelperHw<Family>::getPitchAlignmentForImage(const HardwareInfo *hwInfo) {
+    return 4u;
 }
 
 template <typename Family>
@@ -133,11 +141,6 @@ void HwHelperHw<Family>::setRenderSurfaceStateForBuffer(ExecutionEnvironment &ex
 }
 
 template <typename Family>
-size_t HwHelperHw<Family>::getScratchSpaceOffsetFor64bit() {
-    return 4096;
-}
-
-template <typename Family>
 bool HwHelperHw<Family>::getEnableLocalMemory(const HardwareInfo &hwInfo) const {
     if (DebugManager.flags.EnableLocalMemory.get() != -1) {
         return DebugManager.flags.EnableLocalMemory.get();
@@ -149,14 +152,15 @@ bool HwHelperHw<Family>::getEnableLocalMemory(const HardwareInfo &hwInfo) const 
 }
 
 template <typename Family>
-typename Family::PIPE_CONTROL *PipeControlHelper<Family>::obtainPipeControlAndProgramPostSyncOperation(LinearStream *commandStream,
+typename Family::PIPE_CONTROL *PipeControlHelper<Family>::obtainPipeControlAndProgramPostSyncOperation(LinearStream &commandStream,
                                                                                                        POST_SYNC_OPERATION operation,
                                                                                                        uint64_t gpuAddress,
                                                                                                        uint64_t immediateData,
-                                                                                                       bool dcFlush) {
-    auto pipeControl = reinterpret_cast<PIPE_CONTROL *>(commandStream->getSpace(sizeof(PIPE_CONTROL)));
-    *pipeControl = Family::cmdInitPipeControl;
-    pipeControl->setCommandStreamerStallEnable(true);
+                                                                                                       bool dcFlush,
+                                                                                                       const HardwareInfo &hwInfo) {
+    addPipeControlWA(commandStream, hwInfo);
+
+    auto pipeControl = obtainPipeControl(commandStream, dcFlush);
     pipeControl->setPostSyncOperation(operation);
     pipeControl->setAddress(static_cast<uint32_t>(gpuAddress & 0x0000FFFFFFFFULL));
     pipeControl->setAddressHigh(static_cast<uint32_t>(gpuAddress >> 32));
@@ -168,9 +172,7 @@ typename Family::PIPE_CONTROL *PipeControlHelper<Family>::obtainPipeControlAndPr
 }
 
 template <typename GfxFamily>
-typename GfxFamily::PIPE_CONTROL *PipeControlHelper<GfxFamily>::addPipeControlBase(LinearStream &commandStream, bool dcFlush) {
-    PipeControlHelper<GfxFamily>::addPipeControlWA(commandStream);
-
+typename GfxFamily::PIPE_CONTROL *PipeControlHelper<GfxFamily>::obtainPipeControl(LinearStream &commandStream, bool dcFlush) {
     auto pCmd = reinterpret_cast<PIPE_CONTROL *>(commandStream.getSpace(sizeof(PIPE_CONTROL)));
     *pCmd = GfxFamily::cmdInitPipeControl;
     pCmd->setCommandStreamerStallEnable(true);
@@ -190,18 +192,45 @@ typename GfxFamily::PIPE_CONTROL *PipeControlHelper<GfxFamily>::addPipeControlBa
 }
 
 template <typename GfxFamily>
-void PipeControlHelper<GfxFamily>::addPipeControlWA(LinearStream &commandStream) {
+void PipeControlHelper<GfxFamily>::addPipeControlWA(LinearStream &commandStream, const HardwareInfo &hwInfo) {
 }
 
 template <typename GfxFamily>
-void PipeControlHelper<GfxFamily>::addPipeControl(LinearStream &commandStream, bool dcFlush) {
-    PipeControlHelper<GfxFamily>::addPipeControlBase(commandStream, dcFlush);
+typename GfxFamily::PIPE_CONTROL *PipeControlHelper<GfxFamily>::addPipeControl(LinearStream &commandStream, bool dcFlush) {
+    return PipeControlHelper<GfxFamily>::obtainPipeControl(commandStream, dcFlush);
 }
 
 template <typename GfxFamily>
-int PipeControlHelper<GfxFamily>::getRequiredPipeControlSize() {
-    const auto pipeControlCount = HardwareCommandsHelper<GfxFamily>::isPipeControlWArequired() ? 2u : 1u;
-    return pipeControlCount * sizeof(typename GfxFamily::PIPE_CONTROL);
+size_t PipeControlHelper<GfxFamily>::getSizeForSinglePipeControl() {
+    return sizeof(typename GfxFamily::PIPE_CONTROL);
 }
 
+template <typename GfxFamily>
+size_t PipeControlHelper<GfxFamily>::getSizeForPipeControlWithPostSyncOperation(const HardwareInfo &hwInfo) {
+    const auto pipeControlCount = HardwareCommandsHelper<GfxFamily>::isPipeControlWArequired(hwInfo) ? 2u : 1u;
+    return pipeControlCount * getSizeForSinglePipeControl();
+}
+
+template <typename GfxFamily>
+uint32_t HwHelperHw<GfxFamily>::getMetricsLibraryGenId() const {
+    return static_cast<uint32_t>(MetricsLibraryApi::ClientGen::Gen9);
+}
+
+template <typename GfxFamily>
+inline bool HwHelperHw<GfxFamily>::requiresAuxResolves() const {
+    return true;
+}
+
+template <typename GfxFamily>
+bool HwHelperHw<GfxFamily>::tilingAllowed(bool isSharedContext, const cl_image_desc &imgDesc, bool forceLinearStorage) {
+    if (DebugManager.flags.ForceLinearImages.get() || forceLinearStorage || isSharedContext) {
+        return false;
+    }
+
+    auto imageType = imgDesc.image_type;
+    auto buffer = castToObject<Buffer>(imgDesc.buffer);
+
+    return !(imageType == CL_MEM_OBJECT_IMAGE1D || imageType == CL_MEM_OBJECT_IMAGE1D_ARRAY ||
+             imageType == CL_MEM_OBJECT_IMAGE1D_BUFFER || buffer);
+}
 } // namespace NEO

@@ -5,10 +5,11 @@
  *
  */
 
-#include "runtime/helpers/string.h"
+#include "core/helpers/string.h"
+#include "core/memory_manager/graphics_allocation.h"
+#include "core/memory_manager/unified_memory_manager.h"
+#include "core/unit_tests/compiler_interface/linker_mock.h"
 #include "runtime/memory_manager/allocations_list.h"
-#include "runtime/memory_manager/graphics_allocation.h"
-#include "runtime/os_interface/32bit_memory.h"
 #include "runtime/platform/platform.h"
 #include "runtime/program/program.h"
 #include "test.h"
@@ -23,17 +24,16 @@ using namespace iOpenCL;
 static const char constValue[] = "11223344";
 static const char globalValue[] = "55667788";
 
-class ProgramDataTest : public testing::Test,
-                        public ContextFixture,
-                        public PlatformFixture,
-                        public ProgramFixture {
+class ProgramDataTestBase : public testing::Test,
+                            public ContextFixture,
+                            public PlatformFixture,
+                            public ProgramFixture {
 
     using ContextFixture::SetUp;
     using PlatformFixture::SetUp;
 
   public:
-    ProgramDataTest() {
-
+    ProgramDataTestBase() {
         memset(&programBinaryHeader, 0x00, sizeof(SProgramBinaryHeader));
         pCurPtr = nullptr;
         pProgramPatchList = nullptr;
@@ -42,7 +42,6 @@ class ProgramDataTest : public testing::Test,
 
     void buildAndDecodeProgramPatchList();
 
-  protected:
     void SetUp() override {
         PlatformFixture::SetUp();
         cl_device_id device = pPlatform->getDevice(0);
@@ -56,7 +55,7 @@ class ProgramDataTest : public testing::Test,
     }
 
     void TearDown() override {
-        deleteDataReadFromFile(knownSource);
+        knownSource.reset();
         ProgramFixture::TearDown();
         ContextFixture::TearDown();
         PlatformFixture::TearDown();
@@ -119,9 +118,11 @@ class ProgramDataTest : public testing::Test,
     SProgramBinaryHeader programBinaryHeader;
     void *pProgramPatchList;
     uint32_t programPatchListSize;
+    cl_int patchlistDecodeErrorCode = 0;
+    bool allowDecodeFailure = false;
 };
 
-void ProgramDataTest::buildAndDecodeProgramPatchList() {
+void ProgramDataTestBase::buildAndDecodeProgramPatchList() {
     size_t headerSize = sizeof(SProgramBinaryHeader);
 
     cl_int error = CL_SUCCESS;
@@ -148,12 +149,18 @@ void ProgramDataTest::buildAndDecodeProgramPatchList() {
     pCurPtr += programPatchListSize;
 
     //as we use mock compiler in unit test, replace the genBinary here.
-    pProgram->storeGenBinary(pProgramData, headerSize + programBinaryHeader.PatchListSize);
+    pProgram->genBinary = makeCopy(pProgramData, headerSize + programBinaryHeader.PatchListSize);
+    pProgram->genBinarySize = headerSize + programBinaryHeader.PatchListSize;
 
     error = pProgram->processGenBinary();
-    EXPECT_EQ(CL_SUCCESS, error);
+    patchlistDecodeErrorCode = error;
+    if (allowDecodeFailure == false) {
+        EXPECT_EQ(CL_SUCCESS, error);
+    }
     delete[] pProgramData;
 }
+
+using ProgramDataTest = ProgramDataTestBase;
 
 TEST_F(ProgramDataTest, EmptyProgramBinaryHeader) {
     buildAndDecodeProgramPatchList();
@@ -166,7 +173,114 @@ TEST_F(ProgramDataTest, AllocateConstantMemorySurfaceProgramBinaryInfo) {
     buildAndDecodeProgramPatchList();
 
     EXPECT_NE(nullptr, pProgram->getConstantSurface());
-    EXPECT_EQ(0, memcmp(constValue, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constSize));
+    EXPECT_EQ(0, memcmp(constValue, pProgram->getConstantSurface()->getUnderlyingBuffer(), constSize));
+}
+
+TEST_F(ProgramDataTest, whenGlobalConstantsAreExportedThenAllocateSurfacesAsSvm) {
+    if (this->pContext->getSVMAllocsManager() == nullptr) {
+        return;
+    }
+
+    setupConstantAllocation();
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    mockLinkerInput->traits.exportsGlobalConstants = true;
+    static_cast<MockProgram *>(pProgram)->linkerInput = std::move(mockLinkerInput);
+
+    buildAndDecodeProgramPatchList();
+
+    ASSERT_NE(nullptr, pProgram->getConstantSurface());
+    EXPECT_NE(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getConstantSurface()->getGpuAddress())));
+}
+
+TEST_F(ProgramDataTest, whenGlobalConstantsAreNotExportedThenAllocateSurfacesAsNonSvm) {
+    if (this->pContext->getSVMAllocsManager() == nullptr) {
+        return;
+    }
+
+    setupConstantAllocation();
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    mockLinkerInput->traits.exportsGlobalConstants = false;
+    static_cast<MockProgram *>(pProgram)->linkerInput = std::move(mockLinkerInput);
+    static_cast<MockProgram *>(pProgram)->context = nullptr;
+
+    buildAndDecodeProgramPatchList();
+
+    static_cast<MockProgram *>(pProgram)->context = pContext;
+
+    ASSERT_NE(nullptr, pProgram->getConstantSurface());
+    EXPECT_EQ(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getConstantSurface()->getGpuAddress())));
+}
+
+TEST_F(ProgramDataTest, whenGlobalConstantsAreExportedButContextUnavailableThenAllocateSurfacesAsNonSvm) {
+    if (this->pContext->getSVMAllocsManager() == nullptr) {
+        return;
+    }
+
+    setupConstantAllocation();
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    mockLinkerInput->traits.exportsGlobalConstants = true;
+    static_cast<MockProgram *>(pProgram)->linkerInput = std::move(mockLinkerInput);
+    static_cast<MockProgram *>(pProgram)->context = nullptr;
+
+    buildAndDecodeProgramPatchList();
+
+    static_cast<MockProgram *>(pProgram)->context = pContext;
+
+    ASSERT_NE(nullptr, pProgram->getConstantSurface());
+    EXPECT_EQ(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getConstantSurface()->getGpuAddress())));
+}
+
+TEST_F(ProgramDataTest, whenGlobalVariablesAreExportedThenAllocateSurfacesAsSvm) {
+    if (this->pContext->getSVMAllocsManager() == nullptr) {
+        return;
+    }
+    setupGlobalAllocation();
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    mockLinkerInput->traits.exportsGlobalVariables = true;
+    static_cast<MockProgram *>(pProgram)->linkerInput = std::move(mockLinkerInput);
+
+    buildAndDecodeProgramPatchList();
+
+    ASSERT_NE(nullptr, pProgram->getGlobalSurface());
+    EXPECT_NE(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getGlobalSurface()->getGpuAddress())));
+}
+
+TEST_F(ProgramDataTest, whenGlobalVariablesAreExportedButContextUnavailableThenAllocateSurfacesAsNonSvm) {
+    if (this->pContext->getSVMAllocsManager() == nullptr) {
+        return;
+    }
+
+    setupGlobalAllocation();
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    mockLinkerInput->traits.exportsGlobalVariables = true;
+    static_cast<MockProgram *>(pProgram)->linkerInput = std::move(mockLinkerInput);
+    static_cast<MockProgram *>(pProgram)->context = nullptr;
+
+    buildAndDecodeProgramPatchList();
+
+    static_cast<MockProgram *>(pProgram)->context = pContext;
+
+    ASSERT_NE(nullptr, pProgram->getGlobalSurface());
+    EXPECT_EQ(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getGlobalSurface()->getGpuAddress())));
+}
+
+TEST_F(ProgramDataTest, whenGlobalVariablesAreNotExportedThenAllocateSurfacesAsNonSvm) {
+    if (this->pContext->getSVMAllocsManager() == nullptr) {
+        return;
+    }
+
+    setupGlobalAllocation();
+    std::unique_ptr<WhiteBox<NEO::LinkerInput>> mockLinkerInput = std::make_unique<WhiteBox<NEO::LinkerInput>>();
+    mockLinkerInput->traits.exportsGlobalVariables = false;
+    static_cast<MockProgram *>(pProgram)->linkerInput = std::move(mockLinkerInput);
+    static_cast<MockProgram *>(pProgram)->context = nullptr;
+
+    buildAndDecodeProgramPatchList();
+
+    static_cast<MockProgram *>(pProgram)->context = pContext;
+
+    ASSERT_NE(nullptr, pProgram->getGlobalSurface());
+    EXPECT_EQ(nullptr, this->pContext->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(pProgram->getGlobalSurface()->getGpuAddress())));
 }
 
 TEST_F(ProgramDataTest, givenConstantAllocationThatIsInUseByGpuWhenProgramIsBeingDestroyedThenItIsAddedToTemporaryAllocationList) {
@@ -211,7 +325,7 @@ TEST_F(ProgramDataTest, GivenDeviceForcing32BitMessagesWhenConstAllocationIsPres
     buildAndDecodeProgramPatchList();
 
     EXPECT_NE(nullptr, pProgram->getConstantSurface());
-    EXPECT_EQ(0, memcmp(constValue, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constSize));
+    EXPECT_EQ(0, memcmp(constValue, pProgram->getConstantSurface()->getUnderlyingBuffer(), constSize));
 
     if (is64bit) {
         EXPECT_TRUE(pProgram->getConstantSurface()->is32BitAllocation());
@@ -222,7 +336,7 @@ TEST_F(ProgramDataTest, AllocateGlobalMemorySurfaceProgramBinaryInfo) {
     auto globalSize = setupGlobalAllocation();
     buildAndDecodeProgramPatchList();
     EXPECT_NE(nullptr, pProgram->getGlobalSurface());
-    EXPECT_EQ(0, memcmp(globalValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalSize));
+    EXPECT_EQ(0, memcmp(globalValue, pProgram->getGlobalSurface()->getUnderlyingBuffer(), globalSize));
 }
 
 TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
@@ -251,8 +365,11 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
     pProgramPatchList = (void *)pGlobalPointer;
     programPatchListSize = globalPointer.Size;
 
+    this->allowDecodeFailure = true;
     buildAndDecodeProgramPatchList();
     EXPECT_EQ(nullptr, pProgram->getGlobalSurface());
+    EXPECT_EQ(CL_INVALID_BINARY, this->patchlistDecodeErrorCode);
+    this->allowDecodeFailure = false;
 
     delete[] pGlobalPointer;
 
@@ -271,12 +388,17 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
              sizeof(SPatchAllocateGlobalMemorySurfaceProgramBinaryInfo));
     memcpy_s((cl_char *)pAllocateGlobalMemorySurface + sizeof(allocateGlobalMemorySurface), globalPointerSize, &pGlobalPointerValue, globalPointerSize);
 
-    pProgramPatchList = (void *)pAllocateGlobalMemorySurface;
+    pProgramPatchList = pAllocateGlobalMemorySurface;
     programPatchListSize = allocateGlobalMemorySurface.Size;
     buildAndDecodeProgramPatchList();
 
     EXPECT_NE(nullptr, pProgram->getGlobalSurface());
-    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
+
+    auto globalSurface = pProgram->getGlobalSurface();
+
+    globalSurface->setCpuPtrAndGpuAddress(globalSurface->getUnderlyingBuffer(), globalSurface->getGpuAddress() + 1);
+    EXPECT_NE(reinterpret_cast<uint64_t>(globalSurface->getUnderlyingBuffer()), globalSurface->getGpuAddress());
+    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, globalSurface->getUnderlyingBuffer(), globalPointerSize));
 
     delete[] pAllocateGlobalMemorySurface;
 
@@ -299,7 +421,7 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
 
     buildAndDecodeProgramPatchList();
 
-    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
+    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, globalSurface->getUnderlyingBuffer(), globalPointerSize));
 
     delete[] pGlobalPointer;
 
@@ -322,7 +444,7 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
 
     buildAndDecodeProgramPatchList();
 
-    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
+    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, globalSurface->getUnderlyingBuffer(), globalPointerSize));
 
     delete[] pGlobalPointer;
 
@@ -345,7 +467,7 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
 
     buildAndDecodeProgramPatchList();
 
-    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
+    EXPECT_EQ(0, memcmp(&pGlobalPointerValue, globalSurface->getUnderlyingBuffer(), globalPointerSize));
 
     delete[] pGlobalPointer;
 
@@ -368,12 +490,10 @@ TEST_F(ProgramDataTest, GlobalPointerProgramBinaryInfo) {
     programPatchListSize = globalPointer.Size;
     buildAndDecodeProgramPatchList();
 
-    auto globalSurface = pProgram->getGlobalSurface();
-
     if (!globalSurface->is32BitAllocation()) {
-        EXPECT_NE(0, memcmp(&pGlobalPointerValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
-        ptr = pGlobalPointerValue + reinterpret_cast<uintptr_t>(pProgram->getGlobalSurface()->getUnderlyingBuffer());
-        EXPECT_EQ(0, memcmp(&ptr, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalPointerSize));
+        EXPECT_NE(0, memcmp(&pGlobalPointerValue, globalSurface->getUnderlyingBuffer(), globalPointerSize));
+        ptr = pGlobalPointerValue + (globalSurface->getGpuAddressToPatch());
+        EXPECT_EQ(0, memcmp(&ptr, globalSurface->getUnderlyingBuffer(), globalPointerSize));
     }
     delete[] pGlobalPointer;
 }
@@ -406,7 +526,7 @@ TEST_F(ProgramDataTest, Given32BitDeviceWhenGlobalMemorySurfaceIsPresentThenItHa
     buildAndDecodeProgramPatchList();
 
     EXPECT_NE(nullptr, pProgram->getGlobalSurface());
-    EXPECT_EQ(0, memcmp(globalValue, reinterpret_cast<char *>(pProgram->getGlobalSurface()->getUnderlyingBuffer()), globalSize));
+    EXPECT_EQ(0, memcmp(globalValue, pProgram->getGlobalSurface()->getUnderlyingBuffer(), globalSize));
     if (is64bit) {
         EXPECT_TRUE(pProgram->getGlobalSurface()->is32BitAllocation());
     }
@@ -437,8 +557,11 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     pProgramPatchList = (void *)pConstantPointer;
     programPatchListSize = constantPointer.Size;
 
+    this->allowDecodeFailure = true;
     buildAndDecodeProgramPatchList();
     EXPECT_EQ(nullptr, pProgram->getConstantSurface());
+    EXPECT_EQ(CL_INVALID_BINARY, this->patchlistDecodeErrorCode);
+    this->allowDecodeFailure = false;
 
     delete[] pConstantPointer;
 
@@ -472,18 +595,23 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     buildAndDecodeProgramPatchList();
 
     EXPECT_NE(nullptr, pProgram->getConstantSurface());
-    EXPECT_EQ(0, memcmp(pConstantData, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constantDataLen));
+
+    auto constantSurface = pProgram->getConstantSurface();
+    constantSurface->setCpuPtrAndGpuAddress(constantSurface->getUnderlyingBuffer(), constantSurface->getGpuAddress() + 1);
+    EXPECT_NE(reinterpret_cast<uint64_t>(constantSurface->getUnderlyingBuffer()), constantSurface->getGpuAddress());
+
+    EXPECT_EQ(0, memcmp(pConstantData, constantSurface->getUnderlyingBuffer(), constantDataLen));
     // there was no PATCH_TOKEN_CONSTANT_POINTER_PROGRAM_BINARY_INFO, so constant buffer offset should be still 0
-    EXPECT_EQ(0U, *(uint64_t *)(reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
+    EXPECT_EQ(0U, *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
     // once finally constant buffer offset gets patched - the patch value depends on the bitness of the compute kernel
     auto patchOffsetValueStorage = std::unique_ptr<uint64_t>(new uint64_t); // 4bytes for 32-bit compute kernel, full 8byte for 64-bit compute kernel
     uint64_t *patchOffsetValue = patchOffsetValueStorage.get();
-    if (pProgram->getConstantSurface()->is32BitAllocation() || (sizeof(void *) == 4)) {
-        reinterpret_cast<uint32_t *>(patchOffsetValue)[0] = static_cast<uint32_t>(pProgram->getConstantSurface()->getGpuAddressToPatch());
+    if (constantSurface->is32BitAllocation() || (sizeof(void *) == 4)) {
+        reinterpret_cast<uint32_t *>(patchOffsetValue)[0] = static_cast<uint32_t>(constantSurface->getGpuAddressToPatch());
         reinterpret_cast<uint32_t *>(patchOffsetValue)[1] = 0; // just pad with 0
     } else {
         // full 8 bytes
-        *reinterpret_cast<uint64_t *>(patchOffsetValue) = reinterpret_cast<uintptr_t>(pProgram->getConstantSurface()->getUnderlyingBuffer());
+        *reinterpret_cast<uint64_t *>(patchOffsetValue) = constantSurface->getGpuAddressToPatch();
     }
 
     // constant pointer to constant surface - simulate invalid GlobalBufferIndex
@@ -503,11 +631,11 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     programPatchListSize = constantPointer.Size;
 
     buildAndDecodeProgramPatchList();
-    EXPECT_EQ(0, memcmp(pConstantData, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constantDataLen));
+    EXPECT_EQ(0, memcmp(pConstantData, constantSurface->getUnderlyingBuffer(), constantDataLen));
     // check that constant pointer offset was not patched
-    EXPECT_EQ(0U, *(uint64_t *)(reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
+    EXPECT_EQ(0U, *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
     // reset the constant pointer offset
-    *(uint64_t *)((char *)pProgram->getConstantSurface()->getUnderlyingBuffer() + constantBufferOffsetPatchOffset) = 0U;
+    *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset) = 0U;
 
     delete[] pConstantPointer;
 
@@ -528,11 +656,11 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     programPatchListSize = constantPointer.Size;
 
     buildAndDecodeProgramPatchList();
-    EXPECT_EQ(0, memcmp(pConstantData, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constantDataLen));
+    EXPECT_EQ(0, memcmp(pConstantData, constantSurface->getUnderlyingBuffer(), constantDataLen));
     // check that constant pointer offset was not patched
-    EXPECT_EQ(0U, *(uint64_t *)(reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
+    EXPECT_EQ(0U, *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
     // reset the constant pointer offset
-    *(uint64_t *)((char *)pProgram->getConstantSurface()->getUnderlyingBuffer() + constantBufferOffsetPatchOffset) = 0U;
+    *(uint64_t *)((char *)constantSurface->getUnderlyingBuffer() + constantBufferOffsetPatchOffset) = 0U;
 
     delete[] pConstantPointer;
 
@@ -553,11 +681,11 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     programPatchListSize = constantPointer.Size;
 
     buildAndDecodeProgramPatchList();
-    EXPECT_EQ(0, memcmp(pConstantData, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constantDataLen));
+    EXPECT_EQ(0, memcmp(pConstantData, constantSurface->getUnderlyingBuffer(), constantDataLen));
     // check that constant pointer offset was not patched
-    EXPECT_EQ(0U, *(uint64_t *)(reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
+    EXPECT_EQ(0U, *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
     // reset the constant pointer offset
-    *(uint64_t *)((char *)pProgram->getConstantSurface()->getUnderlyingBuffer() + constantBufferOffsetPatchOffset) = 0U;
+    *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset) = 0U;
 
     delete[] pConstantPointer;
 
@@ -579,19 +707,19 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
 
     buildAndDecodeProgramPatchList();
 
-    EXPECT_EQ(0, memcmp(pConstantData, reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()), constantDataLen));
+    EXPECT_EQ(0, memcmp(pConstantData, constantSurface->getUnderlyingBuffer(), constantDataLen));
     // check that constant pointer offset was patched
-    EXPECT_EQ(*reinterpret_cast<uint64_t *>(patchOffsetValue), *(uint64_t *)(reinterpret_cast<char *>(pProgram->getConstantSurface()->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
+    EXPECT_EQ(*reinterpret_cast<uint64_t *>(patchOffsetValue), *reinterpret_cast<uint64_t *>(static_cast<char *>(constantSurface->getUnderlyingBuffer()) + constantBufferOffsetPatchOffset));
 
     delete[] pConstantPointer;
 }
 
 TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeConstantBufferPatchTokensAreReadThenConstantPointerOffsetIsPatchedWith32bitPointer) {
     cl_device_id device = pPlatform->getDevice(0);
-    CreateProgramWithSource<MockProgram>(pContext, &device, "CopyBuffer_simd8.cl");
+    CreateProgramWithSource(pContext, &device, "CopyBuffer_simd8.cl");
     ASSERT_NE(nullptr, pProgram);
 
-    MockProgram *prog = static_cast<MockProgram *>(pProgram);
+    MockProgram *prog = pProgram;
 
     // simulate case when constant surface was not allocated
     EXPECT_EQ(nullptr, prog->getConstantSurface());
@@ -630,10 +758,10 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeConstantB
 
 TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeGlobalPointerPatchTokensAreReadThenGlobalPointerOffsetIsPatchedWith32bitPointer) {
     cl_device_id device = pPlatform->getDevice(0);
-    CreateProgramWithSource<MockProgram>(pContext, &device, "CopyBuffer_simd8.cl");
+    CreateProgramWithSource(pContext, &device, "CopyBuffer_simd8.cl");
     ASSERT_NE(nullptr, pProgram);
 
-    MockProgram *prog = static_cast<MockProgram *>(pProgram);
+    MockProgram *prog = pProgram;
 
     // simulate case when constant surface was not allocated
     EXPECT_EQ(nullptr, prog->getConstantSurface());
@@ -668,4 +796,164 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeGlobalPoi
     EXPECT_EQ(sentinel, globalSurfaceStorage[1]);
     globalSurface.mockGfxAllocation.set32BitAllocation(false);
     prog->setGlobalSurface(nullptr);
+}
+
+TEST_F(ProgramDataTest, givenSymbolTablePatchTokenThenLinkerInputIsCreated) {
+    SPatchFunctionTableInfo token;
+    token.Token = PATCH_TOKEN_PROGRAM_SYMBOL_TABLE;
+    token.Size = static_cast<uint32_t>(sizeof(SPatchFunctionTableInfo));
+    token.NumEntries = 0;
+
+    pProgramPatchList = &token;
+    programPatchListSize = token.Size;
+
+    buildAndDecodeProgramPatchList();
+
+    EXPECT_NE(nullptr, pProgram->getLinkerInput());
+}
+
+TEST(ProgramLinkBinaryTest, whenLinkerInputEmptyThenLinkSuccessful) {
+    auto linkerInput = std::make_unique<WhiteBox<LinkerInput>>();
+    NEO::ExecutionEnvironment env;
+    MockProgram program{env};
+    program.linkerInput = std::move(linkerInput);
+    auto ret = program.linkBinary();
+    EXPECT_EQ(CL_SUCCESS, ret);
+}
+
+TEST(ProgramLinkBinaryTest, whenLinkerUnresolvedExternalThenLinkFailedAndBuildLogAvailable) {
+    auto linkerInput = std::make_unique<WhiteBox<LinkerInput>>();
+    NEO::LinkerInput::RelocationInfo relocation = {};
+    relocation.symbolName = "A";
+    relocation.offset = 0;
+    linkerInput->relocations.push_back(NEO::LinkerInput::Relocations{relocation});
+    linkerInput->traits.requiresPatchingOfInstructionSegments = true;
+    NEO::ExecutionEnvironment env;
+    MockProgram program{env};
+    KernelInfo kernelInfo = {};
+    kernelInfo.name = "onlyKernel";
+    std::vector<char> kernelHeap;
+    kernelHeap.resize(32, 7);
+    kernelInfo.heapInfo.pKernelHeap = kernelHeap.data();
+    iOpenCL::SKernelBinaryHeaderCommon kernelHeader = {};
+    kernelHeader.KernelHeapSize = static_cast<uint32_t>(kernelHeap.size());
+    kernelInfo.heapInfo.pKernelHeader = &kernelHeader;
+    program.getKernelInfoArray().push_back(&kernelInfo);
+    program.linkerInput = std::move(linkerInput);
+
+    EXPECT_EQ(nullptr, program.getBuildLog(nullptr));
+    auto ret = program.linkBinary();
+    EXPECT_NE(CL_SUCCESS, ret);
+    program.getKernelInfoArray().clear();
+    auto buildLog = program.getBuildLog(nullptr);
+    ASSERT_NE(nullptr, buildLog);
+    Linker::UnresolvedExternals expectedUnresolvedExternals;
+    expectedUnresolvedExternals.push_back(Linker::UnresolvedExternal{relocation, 0, false});
+    auto expectedError = constructLinkerErrorMessage(expectedUnresolvedExternals, std::vector<std::string>{"kernel : " + kernelInfo.name});
+    EXPECT_THAT(buildLog, ::testing::HasSubstr(expectedError));
+}
+
+TEST(ProgramLinkBinaryTest, whenPrepareLinkerInputStorageGetsCalledTwiceThenLinkerInputStorageIsReused) {
+    ExecutionEnvironment execEnv;
+    MockProgram program{execEnv};
+    EXPECT_EQ(nullptr, program.linkerInput);
+    program.prepareLinkerInputStorage();
+    EXPECT_NE(nullptr, program.linkerInput);
+    auto prevLinkerInput = program.getLinkerInput();
+    program.prepareLinkerInputStorage();
+    EXPECT_EQ(prevLinkerInput, program.linkerInput.get());
+}
+
+TEST_F(ProgramDataTest, whenLinkerInputValidThenIsaIsProperlyPatched) {
+    auto linkerInput = std::make_unique<WhiteBox<LinkerInput>>();
+    linkerInput->symbols["A"] = NEO::SymbolInfo{4U, 4U, NEO::SymbolInfo::GlobalVariable};
+    linkerInput->symbols["B"] = NEO::SymbolInfo{8U, 4U, NEO::SymbolInfo::GlobalConstant};
+    linkerInput->symbols["C"] = NEO::SymbolInfo{16U, 4U, NEO::SymbolInfo::Function};
+
+    linkerInput->relocations.push_back({NEO::LinkerInput::RelocationInfo{"A", 8U}, NEO::LinkerInput::RelocationInfo{"B", 16U}, NEO::LinkerInput::RelocationInfo{"C", 24U}});
+    linkerInput->traits.requiresPatchingOfInstructionSegments = true;
+    linkerInput->exportedFunctionsSegmentId = 0;
+    NEO::ExecutionEnvironment env;
+    MockProgram program{env};
+    KernelInfo kernelInfo = {};
+    kernelInfo.name = "onlyKernel";
+    std::vector<char> kernelHeap;
+    kernelHeap.resize(32, 7);
+    kernelInfo.heapInfo.pKernelHeap = kernelHeap.data();
+    iOpenCL::SKernelBinaryHeaderCommon kernelHeader = {};
+    kernelHeader.KernelHeapSize = static_cast<uint32_t>(kernelHeap.size());
+    kernelInfo.heapInfo.pKernelHeader = &kernelHeader;
+    MockGraphicsAllocation kernelIsa(kernelHeap.data(), kernelHeap.size());
+    kernelInfo.kernelAllocation = &kernelIsa;
+    program.getKernelInfoArray().push_back(&kernelInfo);
+    program.linkerInput = std::move(linkerInput);
+
+    program.exportedFunctionsSurface = kernelInfo.kernelAllocation;
+    std::vector<char> globalVariablesBuffer;
+    globalVariablesBuffer.resize(32, 7);
+    std::vector<char> globalConstantsBuffer;
+    globalConstantsBuffer.resize(32, 7);
+    program.globalSurface = new MockGraphicsAllocation(globalVariablesBuffer.data(), globalVariablesBuffer.size());
+    program.constantSurface = new MockGraphicsAllocation(globalConstantsBuffer.data(), globalConstantsBuffer.size());
+
+    program.pDevice = this->pContext->getDevice(0);
+
+    auto ret = program.linkBinary();
+    EXPECT_EQ(CL_SUCCESS, ret);
+
+    linkerInput.reset(static_cast<WhiteBox<LinkerInput> *>(program.linkerInput.release()));
+
+    for (size_t i = 0; i < linkerInput->relocations.size(); ++i) {
+        auto expectedPatch = program.globalSurface->getGpuAddress() + linkerInput->symbols[linkerInput->relocations[0][0].symbolName].offset;
+        auto relocationAddress = kernelHeap.data() + linkerInput->relocations[0][0].offset;
+
+        EXPECT_EQ(static_cast<uintptr_t>(expectedPatch), *reinterpret_cast<uintptr_t *>(relocationAddress)) << i;
+    }
+
+    program.getKernelInfoArray().clear();
+    delete program.globalSurface;
+    program.globalSurface = nullptr;
+    delete program.constantSurface;
+    program.constantSurface = nullptr;
+}
+
+TEST_F(ProgramDataTest, whenRelocationsAreNotNeededThenIsaIsPreserved) {
+    auto linkerInput = std::make_unique<WhiteBox<LinkerInput>>();
+    linkerInput->symbols["A"] = NEO::SymbolInfo{4U, 4U, NEO::SymbolInfo::GlobalVariable};
+    linkerInput->symbols["B"] = NEO::SymbolInfo{8U, 4U, NEO::SymbolInfo::GlobalConstant};
+
+    NEO::ExecutionEnvironment env;
+    MockProgram program{env};
+    KernelInfo kernelInfo = {};
+    kernelInfo.name = "onlyKernel";
+    std::vector<char> kernelHeapData;
+    kernelHeapData.resize(32, 7);
+    std::vector<char> kernelHeap(kernelHeapData.begin(), kernelHeapData.end());
+    kernelInfo.heapInfo.pKernelHeap = kernelHeap.data();
+    iOpenCL::SKernelBinaryHeaderCommon kernelHeader = {};
+    kernelHeader.KernelHeapSize = static_cast<uint32_t>(kernelHeap.size());
+    kernelInfo.heapInfo.pKernelHeader = &kernelHeader;
+    MockGraphicsAllocation kernelIsa(kernelHeap.data(), kernelHeap.size());
+    kernelInfo.kernelAllocation = &kernelIsa;
+    program.getKernelInfoArray().push_back(&kernelInfo);
+    program.linkerInput = std::move(linkerInput);
+
+    std::vector<char> globalVariablesBuffer;
+    globalVariablesBuffer.resize(32, 7);
+    std::vector<char> globalConstantsBuffer;
+    globalConstantsBuffer.resize(32, 7);
+    program.globalSurface = new MockGraphicsAllocation(globalVariablesBuffer.data(), globalVariablesBuffer.size());
+    program.constantSurface = new MockGraphicsAllocation(globalConstantsBuffer.data(), globalConstantsBuffer.size());
+
+    program.pDevice = this->pContext->getDevice(0);
+
+    auto ret = program.linkBinary();
+    EXPECT_EQ(CL_SUCCESS, ret);
+    EXPECT_EQ(kernelHeapData, kernelHeap);
+
+    program.getKernelInfoArray().clear();
+    delete program.globalSurface;
+    program.globalSurface = nullptr;
+    delete program.constantSurface;
+    program.constantSurface = nullptr;
 }

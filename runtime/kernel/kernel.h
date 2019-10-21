@@ -6,12 +6,13 @@
  */
 
 #pragma once
+#include "core/helpers/preamble.h"
+#include "core/unified_memory/unified_memory.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/command_stream/thread_arbitration_policy.h"
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/helpers/address_patch.h"
 #include "runtime/helpers/base_object.h"
-#include "runtime/helpers/preamble.h"
 #include "runtime/helpers/properties_helper.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/program/kernel_info.h"
@@ -58,11 +59,7 @@ class Kernel : public BaseObject<_cl_kernel> {
         GraphicsAllocation *pSvmAlloc;
         cl_mem_flags svmFlags;
         bool isPatched = false;
-        bool isUncacheable = false;
-    };
-
-    struct UnifiedMemoryControls {
-        bool indirectDeviceAllocationsAllowed = false;
+        bool isStatelessUncacheable = false;
     };
 
     typedef int32_t (Kernel::*KernelArgHandler)(uint32_t argIndex,
@@ -90,10 +87,9 @@ class Kernel : public BaseObject<_cl_kernel> {
         }
 
         if (DebugManager.debugKernelDumpingAvailable()) {
-            char *pSrc = nullptr;
-            unsigned int size = 0;
-            program->getSource(pSrc, size);
-            DebugManager.dumpKernel(kernelInfo.name, (pSrc != nullptr) ? std::string(pSrc) : std::string());
+            std::string source;
+            program->getSource(source);
+            DebugManager.dumpKernel(kernelInfo.name, source);
         }
 
         return pKernel;
@@ -209,6 +205,10 @@ class Kernel : public BaseObject<_cl_kernel> {
         return kernelInfo.patchInfo.mediavfestate ? kernelInfo.patchInfo.mediavfestate->PerThreadScratchSpace : 0;
     }
 
+    uint32_t getPrivateScratchSize() {
+        return kernelInfo.patchInfo.mediaVfeStateSlot1 ? kernelInfo.patchInfo.mediaVfeStateSlot1->PerThreadScratchSpace : 0;
+    }
+
     void createReflectionSurface();
     template <bool mockable = false>
     void patchReflectionSurface(DeviceQueue *devQueue, PrintfHandler *printfHandler);
@@ -289,7 +289,7 @@ class Kernel : public BaseObject<_cl_kernel> {
     bool requiresCoherency();
     void resetSharedObjectsPatchAddresses();
     bool isUsingSharedObjArgs() const { return usingSharedObjArgs; }
-    bool hasUncacheableArgs() const { return uncacheableArgsCount > 0; }
+    bool hasUncacheableStatelessArgs() const { return statelessUncacheableArgsCount > 0; }
 
     bool hasPrintfOutput() const;
 
@@ -326,11 +326,12 @@ class Kernel : public BaseObject<_cl_kernel> {
     uint32_t *numWorkGroupsY;
     uint32_t *numWorkGroupsZ;
 
-    uint32_t *maxWorkGroupSize;
+    uint32_t *maxWorkGroupSizeForCrossThreadData;
+    uint32_t maxKernelWorkGroupSize = 0;
     uint32_t *workDim;
     uint32_t *dataParameterSimdSize;
     uint32_t *parentEventOffset;
-    uint32_t *prefferedWkgMultipleOffset;
+    uint32_t *preferredWkgMultipleOffset;
 
     static uint32_t dummyPatchLocation;
 
@@ -385,12 +386,17 @@ class Kernel : public BaseObject<_cl_kernel> {
     using CacheFlushAllocationsVec = StackVec<GraphicsAllocation *, 32>;
     void getAllocationsForCacheFlush(CacheFlushAllocationsVec &out) const;
 
-    void setAuxTranslationFlag(bool auxTranslationFlag) {
-        this->auxTranslationKernel = auxTranslationFlag;
+    void setAuxTranslationDirection(AuxTranslationDirection auxTranslationDirection) {
+        this->auxTranslationDirection = auxTranslationDirection;
+    }
+    void setUnifiedMemorySyncRequirement(bool isUnifiedMemorySyncRequired) {
+        this->isUnifiedMemorySyncRequired = isUnifiedMemorySyncRequired;
     }
     void setUnifiedMemoryProperty(cl_kernel_exec_info infoType, bool infoValue);
     void setUnifiedMemoryExecInfo(GraphicsAllocation *argValue);
     void clearUnifiedMemoryExecInfo();
+
+    bool areStatelessWritesUsed() { return containsStatelessWrites; }
 
   protected:
     struct ObjectCounts {
@@ -491,7 +497,7 @@ class Kernel : public BaseObject<_cl_kernel> {
     std::vector<GraphicsAllocation *> kernelSvmGfxAllocations;
     std::vector<GraphicsAllocation *> kernelUnifiedMemoryGfxAllocations;
 
-    bool auxTranslationKernel = false;
+    AuxTranslationDirection auxTranslationDirection = AuxTranslationDirection::None;
 
     size_t numberOfBindingTableStates;
     size_t localBindingTableOffset;
@@ -509,9 +515,10 @@ class Kernel : public BaseObject<_cl_kernel> {
     bool usingSharedObjArgs;
     bool usingImagesOnly = false;
     bool auxTranslationRequired = false;
+    bool containsStatelessWrites = true;
     uint32_t patchedArgumentsNum = 0;
     uint32_t startOffset = 0;
-    uint32_t uncacheableArgsCount = 0;
+    uint32_t statelessUncacheableArgsCount = 0;
 
     std::vector<PatchInfoData> patchInfoDataList;
     std::unique_ptr<ImageTransformer> imageTransformer;
@@ -520,5 +527,6 @@ class Kernel : public BaseObject<_cl_kernel> {
     bool svmAllocationsRequireCacheFlush = false;
     std::vector<GraphicsAllocation *> kernelArgRequiresCacheFlush;
     UnifiedMemoryControls unifiedMemoryControls;
+    bool isUnifiedMemorySyncRequired = true;
 };
 } // namespace NEO

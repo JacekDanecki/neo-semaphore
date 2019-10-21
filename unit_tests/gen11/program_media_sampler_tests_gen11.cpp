@@ -5,11 +5,12 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/gen11/reg_configs.h"
 #include "runtime/helpers/hw_helper.h"
 #include "test.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/dispatch_flags_helper.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/mocks/mock_device.h"
 
@@ -30,7 +31,7 @@ struct Gen11MediaSamplerProgramingTest : public ::testing::Test {
 
     void overrideMediaRequest(bool lastVmeConfig, bool mediaSamplerRequired) {
         csr->overrideLastVmeSubliceConfig(lastVmeConfig);
-        flags.mediaSamplerRequired = mediaSamplerRequired;
+        flags.pipelineSelectArgs.mediaSamplerRequired = mediaSamplerRequired;
     }
 
     void SetUp() override {
@@ -46,13 +47,12 @@ struct Gen11MediaSamplerProgramingTest : public ::testing::Test {
     }
 
     size_t getCmdSize() {
-        return csr->getCmdSizeForMediaSampler(flags.mediaSamplerRequired);
+        return csr->getCmdSizeForMediaSampler(flags.pipelineSelectArgs.mediaSamplerRequired);
     }
 
     myCsr *csr = nullptr;
     std::unique_ptr<MockDevice> device;
-    DispatchFlags flags = {};
-
+    DispatchFlags flags = DispatchFlagsHelper::createDefaultDispatchFlags();
     char buff[MemoryConstants::pageSize];
     std::unique_ptr<LinearStream> stream;
 };

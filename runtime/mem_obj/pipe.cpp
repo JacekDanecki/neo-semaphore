@@ -9,6 +9,7 @@
 
 #include "runtime/context/context.h"
 #include "runtime/helpers/get_info.h"
+#include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/mem_obj/mem_obj_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
 
@@ -23,7 +24,9 @@ Pipe::Pipe(Context *context,
            GraphicsAllocation *gfxAllocation)
     : MemObj(context,
              CL_MEM_OBJECT_PIPE,
+             MemoryPropertiesFlagsParser::createMemoryPropertiesFlags({flags}),
              flags,
+             0,
              static_cast<size_t>(packetSize * (maxPackets + 1) + intelPipeHeaderReservedSpace),
              memoryStorage,
              nullptr,
@@ -49,10 +52,11 @@ Pipe *Pipe::create(Context *context,
     DEBUG_BREAK_IF(!memoryManager);
 
     MemoryProperties memoryProperties{flags};
+    MemoryPropertiesFlags memoryPropertiesFlags = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(memoryProperties);
     while (true) {
         auto size = static_cast<size_t>(packetSize * (maxPackets + 1) + intelPipeHeaderReservedSpace);
         AllocationProperties allocProperties =
-            MemObjHelper::getAllocationProperties(memoryProperties, true, size, GraphicsAllocation::AllocationType::PIPE, false);
+            MemoryPropertiesParser::getAllocationProperties(memoryPropertiesFlags, true, size, GraphicsAllocation::AllocationType::PIPE, false);
         GraphicsAllocation *memory = memoryManager->allocateGraphicsMemoryWithProperties(allocProperties);
         if (!memory) {
             errcodeRet = CL_OUT_OF_HOST_MEMORY;
@@ -109,7 +113,7 @@ cl_int Pipe::getPipeInfo(cl_image_info paramName,
 }
 
 void Pipe::setPipeArg(void *memory, uint32_t patchSize) {
-    patchWithRequiredSize(memory, patchSize, (uintptr_t)getCpuAddress());
+    patchWithRequiredSize(memory, patchSize, static_cast<uintptr_t>(getGraphicsAllocation()->getGpuAddressToPatch()));
 }
 
 Pipe::~Pipe() = default;

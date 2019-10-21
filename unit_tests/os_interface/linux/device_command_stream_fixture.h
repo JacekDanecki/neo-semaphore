@@ -6,7 +6,7 @@
  */
 
 #pragma once
-#include "runtime/helpers/aligned_memory.h"
+#include "core/helpers/aligned_memory.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/os_interface/linux/drm_memory_manager.h"
 #include "runtime/os_interface/linux/drm_neo.h"
@@ -290,9 +290,7 @@ class DrmMockCustom : public Drm {
         } break;
 
         default:
-            std::cout << std::hex << DRM_IOCTL_I915_GEM_WAIT << std::endl;
-            std::cout << "unexpected IOCTL: " << std::hex << request << std::endl;
-            UNRECOVERABLE_IF(true);
+            ioctlExtra(request, arg);
         }
 
         if (ext->no != -1 && ext->no == ioctl_cnt.total.load()) {
@@ -302,6 +300,16 @@ class DrmMockCustom : public Drm {
         ioctl_cnt.total.fetch_add(1);
         return ioctl_res.load();
     };
+
+    virtual int ioctlExtra(unsigned long request, void *arg) {
+        switch (request) {
+        default:
+            std::cout << "unexpected IOCTL: " << std::hex << request << std::endl;
+            UNRECOVERABLE_IF(true);
+            break;
+        }
+        return 0;
+    }
 
     IoctlResExt NONE = {-1, 0};
     void reset() {

@@ -6,7 +6,9 @@
  */
 
 #include "runtime/device/device_info_map.h"
+#include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/fixtures/device_info_fixture.h"
 
 #include "gtest/gtest.h"
 
@@ -25,10 +27,25 @@ TEST(GetDeviceInfo, InvalidFlags_returnsError) {
     EXPECT_EQ(CL_INVALID_VALUE, retVal);
 }
 
+HWCMDTEST_F(IGFX_GEN8_CORE, GetDeviceInfoMemCapabilitiesTest, GivenValidParametersWhenGetDeviceInfoIsCalledForBdwPlusThenClSuccessIsReturned) {
+
+    std::vector<TestParams> params = {
+        {CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL,
+         (CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL)},
+        {CL_DEVICE_DEVICE_MEM_CAPABILITIES_INTEL,
+         (CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL)},
+        {CL_DEVICE_SINGLE_DEVICE_SHARED_MEM_CAPABILITIES_INTEL,
+         (CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL)},
+        {CL_DEVICE_CROSS_DEVICE_SHARED_MEM_CAPABILITIES_INTEL, 0},
+        {CL_DEVICE_SHARED_SYSTEM_MEM_CAPABILITIES_INTEL, 0}};
+
+    check(params);
+}
+
 TEST(GetDeviceInfo, devicePlanarYuvMaxWidthHeightReturnsErrorWhenPlanarYuvExtensionDisabled) {
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
-    device->getDeviceInfoToModify()->nv12Extension = false;
+    device->deviceInfo.nv12Extension = false;
     uint32_t value;
 
     auto retVal = device->getDeviceInfo(
@@ -51,7 +68,7 @@ TEST(GetDeviceInfo, devicePlanarYuvMaxWidthHeightReturnsErrorWhenPlanarYuvExtens
 TEST(GetDeviceInfo, devicePlanarYuvMaxWidthHeightReturnsCorrectValuesWhenPlanarYuvExtensionEnabled) {
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
-    device->getDeviceInfoToModify()->nv12Extension = true;
+    device->deviceInfo.nv12Extension = true;
     size_t value = 0;
 
     auto retVal = device->getDeviceInfo(
@@ -109,7 +126,7 @@ TEST(GetDeviceInfo, simultaneousInterops) {
     EXPECT_TRUE(memcmp(value, &device->simultaneousInterops[0], 4u * sizeof(cl_uint)) == 0);
 }
 
-TEST(GetDeviceInfo, prefferedInteropUserSync) {
+TEST(GetDeviceInfo, preferredInteropUserSync) {
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
 
     cl_bool value = 0;

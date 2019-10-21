@@ -7,7 +7,7 @@
 
 #include "runtime/helpers/built_ins_helper.h"
 
-#include "runtime/execution_environment/execution_environment.h"
+#include "runtime/device/device.h"
 #include "unit_tests/mocks/mock_compilers.h"
 #include "unit_tests/mocks/mock_program.h"
 
@@ -15,7 +15,7 @@ namespace NEO {
 
 const SipKernel &initSipKernel(SipKernelType type, Device &device) {
     auto mockCompilerInterface = new MockCompilerInterface();
-    mockCompilerInterface->initialize();
+    mockCompilerInterface->initialize(false);
 
     device.getExecutionEnvironment()->compilerInterface.reset(mockCompilerInterface);
     mockCompilerInterface->sipKernelBinaryOverride = mockCompilerInterface->getDummyGenBinary();

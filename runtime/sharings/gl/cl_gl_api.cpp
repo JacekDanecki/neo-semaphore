@@ -273,7 +273,7 @@ cl_int CL_API_CALL clEnqueueReleaseGLObjects(cl_command_queue commandQueue, cl_u
             return retVal;
         }
 
-        pCommandQueue->finish(false);
+        pCommandQueue->finish();
         retVal = pCommandQueue->enqueueReleaseSharedObjects(numObjects, memObjects, numEventsInWaitList, eventWaitList, event,
                                                             CL_COMMAND_RELEASE_GL_OBJECTS);
     }
@@ -337,7 +337,7 @@ cl_int CL_API_CALL clGetGLContextInfoKHR(const cl_context_properties *properties
         return retVal;
     }
 
-    std::unique_ptr<GLSharingFunctions> glSharing(new GLSharingFunctions);
+    auto glSharing = std::make_unique<GLSharingFunctions>();
     glSharing->initGLFunctions();
     if (glSharing->isOpenGlSharingSupported() == false) {
         retVal = CL_INVALID_CONTEXT;
@@ -358,11 +358,11 @@ cl_int CL_API_CALL clGetSupportedGLTextureFormatsINTEL(
     cl_mem_flags flags,
     cl_mem_object_type imageType,
     cl_uint numEntries,
-    cl_GLint *glFormats,
-    cl_uint *numImageFormats) {
+    cl_GLenum *glFormats,
+    cl_uint *numTextureFormats) {
 
-    if (numImageFormats) {
-        *numImageFormats = 0;
+    if (numTextureFormats) {
+        *numTextureFormats = 0;
     }
 
     Context *pContext = castToObjectOrAbort<Context>(context);
@@ -371,5 +371,5 @@ cl_int CL_API_CALL clGetSupportedGLTextureFormatsINTEL(
         return CL_INVALID_CONTEXT;
     }
 
-    return pSharing->getSupportedFormats(flags, imageType, numEntries, reinterpret_cast<cl_GLenum *>(glFormats), numImageFormats);
+    return pSharing->getSupportedFormats(flags, imageType, numEntries, glFormats, numTextureFormats);
 }

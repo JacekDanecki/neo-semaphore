@@ -6,6 +6,7 @@
  */
 
 #pragma once
+#include "runtime/os_interface/linux/allocator_helper.h"
 #include "runtime/os_interface/linux/drm_memory_manager.h"
 #include "unit_tests/mocks/mock_allocation_properties.h"
 #include "unit_tests/mocks/mock_host_ptr_manager.h"
@@ -16,24 +17,11 @@
 namespace NEO {
 static off_t lseekReturn = 4096u;
 static std::atomic<int> lseekCalledCount(0);
-static std::atomic<int> mmapMockCallCount(0);
-static std::atomic<int> munmapMockCallCount(0);
 
 inline off_t lseekMock(int fd, off_t offset, int whence) noexcept {
     lseekCalledCount++;
     return lseekReturn;
 }
-inline void *mmapMock(void *addr, size_t length, int prot, int flags,
-                      int fd, long offset) noexcept {
-    mmapMockCallCount++;
-    return reinterpret_cast<void *>(0x1000);
-}
-
-inline int munmapMock(void *addr, size_t length) noexcept {
-    munmapMockCallCount++;
-    return 0;
-}
-
 inline int closeMock(int) {
     return 0;
 }
@@ -47,31 +35,32 @@ class TestedDrmMemoryManager : public MemoryManagerCreate<DrmMemoryManager> {
     using DrmMemoryManager::allocateGraphicsMemoryWithAlignment;
     using DrmMemoryManager::allocateGraphicsMemoryWithHostPtr;
     using DrmMemoryManager::AllocationData;
-    using DrmMemoryManager::allocator32Bit;
     using DrmMemoryManager::allocUserptr;
     using DrmMemoryManager::createGraphicsAllocation;
-    using DrmMemoryManager::internal32bitAllocator;
-    using DrmMemoryManager::limitedGpuAddressRangeAllocator;
+    using DrmMemoryManager::drm;
+    using DrmMemoryManager::getDefaultDrmContextId;
+    using DrmMemoryManager::gfxPartition;
+    using DrmMemoryManager::lockResourceInLocalMemoryImpl;
     using DrmMemoryManager::pinThreshold;
+    using DrmMemoryManager::releaseGpuRange;
     using DrmMemoryManager::setDomainCpu;
     using DrmMemoryManager::sharingBufferObjects;
     using DrmMemoryManager::supportsMultiStorageResources;
+    using DrmMemoryManager::unlockResourceInLocalMemoryImpl;
     using MemoryManager::allocateGraphicsMemoryInDevicePool;
+    using MemoryManager::useInternal32BitAllocator;
 
     TestedDrmMemoryManager(ExecutionEnvironment &executionEnvironment) : MemoryManagerCreate(gemCloseWorkerMode::gemCloseWorkerInactive,
                                                                                              false,
                                                                                              false,
                                                                                              executionEnvironment) {
         this->lseekFunction = &lseekMock;
-        this->mmapFunction = &mmapMock;
-        this->munmapFunction = &munmapMock;
         this->closeFunction = &closeMock;
         lseekReturn = 4096;
         lseekCalledCount = 0;
-        mmapMockCallCount = 0;
-        munmapMockCallCount = 0;
         hostPtrManager.reset(new MockHostPtrManager);
     };
+
     TestedDrmMemoryManager(bool enableLocalMemory,
                            bool allowForcePin,
                            bool validateHostPtrMemory,
@@ -81,31 +70,22 @@ class TestedDrmMemoryManager : public MemoryManagerCreate<DrmMemoryManager> {
                                                                                              validateHostPtrMemory,
                                                                                              executionEnvironment) {
         this->lseekFunction = &lseekMock;
-        this->mmapFunction = &mmapMock;
-        this->munmapFunction = &munmapMock;
         this->closeFunction = &closeMock;
         lseekReturn = 4096;
         lseekCalledCount = 0;
-        mmapMockCallCount = 0;
-        munmapMockCallCount = 0;
-    }
-
-    void unreference(BufferObject *bo) {
-        DrmMemoryManager::unreference(bo);
     }
 
     void injectPinBB(BufferObject *newPinBB) {
         BufferObject *currentPinBB = pinBB;
         pinBB = nullptr;
-        DrmMemoryManager::unreference(currentPinBB);
+        DrmMemoryManager::unreference(currentPinBB, true);
         pinBB = newPinBB;
     }
 
     DrmGemCloseWorker *getgemCloseWorker() { return this->gemCloseWorker.get(); }
-    void forceLimitedRangeAllocator(uint64_t range) { initInternalRangeAllocator(range); }
+    void forceLimitedRangeAllocator(uint64_t range) { gfxPartition->init(range, getSizeToReserve()); }
+    void overrideGfxPartition(GfxPartition *newGfxPartition) { gfxPartition.reset(newGfxPartition); }
 
-    Allocator32bit *getDrmInternal32BitAllocator() const { return internal32bitAllocator.get(); }
-    AllocatorLimitedRange *getDrmLimitedRangeAllocator() const { return limitedGpuAddressRangeAllocator.get(); }
     DrmAllocation *allocate32BitGraphicsMemory(size_t size, const void *ptr, GraphicsAllocation::AllocationType allocationType) {
         bool allocateMemory = ptr == nullptr;
         AllocationData allocationData;

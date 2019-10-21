@@ -22,8 +22,10 @@ typename HardwareCommandsHelper<GfxFamily>::INTERFACE_DESCRIPTOR_DATA *HardwareC
 template <typename GfxFamily>
 void HardwareCommandsHelper<GfxFamily>::setAdditionalInfo(
     INTERFACE_DESCRIPTOR_DATA *pInterfaceDescriptor,
+    const Kernel &kernel,
     const size_t &sizeCrossThreadData,
-    const size_t &sizePerThreadData) {
+    const size_t &sizePerThreadData,
+    const uint32_t threadsPerThreadGroup) {
 
     DEBUG_BREAK_IF((sizeCrossThreadData % sizeof(GRF)) != 0);
     auto numGrfCrossThreadData = static_cast<uint32_t>(sizeCrossThreadData / sizeof(GRF));
@@ -51,7 +53,7 @@ size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredCS(const Kernel *kernel
 }
 
 template <typename GfxFamily>
-size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredForCacheFlush(const CommandQueue &commandQueue, const Kernel *kernel, uint64_t postSyncAddress, uint64_t postSyncData) {
+size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredForCacheFlush(const CommandQueue &commandQueue, const Kernel *kernel, uint64_t postSyncAddress) {
     return kernel->requiresCacheFlushCommand(commandQueue) ? sizeof(typename GfxFamily::PIPE_CONTROL) : 0;
 }
 
@@ -93,12 +95,21 @@ void HardwareCommandsHelper<GfxFamily>::setKernelStartOffset(
     const KernelInfo &kernelInfo,
     const bool &localIdsGenerationByRuntime,
     const bool &kernelUsesLocalIds,
-    Kernel &kernel) {
+    Kernel &kernel,
+    bool isCssUsed) {
 
     if (kernelAllocation) {
         kernelStartOffset = kernelInfo.getGraphicsAllocation()->getGpuAddressToPatch();
     }
     kernelStartOffset += kernel.getStartOffset();
+
+#ifdef WIN32
+    if ((kernel.getDevice().getHardwareInfo().platform.eProductFamily == IGFX_TIGERLAKE_LP) &&
+        (kernel.getDevice().getHardwareInfo().platform.usRevId == REVISION_A0) &&
+        isCssUsed) {
+        kernelStartOffset += kernelInfo.patchInfo.threadPayload->OffsetToSkipSetFFIDGP;
+    }
+#endif
 }
 
 template <typename GfxFamily>
@@ -158,12 +169,7 @@ void HardwareCommandsHelper<GfxFamily>::setInterfaceDescriptorOffset(
 }
 
 template <typename GfxFamily>
-bool HardwareCommandsHelper<GfxFamily>::isRuntimeLocalIdsGenerationRequired(uint32_t workDim, size_t *gws, size_t *lws) {
-    return true;
-}
-
-template <typename GfxFamily>
-void HardwareCommandsHelper<GfxFamily>::programCacheFlushAfterWalkerCommand(LinearStream *commandStream, const CommandQueue &commandQueue, const Kernel *kernel, uint64_t postSyncAddress, uint64_t postSyncData) {
+void HardwareCommandsHelper<GfxFamily>::programCacheFlushAfterWalkerCommand(LinearStream *commandStream, const CommandQueue &commandQueue, const Kernel *kernel, uint64_t postSyncAddress) {
     using PIPE_CONTROL = typename GfxFamily::PIPE_CONTROL;
     auto pipeControl = reinterpret_cast<PIPE_CONTROL *>(commandStream->getSpace(sizeof(PIPE_CONTROL)));
     *pipeControl = GfxFamily::cmdInitPipeControl;
@@ -173,4 +179,10 @@ void HardwareCommandsHelper<GfxFamily>::programCacheFlushAfterWalkerCommand(Line
 
 template <typename GfxFamily>
 void HardwareCommandsHelper<GfxFamily>::appendMiFlushDw(typename GfxFamily::MI_FLUSH_DW *miFlushDwCmd) {}
+
+template <typename GfxFamily>
+void HardwareCommandsHelper<GfxFamily>::programBarrierEnable(INTERFACE_DESCRIPTOR_DATA *pInterfaceDescriptor, uint32_t value, const HardwareInfo &hwInfo) {
+    pInterfaceDescriptor->setBarrierEnable(value);
+}
+
 } // namespace NEO

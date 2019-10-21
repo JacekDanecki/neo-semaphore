@@ -5,9 +5,9 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "test.h"
 #include "unit_tests/fixtures/platform_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_d3d_objects.h"
@@ -84,12 +84,12 @@ class D3DTests : public PlatformFixture, public ::testing::Test {
         dbgRestore = new DebugManagerStateRestore();
         PlatformFixture::SetUp();
         context = new MockContext(pPlatform->getDevice(0));
-        context->forcePreferD3dSharedResources(true);
+        context->preferD3dSharedResources = true;
         mockMM = std::make_unique<MockMM>(*context->getDevice(0)->getExecutionEnvironment());
 
         mockSharingFcns = new NiceMock<MockD3DSharingFunctions<T>>();
         context->setSharingFunctions(mockSharingFcns);
-        context->setMemoryManager(mockMM.get());
+        context->memoryManager = mockMM.get();
         cmdQ = new MockCommandQueue(context, context->getDevice(0), 0);
         DebugManager.injectFcn = &mockSharingFcns->mockGetDxgiDesc;
 

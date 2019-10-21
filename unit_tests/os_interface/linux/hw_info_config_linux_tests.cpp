@@ -43,6 +43,31 @@ template <>
 void HwInfoConfigHw<IGFX_UNKNOWN>::adjustPlatformForProductFamily(HardwareInfo *hwInfo) {
 }
 
+template <>
+cl_unified_shared_memory_capabilities_intel HwInfoConfigHw<IGFX_UNKNOWN>::getHostMemCapabilities() {
+    return 0;
+}
+
+template <>
+cl_unified_shared_memory_capabilities_intel HwInfoConfigHw<IGFX_UNKNOWN>::getDeviceMemCapabilities() {
+    return 0;
+}
+
+template <>
+cl_unified_shared_memory_capabilities_intel HwInfoConfigHw<IGFX_UNKNOWN>::getSingleDeviceSharedMemCapabilities() {
+    return 0;
+}
+
+template <>
+cl_unified_shared_memory_capabilities_intel HwInfoConfigHw<IGFX_UNKNOWN>::getCrossDeviceSharedMemCapabilities() {
+    return 0;
+}
+
+template <>
+cl_unified_shared_memory_capabilities_intel HwInfoConfigHw<IGFX_UNKNOWN>::getSharedSystemMemCapabilities() {
+    return 0;
+}
+
 } // namespace NEO
 
 struct DummyHwConfig : HwInfoConfigHw<IGFX_UNKNOWN> {
@@ -353,4 +378,18 @@ TEST_F(HwInfoConfigTestLinuxDummy, givenPointerToHwInfoWhenConfigureHwInfoCalled
     int ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     EXPECT_EQ(0, ret);
     EXPECT_EQ(outHwInfo.gtSystemInfo.CsrSizeInMb * MemoryConstants::megaByte, outHwInfo.capabilityTable.requiredPreemptionSurfaceSize);
+}
+
+TEST_F(HwInfoConfigTestLinuxDummy, givenInstrumentationForHardwareIsEnabledOrDisabledWhenConfiguringHwInfoThenOverrideItUsingHaveInstrumentation) {
+    int ret;
+
+    pInHwInfo.capabilityTable.instrumentationEnabled = false;
+    ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    ASSERT_EQ(0, ret);
+    EXPECT_FALSE(outHwInfo.capabilityTable.instrumentationEnabled);
+
+    pInHwInfo.capabilityTable.instrumentationEnabled = true;
+    ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    ASSERT_EQ(0, ret);
+    EXPECT_TRUE(outHwInfo.capabilityTable.instrumentationEnabled == haveInstrumentation);
 }

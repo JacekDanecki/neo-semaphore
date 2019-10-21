@@ -6,11 +6,11 @@
  */
 
 #pragma once
-#include "runtime/helpers/aligned_memory.h"
+#include "core/helpers/aligned_memory.h"
+#include "core/os_interface/windows/windows_wrapper.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/os_interface/os_context.h"
 #include "runtime/os_interface/windows/wddm_allocation.h"
-#include "runtime/os_interface/windows/windows_wrapper.h"
 
 #include <d3dkmthk.h>
 
@@ -48,13 +48,7 @@ class WddmMemoryManager : public MemoryManager {
     void obtainGpuAddressFromFragments(WddmAllocation *allocation, OsHandleStorage &handleStorage);
 
     uint64_t getSystemSharedMemory() override;
-    uint64_t getMaxApplicationAddress() override;
-
-    uint64_t getInternalHeapBaseAddress() override;
-
-    uint64_t getExternalHeapBaseAddress() override;
-
-    void setForce32BitAllocations(bool newValue) override;
+    uint64_t getLocalMemorySize() override;
 
     bool tryDeferDeletions(const D3DKMT_HANDLE *handles, uint32_t allocationCount, D3DKMT_HANDLE resourceHandle);
 
@@ -64,7 +58,7 @@ class WddmMemoryManager : public MemoryManager {
 
     AlignedMallocRestrictions *getAlignedMallocRestrictions() override;
 
-    bool copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, uint32_t sizeToCopy) const override;
+    bool copyMemoryToAllocation(GraphicsAllocation *graphicsAllocation, const void *memoryToCopy, size_t sizeToCopy) override;
     void *reserveCpuAddressRange(size_t size) override;
     void releaseReservedCpuAddressRange(void *reserved, size_t size) override;
 

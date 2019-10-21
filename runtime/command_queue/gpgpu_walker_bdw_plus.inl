@@ -7,6 +7,7 @@
 
 #pragma once
 #include "runtime/command_queue/gpgpu_walker_base.inl"
+#include "runtime/helpers/engine_node_helper.h"
 
 namespace NEO {
 
@@ -21,7 +22,8 @@ inline size_t GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(
     uint32_t workDim,
     bool localIdsGenerationByRuntime,
     bool inlineDataProgrammingRequired,
-    const iOpenCL::SPatchThreadPayload &threadPayload) {
+    const iOpenCL::SPatchThreadPayload &threadPayload,
+    uint32_t requiredWorkgroupOrder) {
     auto localWorkSize = localWorkSizesIn[0] * localWorkSizesIn[1] * localWorkSizesIn[2];
 
     auto threadsPerWorkGroup = getThreadsPerWG(simd, localWorkSize);
@@ -112,7 +114,6 @@ void GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(
 
     // Send our indirect object data
     size_t localWorkSizes[3] = {scheduler.getLws(), 1, 1};
-    size_t globalWorkSizes[3] = {scheduler.getGws(), 1, 1};
 
     // Create indirectHeap for IOH that is located at the end of device enqueue DSH
     size_t curbeOffset = devQueueHw.setSchedulerCrossThreadData(scheduler);
@@ -123,8 +124,7 @@ void GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(
     // Program the walker.  Invokes execution so all state should already be programmed
     auto pGpGpuWalkerCmd = static_cast<GPGPU_WALKER *>(commandStream.getSpace(sizeof(GPGPU_WALKER)));
     *pGpGpuWalkerCmd = GfxFamily::cmdInitGpgpuWalker;
-
-    bool localIdsGenerationByRuntime = HardwareCommandsHelper<GfxFamily>::isRuntimeLocalIdsGenerationRequired(1, globalWorkSizes, localWorkSizes);
+    auto isCcsUsed = isCcs(devQueueHw.getDevice().getDefaultEngine().osContext->getEngineType());
     bool inlineDataProgrammingRequired = HardwareCommandsHelper<GfxFamily>::inlineDataProgrammingRequired(scheduler);
     HardwareCommandsHelper<GfxFamily>::sendIndirectState(
         commandStream,
@@ -139,7 +139,8 @@ void GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(
         preemptionMode,
         pGpGpuWalkerCmd,
         nullptr,
-        localIdsGenerationByRuntime);
+        true,
+        isCcsUsed);
 
     // Implement enabling special WA DisableLSQCROPERFforOCL if needed
     GpgpuWalkerHelper<GfxFamily>::applyWADisableLSQCROPERFforOCL(&commandStream, scheduler, true);
@@ -147,8 +148,8 @@ void GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(
     size_t globalOffsets[3] = {0, 0, 0};
     size_t workGroups[3] = {(scheduler.getGws() / scheduler.getLws()), 1, 1};
     GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(pGpGpuWalkerCmd, globalOffsets, globalOffsets, workGroups, localWorkSizes,
-                                                           simd, 1, localIdsGenerationByRuntime, inlineDataProgrammingRequired,
-                                                           *scheduler.getKernelInfo().patchInfo.threadPayload);
+                                                           simd, 1, true, inlineDataProgrammingRequired,
+                                                           *scheduler.getKernelInfo().patchInfo.threadPayload, 0u);
 
     // Implement disabling special WA DisableLSQCROPERFforOCL if needed
     GpgpuWalkerHelper<GfxFamily>::applyWADisableLSQCROPERFforOCL(&commandStream, scheduler, false);
@@ -172,49 +173,28 @@ void GpgpuWalkerHelper<GfxFamily>::setupTimestampPacket(
     LinearStream *cmdStream,
     WALKER_TYPE<GfxFamily> *walkerCmd,
     TagNode<TimestampPacketStorage> *timestampPacketNode,
-    TimestampPacketStorage::WriteOperationType writeOperationType) {
+    TimestampPacketStorage::WriteOperationType writeOperationType,
+    const HardwareInfo &hwInfo) {
 
     if (TimestampPacketStorage::WriteOperationType::AfterWalker == writeOperationType) {
         uint64_t address = timestampPacketNode->getGpuAddress() + offsetof(TimestampPacketStorage, packets[0].contextEnd);
-        PipeControlHelper<GfxFamily>::obtainPipeControlAndProgramPostSyncOperation(cmdStream, PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, address, 0, false);
+        PipeControlHelper<GfxFamily>::obtainPipeControlAndProgramPostSyncOperation(*cmdStream,
+                                                                                   PIPE_CONTROL::POST_SYNC_OPERATION_WRITE_IMMEDIATE_DATA, address, 0, false, hwInfo);
     }
 }
 
 template <typename GfxFamily>
 size_t EnqueueOperation<GfxFamily>::getSizeRequiredCSKernel(bool reserveProfilingCmdsSpace, bool reservePerfCounters, CommandQueue &commandQueue, const Kernel *pKernel) {
     size_t size = sizeof(typename GfxFamily::GPGPU_WALKER) + HardwareCommandsHelper<GfxFamily>::getSizeRequiredCS(pKernel) +
-                  sizeof(PIPE_CONTROL) * (HardwareCommandsHelper<GfxFamily>::isPipeControlWArequired() ? 2 : 1);
-    size += HardwareCommandsHelper<GfxFamily>::getSizeRequiredForCacheFlush(commandQueue, pKernel, 0U, 0U);
+                  sizeof(PIPE_CONTROL) * (HardwareCommandsHelper<GfxFamily>::isPipeControlWArequired(pKernel->getDevice().getHardwareInfo()) ? 2 : 1);
+    size += HardwareCommandsHelper<GfxFamily>::getSizeRequiredForCacheFlush(commandQueue, pKernel, 0U);
     size += PreemptionHelper::getPreemptionWaCsSize<GfxFamily>(commandQueue.getDevice());
     if (reserveProfilingCmdsSpace) {
         size += 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
     }
     if (reservePerfCounters) {
-        //start cmds
-        //P_C: flush CS & TimeStamp BEGIN
-        size += 2 * sizeof(PIPE_CONTROL);
-        //SRM NOOPID & Frequency
-        size += 2 * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
-        //gp registers
-        size += NEO::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
-        //report perf count
-        size += sizeof(typename GfxFamily::MI_REPORT_PERF_COUNT);
-        //user registers
-        size += commandQueue.getPerfCountersUserRegistersNumber() * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
-
-        //end cmds
-        //P_C: flush CS & TimeStamp END;
-        size += 2 * sizeof(PIPE_CONTROL);
-        //OA buffer (status head, tail)
-        size += 3 * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
-        //report perf count
-        size += sizeof(typename GfxFamily::MI_REPORT_PERF_COUNT);
-        //gp registers
-        size += NEO::INSTR_GENERAL_PURPOSE_COUNTERS_COUNT * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
-        //SRM NOOPID & Frequency
-        size += 2 * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
-        //user registers
-        size += commandQueue.getPerfCountersUserRegistersNumber() * sizeof(typename GfxFamily::MI_STORE_REGISTER_MEM);
+        size += commandQueue.getPerfCounters()->getGpuCommandsSize(true);
+        size += commandQueue.getPerfCounters()->getGpuCommandsSize(false);
     }
     size += GpgpuWalkerHelper<GfxFamily>::getSizeForWADisableLSQCROPERFforOCL(pKernel);
 

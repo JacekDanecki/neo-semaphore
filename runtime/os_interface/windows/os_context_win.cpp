@@ -25,8 +25,6 @@ OsContextWin::OsContextWin(Wddm &wddm, uint32_t contextId, DeviceBitfield device
                            aub_stream::EngineType engineType, PreemptionMode preemptionMode, bool lowPriority)
     : OsContext(contextId, deviceBitfield, engineType, preemptionMode, lowPriority), wddm(wddm), residencyController(wddm, contextId) {
 
-    UNRECOVERABLE_IF(!wddm.isInitialized());
-
     auto wddmInterface = wddm.getWddmInterface();
     if (!wddm.createContext(*this)) {
         return;
@@ -36,12 +34,12 @@ OsContextWin::OsContextWin(Wddm &wddm, uint32_t contextId, DeviceBitfield device
             return;
         }
     }
-    initialized = wddmInterface->createMonitoredFence(residencyController);
+    initialized = wddmInterface->createMonitoredFence(*this);
     residencyController.registerCallback();
 };
 
 OsContextWin::~OsContextWin() {
-    wddm.getWddmInterface()->destroyHwQueue(hwQueueHandle);
+    wddm.getWddmInterface()->destroyHwQueue(hardwareQueue.handle);
     wddm.destroyContext(wddmContextHandle);
 }
 

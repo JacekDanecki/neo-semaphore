@@ -5,11 +5,10 @@
  *
  */
 
+#include "core/helpers/file_io.h"
 #include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/context/context.h"
-#include "runtime/helpers/file_io.h"
 #include "runtime/helpers/options.h"
-#include "unit_tests/helpers/memory_management.h"
 #include "unit_tests/helpers/test_files.h"
 
 #include "cl_api_tests.h"
@@ -20,25 +19,25 @@ namespace ULT {
 
 typedef api_tests clLinkProgramTests;
 
-TEST_F(clLinkProgramTests, linkSingleSource) {
+TEST_F(clLinkProgramTests, GivenValidParamsWhenLinkingProgramThenSuccessIsReturned) {
     cl_program pProgram = nullptr;
-    void *pSource = nullptr;
     size_t sourceSize = 0;
     std::string testFile;
 
     testFile.append(clFiles);
     testFile.append("copybuffer.cl");
-    sourceSize = loadDataFromFile(
+    auto pSource = loadDataFromFile(
         testFile.c_str(),
-        pSource);
+        sourceSize);
 
     ASSERT_NE(0u, sourceSize);
     ASSERT_NE(nullptr, pSource);
 
+    const char *sources[1] = {pSource.get()};
     pProgram = clCreateProgramWithSource(
         pContext,
         1,
-        (const char **)&pSource,
+        sources,
         &sourceSize,
         &retVal);
 
@@ -78,29 +77,27 @@ TEST_F(clLinkProgramTests, linkSingleSource) {
 
     retVal = clReleaseProgram(oprog);
     EXPECT_EQ(CL_SUCCESS, retVal);
-
-    deleteDataReadFromFile(pSource);
 }
 
-TEST_F(clLinkProgramTests, createLibrarySingleSource) {
+TEST_F(clLinkProgramTests, GivenCreateLibraryOptionWhenLinkingProgramThenSuccessIsReturned) {
     cl_program pProgram = nullptr;
-    void *pSource = nullptr;
     size_t sourceSize = 0;
     std::string testFile;
 
     testFile.append(clFiles);
     testFile.append("copybuffer.cl");
-    sourceSize = loadDataFromFile(
+    auto pSource = loadDataFromFile(
         testFile.c_str(),
-        pSource);
+        sourceSize);
 
     ASSERT_NE(0u, sourceSize);
     ASSERT_NE(nullptr, pSource);
 
+    const char *sources[1] = {pSource.get()};
     pProgram = clCreateProgramWithSource(
         pContext,
         1,
-        (const char **)&pSource,
+        sources,
         &sourceSize,
         &retVal);
 
@@ -140,11 +137,9 @@ TEST_F(clLinkProgramTests, createLibrarySingleSource) {
 
     retVal = clReleaseProgram(oprog);
     EXPECT_EQ(CL_SUCCESS, retVal);
-
-    deleteDataReadFromFile(pSource);
 }
 
-TEST_F(clLinkProgramTests, nullContext) {
+TEST_F(clLinkProgramTests, GivenNullContextWhenLinkingProgramThenClInvalidContextErrorIsReturned) {
     cl_program program = {0};
     cl_program oprog;
     oprog = clLinkProgram(

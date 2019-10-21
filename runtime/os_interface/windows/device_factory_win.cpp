@@ -7,7 +7,6 @@
 
 #ifdef _WIN32
 
-#include "runtime/command_stream/preemption.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/device_helpers.h"
 #include "runtime/os_interface/debug_settings_manager.h"
@@ -15,6 +14,7 @@
 #include "runtime/os_interface/hw_info_config.h"
 #include "runtime/os_interface/windows/os_interface.h"
 #include "runtime/os_interface/windows/wddm/wddm.h"
+#include "runtime/os_interface/windows/wddm_memory_operations_handler.h"
 
 namespace NEO {
 
@@ -27,27 +27,18 @@ bool DeviceFactory::getDevices(size_t &numDevices, ExecutionEnvironment &executi
 
     auto hardwareInfo = executionEnvironment.getMutableHardwareInfo();
     std::unique_ptr<Wddm> wddm(Wddm::createWddm());
-    if (!wddm->enumAdapters(*hardwareInfo)) {
+    if (!wddm->init(*hardwareInfo)) {
         return false;
     }
 
     auto totalDeviceCount = DeviceHelper::getDevicesCount(hardwareInfo);
 
+    executionEnvironment.memoryOperationsInterface = std::make_unique<WddmMemoryOperationsHandler>(wddm.get());
     executionEnvironment.osInterface.reset(new OSInterface());
     executionEnvironment.osInterface->get()->setWddm(wddm.release());
 
-    HwInfoConfig *hwConfig = HwInfoConfig::get(hardwareInfo->platform.eProductFamily);
-    if (hwConfig->configureHwInfo(hardwareInfo, hardwareInfo, nullptr)) {
-        return false;
-    }
-
     numDevices = totalDeviceCount;
     DeviceFactory::numDevices = numDevices;
-
-    executionEnvironment.initGmm();
-    auto preemptionMode = PreemptionHelper::getDefaultPreemptionMode(*hardwareInfo);
-    bool success = executionEnvironment.osInterface->get()->getWddm()->init(preemptionMode);
-    DEBUG_BREAK_IF(!success);
 
     return true;
 }

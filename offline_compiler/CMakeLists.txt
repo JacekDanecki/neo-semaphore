@@ -7,36 +7,50 @@
 project(ocloc)
 
 set(CLOC_SRCS_LIB
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/binary_decoder.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/binary_decoder.h
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/binary_encoder.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/binary_encoder.h
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/helper.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/helper.h
-${IGDRCL_SOURCE_DIR}/offline_compiler/helper.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/offline_compiler.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/offline_compiler.h
-${IGDRCL_SOURCE_DIR}/offline_compiler/multi_command.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/multi_command.h
-${IGDRCL_SOURCE_DIR}/offline_compiler/options.cpp
-${IGDRCL_SOURCE_DIR}/runtime/compiler_interface/create_main.cpp
-${IGDRCL_SOURCE_DIR}/runtime/helpers/abort.cpp
-${IGDRCL_SOURCE_DIR}/runtime/helpers/debug_helpers.cpp
-${IGDRCL_SOURCE_DIR}/runtime/helpers/file_io.cpp
-${IGDRCL_SOURCE_DIR}/runtime/helpers/hw_info.cpp
-${IGDRCL_SOURCE_DIR}/runtime/platform/extensions.cpp
-${IGDRCL_SOURCE_DIR}/runtime/platform/extensions.h
+  ${NEO_SOURCE_DIR}/core/helpers/abort.cpp
+  ${NEO_SOURCE_DIR}/core/helpers/debug_helpers.cpp
+  ${NEO_SOURCE_DIR}/core/helpers/file_io.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/binary_decoder.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/binary_decoder.h
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/binary_encoder.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/binary_encoder.h
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/helper.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/helper.h
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/iga_wrapper.h
+  ${NEO_SOURCE_DIR}/offline_compiler/decoder/translate_platform_base.h
+  ${NEO_SOURCE_DIR}/offline_compiler/helper.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/offline_compiler.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/offline_compiler.h
+  ${NEO_SOURCE_DIR}/offline_compiler/multi_command.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/multi_command.h
+  ${NEO_SOURCE_DIR}/offline_compiler/options.cpp
+  ${NEO_SOURCE_DIR}/offline_compiler/${BRANCH_DIR_SUFFIX}/extra_settings.cpp
+  ${NEO_SOURCE_DIR}/runtime/compiler_interface/create_main.cpp
+  ${NEO_SOURCE_DIR}/runtime/helpers/hw_info.cpp
+  ${NEO_SOURCE_DIR}/runtime/platform/extensions.cpp
+  ${NEO_SOURCE_DIR}/runtime/platform/extensions.h
 )
+
+if(${IGA_HEADERS_AVAILABLE})
+  set(CLOC_SRCS_LIB ${CLOC_SRCS_LIB}
+    ${NEO_SOURCE_DIR}/offline_compiler/decoder/iga_wrapper.cpp
+    ${NEO_SOURCE_DIR}/offline_compiler/decoder${BRANCH_DIR_SUFFIX}/translate_platform.cpp
+  )
+else()
+  set(CLOC_SRCS_LIB ${CLOC_SRCS_LIB}
+    ${NEO_SOURCE_DIR}/offline_compiler/decoder/iga_stubs.cpp
+  )
+endif()
 
 if(WIN32)
   list(APPEND CLOC_SRCS_LIB
-    ${IGDRCL_SOURCE_DIR}/runtime/os_interface/windows/os_library.cpp
-    ${IGDRCL_SOURCE_DIR}/runtime/dll/windows/options.cpp
+    ${NEO_SOURCE_DIR}/runtime/os_interface/windows/os_library.cpp
+    ${NEO_SOURCE_DIR}/runtime/dll/windows/options.cpp
   )
 else()
   list(APPEND CLOC_SRCS_LIB
-    ${IGDRCL_SOURCE_DIR}/runtime/os_interface/linux/os_library.cpp
-    ${IGDRCL_SOURCE_DIR}/runtime/dll/linux/options.cpp
+    ${NEO_SOURCE_DIR}/runtime/os_interface/linux/os_library.cpp
+    ${NEO_SOURCE_DIR}/runtime/dll/linux/options.cpp
   )
 endif()
 
@@ -49,19 +63,19 @@ set(RUNTIME_GENX_CPP_FILES
 )
 
 macro(macro_for_each_platform)
-  list(APPEND CLOC_SRCS_LIB ${IGDRCL_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/hw_info_${PLATFORM_IT_LOWER}.inl)
+  list(APPEND CLOC_SRCS_LIB ${NEO_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/hw_info_${PLATFORM_IT_LOWER}.inl)
 endmacro()
 
 macro(macro_for_each_gen)
   foreach(SRC_IT ${RUNTIME_GENX_CPP_FILES})
-    set(SRC_FILE ${IGDRCL_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/${SRC_IT})
+    set(SRC_FILE ${NEO_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/${SRC_IT})
     if(EXISTS ${SRC_FILE}_${GEN_TYPE_LOWER}.cpp)
       list(APPEND CLOC_SRCS_LIB ${SRC_FILE}_${GEN_TYPE_LOWER}.cpp)
     endif()
   endforeach()
   apply_macro_for_each_platform()
   
-  list(APPEND CLOC_SRCS_LIB ${IGDRCL_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/enable_${GEN_TYPE_LOWER}.cpp)
+  list(APPEND CLOC_SRCS_LIB ${NEO_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/enable_${GEN_TYPE_LOWER}.cpp)
 endmacro()
 
 apply_macro_for_each_gen("SUPPORTED")
@@ -83,7 +97,7 @@ endif()
 
 add_subdirectories()
 
-create_project_source_tree(ocloc ${IGDRCL_SOURCE_DIR}/runtime)
+create_project_source_tree(ocloc)
 
 set(CLOC_INCLUDES
   ${ENGINE_NODE_DIR}
@@ -96,8 +110,10 @@ set(CLOC_INCLUDES
 )
 
 target_include_directories(ocloc BEFORE PRIVATE ${CLOC_INCLUDES})
+target_include_directories(ocloc BEFORE PRIVATE ${IGA_INCLUDE_DIR})
 
-target_compile_definitions(ocloc PUBLIC ${CLOC_LIB_FLAGS_DEFINITIONS} ${SUPPORTED_GEN_FLAGS_DEFINITONS} DEFAULT_PLATFORM=${DEFAULT_SUPPORTED_PLATFORM})
+target_compile_definitions(ocloc PUBLIC ${CLOC_LIB_FLAGS_DEFINITIONS} ${SUPPORTED_GEN_FLAGS_DEFINITONS} DEFAULT_PLATFORM=${DEFAULT_SUPPORTED_PLATFORM} 
+                                        IGA_LIBRARY_NAME=${CMAKE_SHARED_LIBRARY_PREFIX}${IGA_LIBRARY_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX})
 
 if(MSVC)
   target_link_libraries(ocloc dbghelp)
@@ -119,6 +135,7 @@ if(WIN32)
     add_custom_command(
       TARGET copy_compiler_files
       PRE_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:ocloc>
       COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${TARGET_tmp}> $<TARGET_FILE_DIR:ocloc>
     )
   endforeach()

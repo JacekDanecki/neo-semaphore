@@ -29,7 +29,7 @@ BXTTEST_F(BxtDeviceCaps, BxtClVersionSupport) {
     EXPECT_STREQ("OpenCL C 1.2 ", caps.clCVersion);
 
     auto memoryManager = pDevice->getMemoryManager();
-    if (is32BitOsAllocatorAvailable) {
+    if (is64bit) {
         EXPECT_TRUE(memoryManager->peekForce32BitAllocations());
         EXPECT_TRUE(caps.force32BitAddressess);
     } else {
@@ -45,6 +45,10 @@ BXTTEST_F(BxtDeviceCaps, BxtSvmCapabilities) {
 
 BXTTEST_F(BxtDeviceCaps, GivenBXTWhenCheckftr64KBpagesThenFalse) {
     EXPECT_FALSE(pDevice->getHardwareInfo().capabilityTable.ftr64KBpages);
+}
+
+BXTTEST_F(BxtDeviceCaps, givenBXTWhenCheckFtrSupportsInteger64BitAtomicsThenReturnFalse) {
+    EXPECT_FALSE(pDevice->getHardwareInfo().capabilityTable.ftrSupportsInteger64BitAtomics);
 }
 
 typedef Test<DeviceFixture> BxtUsDeviceIdTest;

@@ -6,8 +6,10 @@
  */
 
 #include "core/helpers/ptr_math.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/aub_command_stream_receiver.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
+#include "runtime/command_stream/command_stream_receiver_with_aub_dump.h"
 #include "runtime/command_stream/tbx_command_stream_receiver_hw.h"
 #include "runtime/helpers/hardware_context_controller.h"
 #include "runtime/helpers/hw_helper.h"
@@ -21,12 +23,14 @@
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/mock_aub_center_fixture.h"
 #include "unit_tests/gen_common/gen_cmd_parse.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/variable_backup.h"
 #include "unit_tests/mocks/mock_aub_center.h"
 #include "unit_tests/mocks/mock_aub_manager.h"
+#include "unit_tests/mocks/mock_aub_subcapture_manager.h"
 #include "unit_tests/mocks/mock_execution_environment.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
+#include "unit_tests/mocks/mock_kernel.h"
+#include "unit_tests/mocks/mock_mdi.h"
 #include "unit_tests/mocks/mock_os_context.h"
 #include "unit_tests/mocks/mock_tbx_csr.h"
 
@@ -69,6 +73,16 @@ struct TbxFixture : public TbxCommandStreamFixture,
 using TbxCommandStreamTests = Test<TbxFixture>;
 using TbxCommandSteamSimpleTest = TbxCommandStreamTests;
 
+template <typename GfxFamily>
+struct MockTbxCsrToTestDumpTbxNonWritable : public TbxCommandStreamReceiverHw<GfxFamily> {
+    using TbxCommandStreamReceiverHw<GfxFamily>::TbxCommandStreamReceiverHw;
+    using TbxCommandStreamReceiverHw<GfxFamily>::dumpTbxNonWritable;
+
+    bool writeMemory(GraphicsAllocation &gfxAllocation) override {
+        return true;
+    }
+};
+
 TEST_F(TbxCommandStreamTests, DISABLED_testFactory) {
 }
 
@@ -101,7 +115,7 @@ TEST_F(TbxCommandStreamTests, DISABLED_flush) {
     memset(buffer, 0, 4096);
     LinearStream cs(buffer, 4096);
     size_t startOffset = 0;
-    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), startOffset, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), startOffset, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
     pCommandStreamReceiver->flush(batchBuffer, pCommandStreamReceiver->getResidencyAllocations());
 }
 
@@ -112,7 +126,7 @@ HWTEST_F(TbxCommandStreamTests, DISABLED_flushUntilTailRingBufferLargerThanSizeR
     size_t startOffset = 0;
     TbxCommandStreamReceiverHw<FamilyType> *tbxCsr = (TbxCommandStreamReceiverHw<FamilyType> *)pCommandStreamReceiver;
 
-    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), startOffset, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), startOffset, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
     pCommandStreamReceiver->flush(batchBuffer, pCommandStreamReceiver->getResidencyAllocations());
     auto size = tbxCsr->engineInfo.sizeRingBuffer;
     tbxCsr->engineInfo.sizeRingBuffer = 64;
@@ -153,6 +167,7 @@ TEST(TbxCommandStreamReceiverTest, givenTbxCommandStreamReceiverWhenItIsCreatedW
 
 TEST(TbxCommandStreamReceiverTest, givenTbxCommandStreamReceiverWhenTypeIsCheckedThenTbxCsrIsReturned) {
     ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+    executionEnvironment->initializeMemoryManager();
     std::unique_ptr<CommandStreamReceiver> csr(TbxCommandStreamReceiver::create("", false, *executionEnvironment));
     EXPECT_NE(nullptr, csr);
     EXPECT_EQ(CommandStreamReceiverType::CSR_TBX, csr->getType());
@@ -173,6 +188,18 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenMakeResidentIsC
     EXPECT_EQ(1u, tbxCsr->getResidencyAllocations().size());
 
     memoryManager->freeGraphicsMemory(graphicsAllocation);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenItIsCreatedWithAubDumpAndAubCaptureFileNameHasBeenSpecifiedThenItShouldBeUsedToOpenTheFileWithAubCapture) {
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.AUBDumpCaptureFileName.set("aubcapture_file_name.aub");
+
+    using TbxCsrWithAubDump = CommandStreamReceiverWithAUBDump<TbxCommandStreamReceiverHw<FamilyType>>;
+    std::unique_ptr<TbxCsrWithAubDump> tbxCsrWithAubDump(static_cast<TbxCsrWithAubDump *>(
+        TbxCommandStreamReceiverHw<FamilyType>::create("aubfile", true, *pDevice->executionEnvironment)));
+
+    EXPECT_TRUE(tbxCsrWithAubDump->aubManager->isOpen());
+    EXPECT_STREQ("aubcapture_file_name.aub", tbxCsrWithAubDump->aubManager->getFileName().c_str());
 }
 
 HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenMakeResidentHasAlreadyBeenCalledForGraphicsAllocationThenItShouldNotPushAllocationForResidencyAgainToCsr) {
@@ -217,9 +244,9 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenWriteMemoryIsCa
     auto graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize, GraphicsAllocation::AllocationType::BUFFER});
     ASSERT_NE(nullptr, graphicsAllocation);
 
-    EXPECT_TRUE(graphicsAllocation->isTbxWritable());
+    EXPECT_TRUE(tbxCsr->isTbxWritable(*graphicsAllocation));
     EXPECT_TRUE(tbxCsr->writeMemory(*graphicsAllocation));
-    EXPECT_FALSE(graphicsAllocation->isTbxWritable());
+    EXPECT_FALSE(tbxCsr->isTbxWritable(*graphicsAllocation));
 
     memoryManager->freeGraphicsMemory(graphicsAllocation);
 }
@@ -232,9 +259,9 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenWriteMemoryIsCa
     auto graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize, GraphicsAllocation::AllocationType::BUFFER});
     ASSERT_NE(nullptr, graphicsAllocation);
 
-    graphicsAllocation->setTbxWritable(false);
+    tbxCsr->setTbxWritable(false, *graphicsAllocation);
     EXPECT_FALSE(tbxCsr->writeMemory(*graphicsAllocation));
-    EXPECT_FALSE(graphicsAllocation->isTbxWritable());
+    EXPECT_FALSE(tbxCsr->isTbxWritable(*graphicsAllocation));
 
     memoryManager->freeGraphicsMemory(graphicsAllocation);
 }
@@ -296,7 +323,7 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenFlushIsCalledTh
     ASSERT_NE(nullptr, commandBuffer);
 
     LinearStream cs(commandBuffer);
-    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
 
     ResidencyContainer allocationsForResidency = {graphicsAllocation};
 
@@ -309,6 +336,32 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenFlushIsCalledTh
 
     memoryManager->freeGraphicsMemory(commandBuffer);
     memoryManager->freeGraphicsMemory(graphicsAllocation);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenFlushIsCalledThenItMakesCommandBufferAllocationsProperlyResident) {
+    TbxCommandStreamReceiverHw<FamilyType> *tbxCsr = (TbxCommandStreamReceiverHw<FamilyType> *)pCommandStreamReceiver;
+    TbxMemoryManager *memoryManager = tbxCsr->getMemoryManager();
+    ASSERT_NE(nullptr, memoryManager);
+
+    GraphicsAllocation *commandBuffer = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    ASSERT_NE(nullptr, commandBuffer);
+
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
+
+    ResidencyContainer allocationsForResidency = {};
+
+    EXPECT_FALSE(commandBuffer->isResident(tbxCsr->getOsContext().getContextId()));
+
+    tbxCsr->flush(batchBuffer, allocationsForResidency);
+
+    EXPECT_TRUE(commandBuffer->isResident(tbxCsr->getOsContext().getContextId()));
+    EXPECT_EQ(tbxCsr->peekTaskCount() + 1, commandBuffer->getTaskCount(tbxCsr->getOsContext().getContextId()));
+    EXPECT_EQ(tbxCsr->peekTaskCount() + 1, commandBuffer->getResidencyTaskCount(tbxCsr->getOsContext().getContextId()));
+    ASSERT_EQ(1u, allocationsForResidency.size());
+    EXPECT_EQ(commandBuffer, allocationsForResidency[0]);
+
+    memoryManager->freeGraphicsMemory(commandBuffer);
 }
 
 TEST(TbxMemoryManagerTest, givenTbxMemoryManagerWhenItIsQueriedForSystemSharedMemoryThen1GBIsReturned) {
@@ -407,6 +460,7 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenItIsCreatedWith
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.UseAubStream.set(false);
     MockExecutionEnvironment executionEnvironment(platformDevices[0], false);
+    executionEnvironment.initializeMemoryManager();
 
     auto tbxCsr = std::make_unique<TbxCommandStreamReceiverHw<FamilyType>>(executionEnvironment);
     EXPECT_EQ(nullptr, executionEnvironment.aubCenter->getAubManager());
@@ -421,7 +475,7 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenFlushIsCalledTh
     auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     LinearStream cs(commandBuffer);
-    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 1, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 1, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
     MockGraphicsAllocation allocation(reinterpret_cast<void *>(0x1000), 0x1000);
     ResidencyContainer allocationsForResidency = {&allocation};
 
@@ -447,7 +501,7 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverInBatchedModeWhenFl
     auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     LinearStream cs(commandBuffer);
-    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 1, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 1, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
     ResidencyContainer allocationsForResidency;
 
     tbxCsr.flush(batchBuffer, allocationsForResidency);
@@ -466,7 +520,7 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCommandStreamReceiverWhenFlushIsCalledWi
     auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
 
     LinearStream cs(commandBuffer);
-    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, cs.getUsed(), &cs};
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
     ResidencyContainer allocationsForResidency;
 
     tbxCsr.flush(batchBuffer, allocationsForResidency);
@@ -541,6 +595,7 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenItIsQueriedForPreferredTagPoolSiz
 HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenCreatedWithAubDumpThenFileNameIsExtendedWithSystemInfo) {
     MockExecutionEnvironment executionEnvironment;
     executionEnvironment.setHwInfo(*platformDevices);
+    executionEnvironment.initializeMemoryManager();
 
     setMockAubCenter(&executionEnvironment, CommandStreamReceiverType::CSR_TBX);
 
@@ -553,15 +608,36 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenCreatedWithAubDumpThenFileNameIsE
 HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenCreatedWithAubDumpThenOpenIsCalledOnAubManagerToOpenFileStream) {
     MockExecutionEnvironment executionEnvironment;
     executionEnvironment.setHwInfo(*platformDevices);
+    executionEnvironment.initializeMemoryManager();
 
     std::unique_ptr<TbxCommandStreamReceiverHw<FamilyType>> tbxCsrWithAubDump(reinterpret_cast<TbxCommandStreamReceiverHw<FamilyType> *>(
         TbxCommandStreamReceiver::create("aubfile", true, executionEnvironment)));
     EXPECT_TRUE(tbxCsrWithAubDump->aubManager->isOpen());
 }
 
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenCreatedWithAubDumpInSubCaptureModeThenCreateSubCaptureManagerAndGenerateSubCaptureFileName) {
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.AUBDumpSubCaptureMode.set(static_cast<int32_t>(AubSubCaptureManager::SubCaptureMode::Filter));
+
+    MockExecutionEnvironment executionEnvironment;
+    executionEnvironment.setHwInfo(*platformDevices);
+    executionEnvironment.initializeMemoryManager();
+
+    std::unique_ptr<TbxCommandStreamReceiverHw<FamilyType>> tbxCsrWithAubDump(static_cast<TbxCommandStreamReceiverHw<FamilyType> *>(
+        TbxCommandStreamReceiver::create("aubfile", true, executionEnvironment)));
+    EXPECT_TRUE(tbxCsrWithAubDump->aubManager->isOpen());
+
+    auto subCaptureManager = tbxCsrWithAubDump->subCaptureManager.get();
+    EXPECT_NE(nullptr, subCaptureManager);
+
+    MultiDispatchInfo dispatchInfo;
+    EXPECT_STREQ(subCaptureManager->getSubCaptureFileName(dispatchInfo).c_str(), tbxCsrWithAubDump->aubManager->getFileName().c_str());
+}
+
 HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenCreatedWithAubDumpSeveralTimesThenOpenIsCalledOnAubManagerOnceOnly) {
     MockExecutionEnvironment executionEnvironment(*platformDevices, true);
     executionEnvironment.setHwInfo(*platformDevices);
+    executionEnvironment.initializeMemoryManager();
 
     auto tbxCsrWithAubDump1 = std::unique_ptr<TbxCommandStreamReceiverHw<FamilyType>>(reinterpret_cast<TbxCommandStreamReceiverHw<FamilyType> *>(
         TbxCommandStreamReceiverHw<FamilyType>::create("aubfile", true, executionEnvironment)));
@@ -571,4 +647,250 @@ HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenCreatedWithAubDumpSeveralTimesThe
 
     auto mockManager = reinterpret_cast<MockAubManager *>(executionEnvironment.aubCenter->getAubManager());
     EXPECT_EQ(1u, mockManager->openCalledCnt);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenFlushIsCalledAndSubCaptureIsDisabledThenPauseShouldBeTurnedOn) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+    EXPECT_FALSE(tbxCsr.subCaptureManager->isSubCaptureEnabled());
+
+    auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
+    ResidencyContainer allocationsForResidency = {};
+
+    tbxCsr.flush(batchBuffer, allocationsForResidency);
+
+    auto mockAubManager = reinterpret_cast<MockAubManager *>(pDevice->executionEnvironment->aubCenter->getAubManager());
+    EXPECT_TRUE(mockAubManager->isPaused);
+
+    pDevice->executionEnvironment->memoryManager->freeGraphicsMemory(commandBuffer);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenFlushIsCalledAndSubCaptureIsEnabledThenPauseShouldBeTurnedOff) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureManagerMock->setSubCaptureIsActive(true);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+    EXPECT_TRUE(tbxCsr.subCaptureManager->isSubCaptureEnabled());
+
+    auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
+    ResidencyContainer allocationsForResidency = {};
+
+    tbxCsr.flush(batchBuffer, allocationsForResidency);
+
+    auto mockAubManager = reinterpret_cast<MockAubManager *>(pDevice->executionEnvironment->aubCenter->getAubManager());
+    EXPECT_FALSE(mockAubManager->isPaused);
+
+    pDevice->executionEnvironment->memoryManager->freeGraphicsMemory(commandBuffer);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenFlushIsCalledAndSubCaptureIsEnabledThenCallPollForCompletionAndDisableSubCapture) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureManagerMock->setSubCaptureIsActive(true);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+    EXPECT_TRUE(tbxCsr.subCaptureManager->isSubCaptureEnabled());
+
+    auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
+    ResidencyContainer allocationsForResidency = {};
+
+    tbxCsr.flush(batchBuffer, allocationsForResidency);
+
+    EXPECT_TRUE(tbxCsr.pollForCompletionCalled);
+    EXPECT_FALSE(tbxCsr.subCaptureManager->isSubCaptureEnabled());
+
+    pDevice->executionEnvironment->memoryManager->freeGraphicsMemory(commandBuffer);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenFlushIsCalledAndSubCaptureGetsActivatedThenCallSubmitBatchBufferWithOverrideRingBufferSetToTrue) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureManagerMock->setSubCaptureIsActive(true);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+    EXPECT_FALSE(aubSubCaptureManagerMock->wasSubCaptureActiveInPreviousEnqueue());
+    EXPECT_TRUE(aubSubCaptureManagerMock->isSubCaptureActive());
+
+    auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
+    ResidencyContainer allocationsForResidency = {};
+
+    tbxCsr.flush(batchBuffer, allocationsForResidency);
+
+    EXPECT_TRUE(tbxCsr.submitBatchBufferCalled);
+    EXPECT_TRUE(tbxCsr.overrideRingHeadPassed);
+
+    pDevice->executionEnvironment->memoryManager->freeGraphicsMemory(commandBuffer);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenFlushIsCalledAndSubCaptureRemainsActiveThenCallSubmitBatchBufferWithOverrideRingBufferSetToTrue) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureManagerMock->setSubCaptureWasActiveInPreviousEnqueue(true);
+    aubSubCaptureManagerMock->setSubCaptureIsActive(true);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+    EXPECT_TRUE(aubSubCaptureManagerMock->wasSubCaptureActiveInPreviousEnqueue());
+    EXPECT_TRUE(aubSubCaptureManagerMock->isSubCaptureActive());
+
+    auto commandBuffer = pDevice->executionEnvironment->memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
+    LinearStream cs(commandBuffer);
+    BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
+    ResidencyContainer allocationsForResidency = {};
+
+    tbxCsr.flush(batchBuffer, allocationsForResidency);
+
+    EXPECT_TRUE(tbxCsr.submitBatchBufferCalled);
+    EXPECT_FALSE(tbxCsr.overrideRingHeadPassed);
+
+    pDevice->executionEnvironment->memoryManager->freeGraphicsMemory(commandBuffer);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenProcessResidencyIsCalledWithDumpTbxNonWritableFlagThenAllocationsForResidencyShouldBeMadeTbxWritable) {
+    std::unique_ptr<MemoryManager> memoryManager(nullptr);
+    std::unique_ptr<MockTbxCsrToTestDumpTbxNonWritable<FamilyType>> tbxCsr(new MockTbxCsrToTestDumpTbxNonWritable<FamilyType>(*pDevice->executionEnvironment));
+    memoryManager.reset(new OsAgnosticMemoryManager(*pDevice->executionEnvironment));
+    tbxCsr->setupContext(*pDevice->getDefaultEngine().osContext);
+
+    auto gfxAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize, GraphicsAllocation::AllocationType::BUFFER});
+    tbxCsr->setTbxWritable(false, *gfxAllocation);
+
+    tbxCsr->dumpTbxNonWritable = true;
+
+    ResidencyContainer allocationsForResidency = {gfxAllocation};
+    tbxCsr->processResidency(allocationsForResidency);
+
+    EXPECT_TRUE(tbxCsr->isTbxWritable(*gfxAllocation));
+    EXPECT_FALSE(tbxCsr->dumpTbxNonWritable);
+
+    memoryManager->freeGraphicsMemory(gfxAllocation);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrWhenProcessResidencyIsCalledWithoutDumpTbxWritableFlagThenAllocationsForResidencyShouldBeKeptNonTbxWritable) {
+    std::unique_ptr<MemoryManager> memoryManager(nullptr);
+    std::unique_ptr<MockTbxCsrToTestDumpTbxNonWritable<FamilyType>> tbxCsr(new MockTbxCsrToTestDumpTbxNonWritable<FamilyType>(*pDevice->executionEnvironment));
+    memoryManager.reset(new OsAgnosticMemoryManager(*pDevice->executionEnvironment));
+    tbxCsr->setupContext(*pDevice->getDefaultEngine().osContext);
+
+    auto gfxAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize, GraphicsAllocation::AllocationType::BUFFER});
+    tbxCsr->setTbxWritable(false, *gfxAllocation);
+
+    EXPECT_FALSE(tbxCsr->dumpTbxNonWritable);
+
+    ResidencyContainer allocationsForResidency = {gfxAllocation};
+    tbxCsr->processResidency(allocationsForResidency);
+
+    EXPECT_FALSE(tbxCsr->isTbxWritable(*gfxAllocation));
+    EXPECT_FALSE(tbxCsr->dumpTbxNonWritable);
+
+    memoryManager->freeGraphicsMemory(gfxAllocation);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenCheckAndActivateAubSubCaptureIsCalledAndSubCaptureIsInactiveThenDontForceDumpingAllocationsTbxNonWritable) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureCommon.subCaptureMode = AubSubCaptureManager::SubCaptureMode::Toggle;
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+
+    MockKernelWithInternals kernelInternals(*pDevice);
+    Kernel *kernel = kernelInternals.mockKernel;
+    MockMultiDispatchInfo multiDispatchInfo(kernel);
+
+    EXPECT_FALSE(tbxCsr.dumpTbxNonWritable);
+
+    auto status = tbxCsr.checkAndActivateAubSubCapture(multiDispatchInfo);
+    EXPECT_FALSE(status.isActive);
+    EXPECT_FALSE(status.wasActiveInPreviousEnqueue);
+
+    EXPECT_FALSE(tbxCsr.dumpTbxNonWritable);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenCheckAndActivateAubSubCaptureIsCalledAndSubCaptureGetsActivatedThenForceDumpingAllocationsTbxNonWritable) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureCommon.subCaptureMode = AubSubCaptureManager::SubCaptureMode::Toggle;
+    aubSubCaptureManagerMock->setSubCaptureIsActive(false);
+    aubSubCaptureManagerMock->setSubCaptureToggleActive(true);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+
+    MockKernelWithInternals kernelInternals(*pDevice);
+    Kernel *kernel = kernelInternals.mockKernel;
+    MockMultiDispatchInfo multiDispatchInfo(kernel);
+
+    EXPECT_FALSE(tbxCsr.dumpTbxNonWritable);
+
+    auto status = tbxCsr.checkAndActivateAubSubCapture(multiDispatchInfo);
+    EXPECT_TRUE(status.isActive);
+    EXPECT_FALSE(status.wasActiveInPreviousEnqueue);
+
+    EXPECT_TRUE(tbxCsr.dumpTbxNonWritable);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInSubCaptureModeWhenCheckAndActivateAubSubCaptureIsCalledAndSubCaptureRemainsActivatedThenDontForceDumpingAllocationsTbxNonWritable) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    AubSubCaptureCommon aubSubCaptureCommon;
+    auto aubSubCaptureManagerMock = new AubSubCaptureManagerMock("", aubSubCaptureCommon);
+    aubSubCaptureCommon.subCaptureMode = AubSubCaptureManager::SubCaptureMode::Toggle;
+    aubSubCaptureManagerMock->setSubCaptureIsActive(true);
+    aubSubCaptureManagerMock->setSubCaptureToggleActive(true);
+    tbxCsr.subCaptureManager = std::unique_ptr<AubSubCaptureManagerMock>(aubSubCaptureManagerMock);
+
+    MockKernelWithInternals kernelInternals(*pDevice);
+    Kernel *kernel = kernelInternals.mockKernel;
+    MockMultiDispatchInfo multiDispatchInfo(kernel);
+
+    EXPECT_FALSE(tbxCsr.dumpTbxNonWritable);
+
+    auto status = tbxCsr.checkAndActivateAubSubCapture(multiDispatchInfo);
+    EXPECT_TRUE(status.isActive);
+    EXPECT_TRUE(status.wasActiveInPreviousEnqueue);
+
+    EXPECT_FALSE(tbxCsr.dumpTbxNonWritable);
+}
+
+HWTEST_F(TbxCommandStreamTests, givenTbxCsrInNonSubCaptureModeWhenCheckAndActivateAubSubCaptureIsCalledThenReturnStatusInactive) {
+    MockTbxCsr<FamilyType> tbxCsr{*pDevice->executionEnvironment};
+    MockOsContext osContext(0, 1, aub_stream::ENGINE_RCS, PreemptionMode::Disabled, false);
+    tbxCsr.setupContext(osContext);
+
+    MultiDispatchInfo dispatchInfo;
+    auto status = tbxCsr.checkAndActivateAubSubCapture(dispatchInfo);
+    EXPECT_FALSE(status.isActive);
+    EXPECT_FALSE(status.wasActiveInPreviousEnqueue);
 }

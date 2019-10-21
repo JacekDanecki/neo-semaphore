@@ -6,13 +6,14 @@
  */
 
 #pragma once
+#include "core/command_stream/linear_stream.h"
+#include "core/helpers/aligned_memory.h"
 #include "runtime/command_stream/aub_subcapture.h"
 #include "runtime/command_stream/csr_definitions.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/submissions_aggregator.h"
 #include "runtime/command_stream/thread_arbitration_policy.h"
 #include "runtime/helpers/address_patch.h"
-#include "runtime/helpers/aligned_memory.h"
+#include "runtime/helpers/blit_commands_helper.h"
 #include "runtime/helpers/completion_stamp.h"
 #include "runtime/helpers/flat_batch_buffer_helper.h"
 #include "runtime/helpers/options.h"
@@ -75,7 +76,7 @@ class CommandStreamReceiver {
     virtual void makeResident(GraphicsAllocation &gfxAllocation);
     virtual void makeNonResident(GraphicsAllocation &gfxAllocation);
     MOCKABLE_VIRTUAL void makeSurfacePackNonResident(ResidencyContainer &allocationsForResidency);
-    virtual void processResidency(ResidencyContainer &allocationsForResidency) {}
+    virtual void processResidency(const ResidencyContainer &allocationsForResidency) {}
     virtual void processEviction();
     void makeResidentHostPtrAllocation(GraphicsAllocation *gfxAllocation);
 
@@ -92,6 +93,7 @@ class CommandStreamReceiver {
 
     LinearStream &getCS(size_t minRequiredSize = 1024u);
     OSInterface *getOSInterface() const { return osInterface; };
+    ExecutionEnvironment &peekExecutionEnvironment() const { return executionEnvironment; };
 
     MOCKABLE_VIRTUAL void setTagAllocation(GraphicsAllocation *allocation);
     GraphicsAllocation *getTagAllocation() const {
@@ -104,6 +106,7 @@ class CommandStreamReceiver {
     uint32_t peekTaskCount() const { return taskCount; }
 
     uint32_t peekTaskLevel() const { return taskLevel; }
+    FlushStamp obtainCurrentFlushStamp() const;
 
     uint32_t peekLatestSentTaskCount() const { return latestSentTaskCount; }
 
@@ -115,15 +118,14 @@ class CommandStreamReceiver {
 
     void setMediaVFEStateDirty(bool dirty) { mediaVfeStateDirty = dirty; }
 
-    void setRequiredScratchSize(uint32_t newRequiredScratchSize);
+    void setRequiredScratchSizes(uint32_t newRequiredScratchSize, uint32_t newRequiredPrivateScratchSize);
     GraphicsAllocation *getScratchAllocation();
     GraphicsAllocation *getDebugSurfaceAllocation() const { return debugSurface; }
     GraphicsAllocation *allocateDebugSurface(size_t size);
-
-    void setPreemptionCsrAllocation(GraphicsAllocation *allocation) { preemptionCsrAllocation = allocation; }
-
+    GraphicsAllocation *getPreemptionAllocation() const { return preemptionAllocation; }
     void requestThreadArbitrationPolicy(uint32_t requiredPolicy) { this->requiredThreadArbitrationPolicy = requiredPolicy; }
     void requestStallingPipeControlOnNextFlush() { stallingPipeControlOnNextFlushRequired = true; }
+    bool isStallingPipeControlOnNextFlushRequired() const { return stallingPipeControlOnNextFlushRequired; }
 
     virtual void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool forcePowerSavingMode) = 0;
     MOCKABLE_VIRTUAL bool waitForCompletionWithTimeout(bool enableTimeout, int64_t timeoutMicroseconds, uint32_t taskCountToWait);
@@ -146,13 +148,14 @@ class CommandStreamReceiver {
     void setExperimentalCmdBuffer(std::unique_ptr<ExperimentalCommandBuffer> &&cmdBuffer);
 
     bool initializeTagAllocation();
+    MOCKABLE_VIRTUAL bool createPreemptionAllocation();
+    MOCKABLE_VIRTUAL bool createPerDssBackedBuffer(Device &device);
     MOCKABLE_VIRTUAL std::unique_lock<MutexType> obtainUniqueOwnership();
 
     bool peekTimestampPacketWriteEnabled() const { return timestampPacketWriteEnabled; }
 
     size_t defaultSshSize;
 
-    void setDeviceIndex(uint32_t deviceIndex) { this->deviceIndex = deviceIndex; }
     AllocationsList &getTemporaryAllocations();
     AllocationsList &getAllocationsForReuse();
     InternalAllocationStorage *getInternalAllocationStorage() const { return internalAllocationStorage.get(); }
@@ -162,32 +165,33 @@ class CommandStreamReceiver {
     OsContext &getOsContext() const { return *osContext; }
 
     TagAllocator<HwTimeStamps> *getEventTsAllocator();
-    TagAllocator<HwPerfCounter> *getEventPerfCountAllocator();
+    TagAllocator<HwPerfCounter> *getEventPerfCountAllocator(const uint32_t tagSize);
     TagAllocator<TimestampPacketStorage> *getTimestampPacketAllocator();
 
     virtual cl_int expectMemory(const void *gfxAddress, const void *srcAddress, size_t length, uint32_t compareOperation);
 
-    void setDisableL3Cache(bool val) {
-        disableL3Cache = val;
-    }
-    bool isMultiOsContextCapable() const;
+    virtual bool isMultiOsContextCapable() const = 0;
 
     void setLatestSentTaskCount(uint32_t latestSentTaskCount) {
         this->latestSentTaskCount = latestSentTaskCount;
     }
 
-    void blitWithHostPtr(Buffer &buffer, void *hostPtr, bool blocking, size_t bufferOffset, uint64_t copySize,
-                         BlitterConstants::BlitWithHostPtrDirection copyDirection, CsrDependencies &csrDependencies,
-                         const TimestampPacketContainer &outputTimestampPacket);
-    virtual void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, bool blocking, uint64_t dstOffset, uint64_t srcOffset,
-                            uint64_t copySize, CsrDependencies &csrDependencies, const TimestampPacketContainer &outputTimestampPacket) = 0;
+    virtual void blitBuffer(const BlitProperties &blitProperites) = 0;
 
     ScratchSpaceController *getScratchSpaceController() const {
         return scratchSpaceController.get();
     }
 
+    void registerInstructionCacheFlush() {
+        auto mutex = obtainUniqueOwnership();
+        requiresInstructionCacheFlush = true;
+    }
+
+    bool isLocalMemoryEnabled() const { return localMemoryEnabled; }
+
   protected:
     void cleanupResources();
+    MOCKABLE_VIRTUAL uint32_t getDeviceIndex() const;
 
     std::unique_ptr<FlushStampTracker> flushStamp;
     std::unique_ptr<SubmissionAggregator> submissionAggregator;
@@ -210,8 +214,9 @@ class CommandStreamReceiver {
     volatile uint32_t *tagAddress = nullptr;
 
     GraphicsAllocation *tagAllocation = nullptr;
-    GraphicsAllocation *preemptionCsrAllocation = nullptr;
+    GraphicsAllocation *preemptionAllocation = nullptr;
     GraphicsAllocation *debugSurface = nullptr;
+    GraphicsAllocation *perDssBackedBuffer = nullptr;
     OSInterface *osInterface = nullptr;
 
     IndirectHeap *indirectHeap[IndirectHeap::NUM_TYPES];
@@ -227,7 +232,6 @@ class CommandStreamReceiver {
     PreemptionMode lastPreemptionMode = PreemptionMode::Initial;
     uint64_t totalMemoryUsed = 0u;
 
-    uint32_t deviceIndex = 0u;
     // taskCount - # of tasks submitted
     uint32_t taskCount = 0;
     uint32_t lastSentL3Config = 0;
@@ -235,8 +239,10 @@ class CommandStreamReceiver {
     uint32_t lastSentNumGrfRequired = GrfConfig::DefaultGrfNumber;
     uint32_t requiredThreadArbitrationPolicy = ThreadArbitrationPolicy::RoundRobin;
     uint32_t lastSentThreadArbitrationPolicy = ThreadArbitrationPolicy::NotPresent;
+    uint64_t lastSentSliceCount = QueueSliceCount::defaultSliceCount;
 
     uint32_t requiredScratchSize = 0;
+    uint32_t requiredPrivateScratchSize = 0;
 
     int8_t lastSentCoherencyRequest = -1;
     int8_t lastMediaSamplerConfig = -1;
@@ -247,11 +253,13 @@ class CommandStreamReceiver {
     bool bindingTableBaseAddressRequired = false;
     bool mediaVfeStateDirty = true;
     bool lastVmeSubslicesConfig = false;
-    bool disableL3Cache = false;
     bool stallingPipeControlOnNextFlushRequired = false;
     bool timestampPacketWriteEnabled = false;
     bool nTo1SubmissionModelEnabled = false;
     bool lastSpecialPipelineSelectMode = false;
+    bool requiresInstructionCacheFlush = false;
+
+    bool localMemoryEnabled = false;
 };
 
 typedef CommandStreamReceiver *(*CommandStreamReceiverCreateFunc)(bool withAubDump, ExecutionEnvironment &executionEnvironment);

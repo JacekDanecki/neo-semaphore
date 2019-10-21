@@ -43,6 +43,13 @@ The code can be ported and cross-compiled for Android systems. It is our long-te
 
 See [README.md](https://github.com/intel/compute-runtime/blob/master/README.md).
 
+### How can I check that my specific device is supported by the driver?
+
+To check support for any device, you can follow these steps:
+1. Go to [Ark]( https://ark.intel.com) and find your Device ID
+1. Find the corresponding device ID label in [GMM]( https://github.com/intel/gmmlib/blob/master/Source/inc/common/igfxfmid.h)
+1. Check if this device ID label is enumerated in the [supported device list](https://github.com/intel/compute-runtime/blob/master/runtime/dll/linux/devices/devices_base.inl)
+
 ### When will support for platform X be added?
 
 We will start adding platform support after platform is disclosed by Intel.
@@ -57,6 +64,10 @@ See [README.md](https://github.com/intel/compute-runtime/blob/master/README.md).
 ### Which platforms will receive OpenCL 2.2 support?
 
 Any platforms supporting OpenCL 2.1 are eligible for move to OpenCL 2.2.
+
+### How can I enable OpenCL 2.1 on the Apollo Lake / Broxton platform?
+
+You can enable a higher version of OpenCL using the ForceOCLVersion debug flag.
 
 ## Feature: cl_cache
 
@@ -114,6 +125,25 @@ Neo will look for string value (REG_SZ) `C:\Program Files\application\app.exe` i
 1. Cache is not automatically cleaned. (Workaround: Manually empty *cl_cache* directory)
 1. Cache may exhaust disk space and cause further failures.  (Workaround: Monitor and manually empty *cl_cache* directory)
 1. Cache is not process safe.
+
+## Feature: Out of order queues
+
+### Implementation details of out of order queues implementation
+
+Current implementation of out of order queues allows multiple kernels to be run concurently. This allows for better device utilization in scenarios where single kernel
+doesn't fill whole device.
+
+More details can be found here:
+
+https://github.com/intel/compute-samples/tree/master/compute_samples/applications/commands_aggregation
+
+https://www.iwocl.org/wp-content/uploads/iwocl-2019-michal-mrozek-intel-breaking-the-last-line-of-performance-border.pdf
+
+### Known issues and limitations
+
+1. Turning on profiling on out of order command queue serializes kernel execution.
+1. Blocking command queue with user events blocks all further submissions until event is unblocked.
+1. Commands blocked by user events, when unblocked are serialized as well.
 
 ## Who are we?
 

@@ -9,8 +9,8 @@
 // Current order must be preserved due to two versions of igfxfmid.h
 #pragma warning(push)
 #pragma warning(disable : 4005)
+#include "core/command_stream/linear_stream.h"
 #include "core/helpers/ptr_math.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/device/device.h"
 #include "runtime/gmm_helper/page_table_mngr.h"
@@ -35,6 +35,7 @@ template <typename GfxFamily>
 WddmCommandStreamReceiver<GfxFamily>::WddmCommandStreamReceiver(ExecutionEnvironment &executionEnvironment)
     : BaseClass(executionEnvironment) {
 
+    notifyAubCaptureImpl = DeviceCallbacks<GfxFamily>::notifyAubCapture;
     this->wddm = executionEnvironment.osInterface->get()->getWddm();
     this->osInterface = executionEnvironment.osInterface.get();
 
@@ -102,13 +103,13 @@ FlushStamp WddmCommandStreamReceiver<GfxFamily>::flush(BatchBuffer &batchBuffer,
 
 template <typename GfxFamily>
 void WddmCommandStreamReceiver<GfxFamily>::makeResident(GraphicsAllocation &gfxAllocation) {
-    DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "allocation =", static_cast<WddmAllocation *>(&gfxAllocation));
+    DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "allocation =", &gfxAllocation);
 
     if (gfxAllocation.fragmentsStorage.fragmentCount == 0) {
-        DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "allocation default handle =", static_cast<WddmAllocation *>(&gfxAllocation)->getDefaultHandle());
+        DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "allocation default handle =", static_cast<WddmAllocation &>(gfxAllocation).getDefaultHandle());
     } else {
-        for (uint32_t allocationId = 0; allocationId < static_cast<WddmAllocation *>(&gfxAllocation)->fragmentsStorage.fragmentCount; allocationId++) {
-            DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "fragment handle =", static_cast<WddmAllocation *>(&gfxAllocation)->fragmentsStorage.fragmentStorageData[allocationId].osHandleStorage->handle);
+        for (uint32_t allocationId = 0; allocationId < gfxAllocation.fragmentsStorage.fragmentCount; allocationId++) {
+            DBG_LOG(ResidencyDebugEnable, "Residency:", __FUNCTION__, "fragment handle =", gfxAllocation.fragmentsStorage.fragmentStorageData[allocationId].osHandleStorage->handle);
         }
     }
 
@@ -116,7 +117,7 @@ void WddmCommandStreamReceiver<GfxFamily>::makeResident(GraphicsAllocation &gfxA
 }
 
 template <typename GfxFamily>
-void WddmCommandStreamReceiver<GfxFamily>::processResidency(ResidencyContainer &allocationsForResidency) {
+void WddmCommandStreamReceiver<GfxFamily>::processResidency(const ResidencyContainer &allocationsForResidency) {
     bool success = static_cast<OsContextWin *>(osContext)->getResidencyController().makeResidentResidencyAllocations(allocationsForResidency);
     DEBUG_BREAK_IF(!success);
 }
@@ -128,7 +129,7 @@ void WddmCommandStreamReceiver<GfxFamily>::processEviction() {
 }
 
 template <typename GfxFamily>
-WddmMemoryManager *WddmCommandStreamReceiver<GfxFamily>::getMemoryManager() {
+WddmMemoryManager *WddmCommandStreamReceiver<GfxFamily>::getMemoryManager() const {
     return static_cast<WddmMemoryManager *>(CommandStreamReceiver::getMemoryManager());
 }
 
@@ -139,34 +140,11 @@ bool WddmCommandStreamReceiver<GfxFamily>::waitForFlushStamp(FlushStamp &flushSt
 
 template <typename GfxFamily>
 GmmPageTableMngr *WddmCommandStreamReceiver<GfxFamily>::createPageTableManager() {
-    GMM_DEVICE_CALLBACKS_INT deviceCallbacks = {};
     GMM_TRANSLATIONTABLE_CALLBACKS ttCallbacks = {};
-    auto gdi = wddm->getGdi();
+    ttCallbacks.pfWriteL3Adr = TTCallbacks<GfxFamily>::writeL3Address;
 
-    // clang-format off
-    deviceCallbacks.Adapter.KmtHandle         = wddm->getAdapter();
-    deviceCallbacks.hDevice.KmtHandle         = wddm->getDevice();
-    deviceCallbacks.hCsr            = static_cast<CommandStreamReceiverHw<GfxFamily> *>(this);
-    deviceCallbacks.PagingQueue     = wddm->getPagingQueue();
-    deviceCallbacks.PagingFence     = wddm->getPagingQueueSyncObject();
-
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnAllocate     = gdi->createAllocation;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnDeallocate   = gdi->destroyAllocation;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnMapGPUVA     = gdi->mapGpuVirtualAddress;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnMakeResident = gdi->makeResident;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnEvict        = gdi->evict;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnReserveGPUVA = gdi->reserveGpuVirtualAddress;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnUpdateGPUVA  = gdi->updateGpuVirtualAddress;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnWaitFromCpu  = gdi->waitForSynchronizationObjectFromCpu;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnLock         = gdi->lock2;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnUnLock       = gdi->unlock2;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnEscape       = gdi->escape;
-    deviceCallbacks.DevCbPtrs.KmtCbPtrs.pfnNotifyAubCapture = DeviceCallbacks<GfxFamily>::notifyAubCapture;
-
-    ttCallbacks.pfWriteL3Adr        = TTCallbacks<GfxFamily>::writeL3Address;
-    // clang-format on
-
-    GmmPageTableMngr *gmmPageTableMngr = GmmPageTableMngr::create(&deviceCallbacks, TT_TYPE::TRTT | TT_TYPE::AUXTT, &ttCallbacks);
+    GmmPageTableMngr *gmmPageTableMngr = GmmPageTableMngr::create(TT_TYPE::TRTT | TT_TYPE::AUXTT, &ttCallbacks);
+    gmmPageTableMngr->setCsrHandle(this);
     this->wddm->resetPageTableManager(gmmPageTableMngr);
     return gmmPageTableMngr;
 }

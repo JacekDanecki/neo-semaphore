@@ -7,11 +7,9 @@
 
 #include "drm_neo.h"
 
-#include "runtime/memory_manager/memory_constants.h"
+#include "core/memory_manager/memory_constants.h"
+#include "core/utilities/directory.h"
 #include "runtime/os_interface/os_inc_base.h"
-#include "runtime/utilities/directory.h"
-
-#include "drm/i915_drm.h"
 
 #include <cstdio>
 #include <cstring>
@@ -42,19 +40,11 @@ int Drm::getParamIoctl(int param, int *dstValue) {
 }
 
 int Drm::getDeviceID(int &devId) {
-#if defined(I915_PARAM_CHIPSET_ID)
     return getParamIoctl(I915_PARAM_CHIPSET_ID, &devId);
-#else
-    return 0;
-#endif
 }
 
 int Drm::getDeviceRevID(int &revId) {
-#if defined(I915_PARAM_REVISION)
     return getParamIoctl(I915_PARAM_REVISION, &revId);
-#else
-    return 0;
-#endif
 }
 
 int Drm::getExecSoftPin(int &execSoftPin) {
@@ -70,11 +60,7 @@ int Drm::enableTurboBoost() {
 }
 
 int Drm::getEnabledPooledEu(int &enabled) {
-#if defined(I915_PARAM_HAS_POOLED_EU)
     return getParamIoctl(I915_PARAM_HAS_POOLED_EU, &enabled);
-#else
-    return 0;
-#endif
 }
 
 int Drm::getMaxGpuFrequency(int &maxGpuFrequency) {
@@ -143,6 +129,10 @@ void Drm::checkPreemptionSupport() {
     preemptionSupported = ((0 == ret) && (value & I915_SCHEDULER_CAP_PREEMPTION));
 }
 
+void Drm::checkQueueSliceSupport() {
+    sliceCountChangeSupported = getQueueSliceCount(&sseu) == 0 ? true : false;
+}
+
 void Drm::setLowPriorityContextParam(uint32_t drmContextId) {
     drm_i915_gem_context_param gcp = {};
     gcp.ctx_id = drmContextId;
@@ -151,6 +141,37 @@ void Drm::setLowPriorityContextParam(uint32_t drmContextId) {
 
     auto retVal = ioctl(DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &gcp);
     UNRECOVERABLE_IF(retVal != 0);
+}
+
+int Drm::getQueueSliceCount(drm_i915_gem_context_param_sseu *sseu) {
+    drm_i915_gem_context_param contextParam = {};
+    contextParam.param = I915_CONTEXT_PARAM_SSEU;
+    sseu->engine.engine_class = I915_ENGINE_CLASS_RENDER;
+    sseu->engine.engine_instance = I915_EXEC_DEFAULT;
+    contextParam.value = reinterpret_cast<uint64_t>(sseu);
+    contextParam.size = sizeof(struct drm_i915_gem_context_param_sseu);
+
+    return ioctl(DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM, &contextParam);
+}
+
+uint64_t Drm::getSliceMask(uint64_t sliceCount) {
+    return static_cast<uint64_t>((1 << sliceCount) - 1);
+}
+bool Drm::setQueueSliceCount(uint64_t sliceCount) {
+    if (sliceCountChangeSupported) {
+        drm_i915_gem_context_param contextParam = {};
+        sseu.slice_mask = getSliceMask(sliceCount);
+
+        contextParam.param = I915_CONTEXT_PARAM_SSEU;
+        contextParam.ctx_id = 0;
+        contextParam.value = reinterpret_cast<uint64_t>(&sseu);
+        contextParam.size = sizeof(struct drm_i915_gem_context_param_sseu);
+        int retVal = ioctl(DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &contextParam);
+        if (retVal == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 uint32_t Drm::createDrmContext() {
@@ -169,45 +190,19 @@ void Drm::destroyDrmContext(uint32_t drmContextId) {
 }
 
 int Drm::getEuTotal(int &euTotal) {
-#if defined(I915_PARAM_EU_TOTAL) || defined(I915_PARAM_EU_COUNT)
-    int param =
-#if defined(I915_PARAM_EU_TOTAL)
-        I915_PARAM_EU_TOTAL;
-#elif defined(I915_PARAM_EU_COUNT)
-        I915_PARAM_EU_COUNT;
-#endif
-    return getParamIoctl(param, &euTotal);
-#else
-    return 0;
-#endif
+    return getParamIoctl(I915_PARAM_EU_TOTAL, &euTotal);
 }
 
 int Drm::getSubsliceTotal(int &subsliceTotal) {
-#if defined(I915_PARAM_SUBSLICE_TOTAL)
     return getParamIoctl(I915_PARAM_SUBSLICE_TOTAL, &subsliceTotal);
-#else
-    return 0;
-#endif
 }
 
 int Drm::getMinEuInPool(int &minEUinPool) {
-#if defined(I915_PARAM_MIN_EU_IN_POOL)
     return getParamIoctl(I915_PARAM_MIN_EU_IN_POOL, &minEUinPool);
-#else
-    return 0;
-#endif
 }
 
 int Drm::getErrno() {
     return errno;
-}
-
-bool Drm::getSimplifiedMocsTableUsage() const {
-    return useSimplifiedMocsTable;
-}
-
-void Drm::setSimplifiedMocsTableUsage(bool value) {
-    useSimplifiedMocsTable = value;
 }
 
 } // namespace NEO

@@ -7,10 +7,10 @@
 
 #pragma once
 
-#include "runtime/helpers/file_io.h"
+#include "core/helpers/file_io.h"
+#include "core/utilities/directory.h"
 #include "runtime/helpers/string_helpers.h"
 #include "runtime/os_interface/debug_settings_manager.h"
-#include "runtime/utilities/directory.h"
 
 #include <map>
 

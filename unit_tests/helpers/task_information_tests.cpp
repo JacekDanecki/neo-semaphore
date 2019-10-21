@@ -10,6 +10,7 @@
 #include "runtime/memory_manager/internal_allocation_storage.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/fixtures/dispatch_flags_fixture.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_csr.h"
@@ -29,7 +30,7 @@ TEST(CommandTest, mapUnmapSubmitWithoutTerminateFlagFlushesCsr) {
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    std::unique_ptr<Command> command(new CommandMapUnmap(MapOperationType::MAP, buffer, size, offset, false, csr, *cmdQ.get()));
+    std::unique_ptr<Command> command(new CommandMapUnmap(MapOperationType::MAP, buffer, size, offset, false, *cmdQ));
     CompletionStamp completionStamp = command->submit(20, false);
 
     auto expectedTaskCount = initialTaskCount + 1;
@@ -46,7 +47,7 @@ TEST(CommandTest, mapUnmapSubmitWithTerminateFlagAbortsFlush) {
 
     MemObjSizeArray size = {{1, 1, 1}};
     MemObjOffsetArray offset = {{0, 0, 0}};
-    std::unique_ptr<Command> command(new CommandMapUnmap(MapOperationType::MAP, buffer, size, offset, false, csr, *cmdQ.get()));
+    std::unique_ptr<Command> command(new CommandMapUnmap(MapOperationType::MAP, buffer, size, offset, false, *cmdQ));
     CompletionStamp completionStamp = command->submit(20, true);
 
     auto submitTaskCount = csr.peekTaskCount();
@@ -56,18 +57,18 @@ TEST(CommandTest, mapUnmapSubmitWithTerminateFlagAbortsFlush) {
     EXPECT_EQ(expectedTaskCount, completionStamp.taskCount);
 }
 
-TEST(CommandTest, markerSubmitWithoutTerminateFlagFlushesCsr) {
+TEST(CommandTest, markerSubmitWithoutTerminateFlagDosntFlushCsr) {
     std::unique_ptr<Device> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     std::unique_ptr<MockCommandQueue> cmdQ(new MockCommandQueue(nullptr, device.get(), nullptr));
     MockCommandStreamReceiver csr(*device->getExecutionEnvironment());
     MockBuffer buffer;
 
     auto initialTaskCount = csr.peekTaskCount();
-    std::unique_ptr<Command> command(new CommandMarker(*cmdQ.get(), csr, CL_COMMAND_MARKER, 0));
+    std::unique_ptr<Command> command(new CommandWithoutKernel(*cmdQ));
     CompletionStamp completionStamp = command->submit(20, false);
 
-    auto expectedTaskCount = initialTaskCount + 1;
-    EXPECT_EQ(expectedTaskCount, completionStamp.taskCount);
+    EXPECT_EQ(initialTaskCount, completionStamp.taskCount);
+    EXPECT_EQ(initialTaskCount, csr.peekTaskCount());
 }
 
 TEST(CommandTest, markerSubmitWithTerminateFlagAbortsFlush) {
@@ -77,7 +78,7 @@ TEST(CommandTest, markerSubmitWithTerminateFlagAbortsFlush) {
     MockBuffer buffer;
 
     auto initialTaskCount = csr.peekTaskCount();
-    std::unique_ptr<Command> command(new CommandMarker(*cmdQ.get(), csr, CL_COMMAND_MARKER, 0));
+    std::unique_ptr<Command> command(new CommandWithoutKernel(*cmdQ));
     CompletionStamp completionStamp = command->submit(20, true);
 
     auto submitTaskCount = csr.peekTaskCount();
@@ -88,12 +89,11 @@ TEST(CommandTest, markerSubmitWithTerminateFlagAbortsFlush) {
 }
 
 TEST(CommandTest, givenWaitlistRequestWhenCommandComputeKernelIsCreatedThenMakeLocalCopyOfWaitlist) {
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
     class MockCommandComputeKernel : public CommandComputeKernel {
       public:
         using CommandComputeKernel::eventsWaitlist;
-        MockCommandComputeKernel(CommandQueue &commandQueue, KernelOperation *kernelResources, std::vector<Surface *> &surfaces, Kernel *kernel)
-            : CommandComputeKernel(commandQueue, std::unique_ptr<KernelOperation>(kernelResources), surfaces, false, false, false, nullptr, PreemptionMode::Disabled, kernel, 0) {}
+        MockCommandComputeKernel(CommandQueue &commandQueue, std::unique_ptr<KernelOperation> &kernelOperation, std::vector<Surface *> &surfaces, Kernel *kernel)
+            : CommandComputeKernel(commandQueue, kernelOperation, surfaces, false, false, false, nullptr, PreemptionMode::Disabled, kernel, 0) {}
     };
 
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
@@ -107,8 +107,8 @@ TEST(CommandTest, givenWaitlistRequestWhenCommandComputeKernelIsCreatedThenMakeL
     auto cmdStream = new LinearStream(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({1, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
 
     std::vector<Surface *> surfaces;
-    auto kernelOperation = new KernelOperation(std::unique_ptr<LinearStream>(cmdStream), UniqueIH(ih1), UniqueIH(ih2), UniqueIH(ih3),
-                                               *device->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage());
+    auto kernelOperation = std::make_unique<KernelOperation>(cmdStream, *device->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage());
+    kernelOperation->setHeaps(ih1, ih2, ih3);
 
     UserEvent event1, event2, event3;
     cl_event waitlist[] = {&event1, &event2};
@@ -128,7 +128,6 @@ TEST(CommandTest, givenWaitlistRequestWhenCommandComputeKernelIsCreatedThenMakeL
 }
 
 TEST(KernelOperationDestruction, givenKernelOperationWhenItIsDestructedThenAllAllocationsAreStoredInInternalStorageForReuse) {
-    using UniqueIH = std::unique_ptr<IndirectHeap>;
     auto device = std::unique_ptr<MockDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     CommandQueue cmdQ(nullptr, device.get(), nullptr);
     InternalAllocationStorage &allocationStorage = *device->getDefaultEngine().commandStreamReceiver->getInternalAllocationStorage();
@@ -138,14 +137,15 @@ TEST(KernelOperationDestruction, givenKernelOperationWhenItIsDestructedThenAllAl
     cmdQ.allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 1, ih1);
     cmdQ.allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 1, ih2);
     cmdQ.allocateHeapMemory(IndirectHeap::SURFACE_STATE, 1, ih3);
-    auto cmdStream = std::make_unique<LinearStream>(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({1, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
+    auto cmdStream = new LinearStream(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({1, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
 
     auto &heapAllocation1 = *ih1->getGraphicsAllocation();
     auto &heapAllocation2 = *ih2->getGraphicsAllocation();
     auto &heapAllocation3 = *ih3->getGraphicsAllocation();
     auto &cmdStreamAllocation = *cmdStream->getGraphicsAllocation();
 
-    auto kernelOperation = std::make_unique<KernelOperation>(std::move(cmdStream), UniqueIH(ih1), UniqueIH(ih2), UniqueIH(ih3), allocationStorage);
+    auto kernelOperation = std::make_unique<KernelOperation>(cmdStream, allocationStorage);
+    kernelOperation->setHeaps(ih1, ih2, ih3);
     EXPECT_TRUE(allocationsForReuse.peekIsEmpty());
 
     kernelOperation.reset();
@@ -153,4 +153,137 @@ TEST(KernelOperationDestruction, givenKernelOperationWhenItIsDestructedThenAllAl
     EXPECT_TRUE(allocationsForReuse.peekContains(heapAllocation1));
     EXPECT_TRUE(allocationsForReuse.peekContains(heapAllocation2));
     EXPECT_TRUE(allocationsForReuse.peekContains(heapAllocation3));
+}
+
+template <typename GfxFamily>
+class MockCsr1 : public CommandStreamReceiverHw<GfxFamily> {
+  public:
+    CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
+                              const IndirectHeap &dsh, const IndirectHeap &ioh,
+                              const IndirectHeap &ssh, uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) override {
+        passedDispatchFlags = dispatchFlags;
+        return CompletionStamp();
+    }
+    MockCsr1(ExecutionEnvironment &executionEnvironment) : CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiverHw(executionEnvironment) {}
+    DispatchFlags passedDispatchFlags = DispatchFlagsHelper::createDefaultDispatchFlags();
+    using CommandStreamReceiver::timestampPacketWriteEnabled;
+};
+
+HWTEST_F(DispatchFlagsTests, givenCommandMapUnmapWhenSubmitThenPassCorrectDispatchFlags) {
+    using CsrType = MockCsr1<FamilyType>;
+    SetUpImpl<CsrType>();
+
+    auto mockCmdQ = std::make_unique<MockCommandQueueHw<FamilyType>>(context.get(), device.get(), nullptr);
+    auto mockCsr = static_cast<CsrType *>(&mockCmdQ->getGpgpuCommandStreamReceiver());
+
+    MockBuffer buffer;
+
+    MemObjSizeArray size = {{1, 1, 1}};
+    MemObjOffsetArray offset = {{0, 0, 0}};
+    std::unique_ptr<Command> command(new CommandMapUnmap(MapOperationType::MAP, buffer, size, offset, false, *mockCmdQ));
+    command->submit(20, false);
+
+    EXPECT_EQ(mockCmdQ->flushStamp->getStampReference(), mockCsr->passedDispatchFlags.flushStampReference);
+    EXPECT_EQ(mockCmdQ->getThrottle(), mockCsr->passedDispatchFlags.throttle);
+    EXPECT_EQ(PreemptionHelper::taskPreemptionMode(mockCmdQ->getDevice(), nullptr), mockCsr->passedDispatchFlags.preemptionMode);
+    EXPECT_EQ(GrfConfig::DefaultGrfNumber, mockCsr->passedDispatchFlags.numGrfRequired);
+    EXPECT_EQ(L3CachingSettings::l3CacheOn, mockCsr->passedDispatchFlags.l3CacheSettings);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.blocking);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.dcFlush);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.useSLM);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.guardCommandBufferWithPipeControl);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.gsba32BitRequired);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.requiresCoherency);
+    EXPECT_EQ(mockCmdQ->getPriority() == QueuePriority::LOW, mockCsr->passedDispatchFlags.lowPriority);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.implicitFlush);
+    EXPECT_EQ(mockCmdQ->getGpgpuCommandStreamReceiver().isNTo1SubmissionModelEnabled(), mockCsr->passedDispatchFlags.outOfOrderExecutionAllowed);
+    EXPECT_EQ(mockCmdQ->isMultiEngineQueue(), mockCsr->passedDispatchFlags.multiEngineQueue);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.epilogueRequired);
+}
+
+HWTEST_F(DispatchFlagsTests, givenCommandComputeKernelWhenSubmitThenPassCorrectDispatchFlags) {
+    using CsrType = MockCsr1<FamilyType>;
+    SetUpImpl<CsrType>();
+    auto mockCmdQ = std::make_unique<MockCommandQueueHw<FamilyType>>(context.get(), device.get(), nullptr);
+    auto mockCsr = static_cast<CsrType *>(&mockCmdQ->getGpgpuCommandStreamReceiver());
+
+    IndirectHeap *ih1 = nullptr, *ih2 = nullptr, *ih3 = nullptr;
+    mockCmdQ->allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 1, ih1);
+    mockCmdQ->allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 1, ih2);
+    mockCmdQ->allocateHeapMemory(IndirectHeap::SURFACE_STATE, 1, ih3);
+
+    PreemptionMode preemptionMode = device->getPreemptionMode();
+    auto cmdStream = new LinearStream(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({1, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
+
+    std::vector<Surface *> surfaces;
+    auto kernelOperation = std::make_unique<KernelOperation>(cmdStream, *mockCmdQ->getGpgpuCommandStreamReceiver().getInternalAllocationStorage());
+    MockKernelWithInternals kernel(*device);
+    kernelOperation->setHeaps(ih1, ih2, ih3);
+
+    bool flushDC = false;
+    bool slmUsed = false;
+    bool ndRangeKernel = false;
+    bool requiresCoherency = false;
+    for (auto &surface : surfaces) {
+        requiresCoherency |= surface->IsCoherent;
+    }
+    std::unique_ptr<Command> command(new CommandComputeKernel(*mockCmdQ, kernelOperation, surfaces, flushDC, slmUsed, ndRangeKernel, nullptr, preemptionMode, kernel, 1));
+    command->submit(20, false);
+
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.pipelineSelectArgs.specialPipelineSelectMode);
+    EXPECT_EQ(kernel.mockKernel->isVmeKernel(), mockCsr->passedDispatchFlags.pipelineSelectArgs.mediaSamplerRequired);
+    EXPECT_EQ(mockCmdQ->flushStamp->getStampReference(), mockCsr->passedDispatchFlags.flushStampReference);
+    EXPECT_EQ(mockCmdQ->getThrottle(), mockCsr->passedDispatchFlags.throttle);
+    EXPECT_EQ(preemptionMode, mockCsr->passedDispatchFlags.preemptionMode);
+    EXPECT_EQ(kernel.mockKernel->getKernelInfo().patchInfo.executionEnvironment->NumGRFRequired, mockCsr->passedDispatchFlags.numGrfRequired);
+    EXPECT_EQ(L3CachingSettings::l3CacheOn, mockCsr->passedDispatchFlags.l3CacheSettings);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.blocking);
+    EXPECT_EQ(flushDC, mockCsr->passedDispatchFlags.dcFlush);
+    EXPECT_EQ(slmUsed, mockCsr->passedDispatchFlags.useSLM);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.guardCommandBufferWithPipeControl);
+    EXPECT_EQ(ndRangeKernel, mockCsr->passedDispatchFlags.gsba32BitRequired);
+    EXPECT_EQ(requiresCoherency, mockCsr->passedDispatchFlags.requiresCoherency);
+    EXPECT_EQ(mockCmdQ->getPriority() == QueuePriority::LOW, mockCsr->passedDispatchFlags.lowPriority);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.implicitFlush);
+    EXPECT_EQ(mockCmdQ->getGpgpuCommandStreamReceiver().isNTo1SubmissionModelEnabled(), mockCsr->passedDispatchFlags.outOfOrderExecutionAllowed);
+    EXPECT_EQ(mockCmdQ->isMultiEngineQueue(), mockCsr->passedDispatchFlags.multiEngineQueue);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.epilogueRequired);
+}
+
+HWTEST_F(DispatchFlagsTests, givenCommandWithoutKernelWhenSubmitThenPassCorrectDispatchFlags) {
+    using CsrType = MockCsr1<FamilyType>;
+    SetUpImpl<CsrType>();
+
+    auto mockCmdQ = std::make_unique<MockCommandQueueHw<FamilyType>>(context.get(), device.get(), nullptr);
+    auto mockCsr = static_cast<CsrType *>(&mockCmdQ->getGpgpuCommandStreamReceiver());
+
+    mockCsr->timestampPacketWriteEnabled = true;
+    IndirectHeap *ih1 = nullptr, *ih2 = nullptr, *ih3 = nullptr;
+    mockCmdQ->allocateHeapMemory(IndirectHeap::DYNAMIC_STATE, 1, ih1);
+    mockCmdQ->allocateHeapMemory(IndirectHeap::INDIRECT_OBJECT, 1, ih2);
+    mockCmdQ->allocateHeapMemory(IndirectHeap::SURFACE_STATE, 1, ih3);
+
+    auto cmdStream = new LinearStream(device->getMemoryManager()->allocateGraphicsMemoryWithProperties({1, GraphicsAllocation::AllocationType::COMMAND_BUFFER}));
+    auto kernelOperation = std::make_unique<KernelOperation>(cmdStream, *mockCmdQ->getGpgpuCommandStreamReceiver().getInternalAllocationStorage());
+    kernelOperation->setHeaps(ih1, ih2, ih3);
+    std::unique_ptr<Command> command(new CommandWithoutKernel(*mockCmdQ, kernelOperation));
+
+    command->submit(20, false);
+
+    EXPECT_EQ(mockCmdQ->flushStamp->getStampReference(), mockCsr->passedDispatchFlags.flushStampReference);
+    EXPECT_EQ(mockCmdQ->getThrottle(), mockCsr->passedDispatchFlags.throttle);
+    EXPECT_EQ(mockCmdQ->getDevice().getPreemptionMode(), mockCsr->passedDispatchFlags.preemptionMode);
+    EXPECT_EQ(GrfConfig::DefaultGrfNumber, mockCsr->passedDispatchFlags.numGrfRequired);
+    EXPECT_EQ(L3CachingSettings::l3CacheOn, mockCsr->passedDispatchFlags.l3CacheSettings);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.blocking);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.dcFlush);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.useSLM);
+    EXPECT_TRUE(mockCsr->passedDispatchFlags.guardCommandBufferWithPipeControl);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.gsba32BitRequired);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.requiresCoherency);
+    EXPECT_EQ(mockCmdQ->getPriority() == QueuePriority::LOW, mockCsr->passedDispatchFlags.lowPriority);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.implicitFlush);
+    EXPECT_EQ(mockCmdQ->getGpgpuCommandStreamReceiver().isNTo1SubmissionModelEnabled(), mockCsr->passedDispatchFlags.outOfOrderExecutionAllowed);
+    EXPECT_EQ(mockCmdQ->isMultiEngineQueue(), mockCsr->passedDispatchFlags.multiEngineQueue);
+    EXPECT_FALSE(mockCsr->passedDispatchFlags.epilogueRequired);
 }

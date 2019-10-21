@@ -55,8 +55,8 @@ function(compile_kernel target gen_type platform_type kernel)
 endfunction()
 
 macro(macro_for_each_gen)
-  foreach(PLATFORM_TYPE "CORE" "LP")
-    if(${GEN_TYPE}_HAS_${PLATFORM_TYPE})
+  foreach(PLATFORM_TYPE ${PLATFORM_TYPES})
+    if(${GEN_TYPE}_HAS_${PLATFORM_TYPE} AND SUPPORT_DEVICE_ENQUEUE_${GEN_TYPE})
       get_family_name_with_type(${GEN_TYPE} ${PLATFORM_TYPE})
       set(PLATFORM_2_0_LOWER ${DEFAULT_SUPPORTED_2_0_${GEN_TYPE}_${PLATFORM_TYPE}_PLATFORM})
       if(COMPILE_BUILT_INS AND PLATFORM_2_0_LOWER)
@@ -72,7 +72,7 @@ endmacro()
 
 apply_macro_for_each_gen("SUPPORTED")
 
-add_library(${SCHEDULER_BINARY_LIB_NAME} OBJECT CMakeLists.txt)
+add_library(${SCHEDULER_BINARY_LIB_NAME} OBJECT EXCLUDE_FROM_ALL CMakeLists.txt)
 
 if(COMPILE_BUILT_INS)
   target_sources(${SCHEDULER_BINARY_LIB_NAME} PUBLIC ${GENERATED_SCHEDULER_CPPS})

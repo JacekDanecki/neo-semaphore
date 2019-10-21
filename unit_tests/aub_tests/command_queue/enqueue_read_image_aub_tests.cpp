@@ -5,10 +5,10 @@
  *
  */
 
+#include "core/helpers/aligned_memory.h"
 #include "core/helpers/ptr_math.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/device/device.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "test.h"
@@ -43,18 +43,22 @@ struct AUBReadImage
     void SetUp() override {
         CommandDeviceFixture::SetUp(cl_command_queue_properties(0));
         CommandStreamFixture::SetUp(pCmdQ);
-        context = new MockContext(pDevice);
+        if (!pDevice->getDeviceInfo().imageSupport) {
+            GTEST_SKIP();
+        }
+        context = std::make_unique<MockContext>(pDevice);
     }
 
     void TearDown() override {
-        delete srcImage;
-        delete context;
+        srcImage.reset();
+        context.reset();
+
         CommandStreamFixture::TearDown();
         CommandDeviceFixture::TearDown();
     }
 
-    MockContext *context;
-    Image *srcImage = nullptr;
+    std::unique_ptr<MockContext> context;
+    std::unique_ptr<Image> srcImage;
 };
 
 HWTEST_P(AUBReadImage, simpleUnalignedMemory) {
@@ -137,14 +141,14 @@ HWTEST_P(AUBReadImage, simpleUnalignedMemory) {
     cl_mem_flags flags = CL_MEM_USE_HOST_PTR;
     auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
     auto retVal = CL_INVALID_VALUE;
-    srcImage = Image::create(
-        context,
+    srcImage.reset(Image::create(
+        context.get(),
         flags,
         surfaceFormat,
         &imageDesc,
         srcMemory,
-        retVal);
-    ASSERT_NE(nullptr, srcImage);
+        retVal));
+    ASSERT_NE(nullptr, srcImage.get());
 
     auto origin = std::get<2>(GetParam()).offsets;
 
@@ -157,7 +161,7 @@ HWTEST_P(AUBReadImage, simpleUnalignedMemory) {
     size_t inputSlicePitch = inputRowPitch * testHeight;
 
     retVal = pCmdQ->enqueueReadImage(
-        srcImage,
+        srcImage.get(),
         CL_FALSE,
         origin,
         region,
@@ -175,7 +179,8 @@ HWTEST_P(AUBReadImage, simpleUnalignedMemory) {
 
     auto imageMemory = srcMemory;
 
-    if (!srcImage->isMemObjZeroCopy() && !srcImage->allowTiling()) {
+    bool isGpuCopy = srcImage->isTiledAllocation() || !MemoryPool::isSystemMemoryPool(srcImage->getGraphicsAllocation()->getMemoryPool());
+    if (!isGpuCopy) {
         imageMemory = (uint8_t *)(srcImage->getCpuAddress());
     }
 
@@ -211,7 +216,7 @@ HWTEST_P(AUBReadImage, simpleUnalignedMemory) {
             ptrOffset(dstMemoryUnaligned, testWidth * testHeight * elementSize);
     }
 
-    retVal = pCmdQ->finish(true); //FixMe - not all test cases verified with expects
+    retVal = pCmdQ->finish(); //FixMe - not all test cases verified with expects
     EXPECT_EQ(CL_SUCCESS, retVal);
 
     alignedFree(dstMemoryAligned);

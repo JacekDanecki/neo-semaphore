@@ -7,15 +7,16 @@
 
 #include "runtime/command_stream/aub_subcapture.h"
 
+#include "core/utilities/debug_settings_reader.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/kernel/kernel.h"
-#include "runtime/utilities/debug_settings_reader.h"
+#include "runtime/os_interface/ocl_reg_path.h"
 
 namespace NEO {
 
 AubSubCaptureManager::AubSubCaptureManager(const std::string &fileName, AubSubCaptureCommon &subCaptureCommon)
     : initialFileName(fileName), subCaptureCommon(subCaptureCommon) {
-    settingsReader.reset(SettingsReader::createOsReader(true));
+    settingsReader.reset(SettingsReader::createOsReader(true, oclRegPath));
 }
 
 AubSubCaptureManager::~AubSubCaptureManager() = default;
@@ -59,23 +60,35 @@ AubSubCaptureStatus AubSubCaptureManager::checkAndActivateSubCapture(const Multi
     return {subCaptureIsActive, subCaptureWasActiveInPreviousEnqueue};
 }
 
+AubSubCaptureStatus AubSubCaptureManager::getSubCaptureStatus() const {
+    auto guard = this->lock();
+
+    return {this->subCaptureIsActive, this->subCaptureWasActiveInPreviousEnqueue};
+}
+
 const std::string &AubSubCaptureManager::getSubCaptureFileName(const MultiDispatchInfo &dispatchInfo) {
     auto guard = this->lock();
 
-    if (useExternalFileName) {
-        currentFileName = getExternalFileName();
+    if (useToggleFileName) {
+        currentFileName = getToggleFileName();
     }
+
+    if (currentFileName.empty()) {
+        currentFileName = getAubCaptureFileName();
+        useToggleFileName = false;
+    }
+
     switch (subCaptureCommon.subCaptureMode) {
     case SubCaptureMode::Filter:
         if (currentFileName.empty()) {
             currentFileName = generateFilterFileName();
-            useExternalFileName = false;
+            useToggleFileName = false;
         }
         break;
     case SubCaptureMode::Toggle:
         if (currentFileName.empty()) {
             currentFileName = generateToggleFileName(dispatchInfo);
-            useExternalFileName = false;
+            useToggleFileName = false;
         }
         break;
     default:
@@ -94,8 +107,15 @@ bool AubSubCaptureManager::isSubCaptureToggleActive() const {
     return settingsReader->getSetting("AUBDumpToggleCaptureOnOff", false);
 }
 
-std::string AubSubCaptureManager::getExternalFileName() const {
+std::string AubSubCaptureManager::getToggleFileName() const {
     return settingsReader->getSetting("AUBDumpToggleFileName", std::string(""));
+}
+
+std::string AubSubCaptureManager::getAubCaptureFileName() const {
+    if (DebugManager.flags.AUBDumpCaptureFileName.get() != "unk") {
+        return DebugManager.flags.AUBDumpCaptureFileName.get();
+    }
+    return {};
 }
 
 std::string AubSubCaptureManager::generateFilterFileName() const {

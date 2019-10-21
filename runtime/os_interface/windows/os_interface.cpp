@@ -9,6 +9,7 @@
 
 #include "runtime/os_interface/windows/sys_calls.h"
 #include "runtime/os_interface/windows/wddm/wddm.h"
+#include "runtime/os_interface/windows/wddm_memory_operations_handler.h"
 
 namespace NEO {
 
@@ -20,10 +21,6 @@ OSInterface::OSInterface() {
 
 OSInterface::~OSInterface() {
     delete osInterfaceImpl;
-}
-
-uint32_t OSInterface::getHwContextId() const {
-    return osInterfaceImpl->getHwContextId();
 }
 
 uint32_t OSInterface::getDeviceHandle() const {

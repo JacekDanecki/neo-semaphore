@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/options.h"
@@ -13,7 +14,6 @@
 #include "runtime/os_interface/hw_info_config.h"
 #include "runtime/platform/platform.h"
 #include "test.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/libult/create_command_stream.h"
 
 namespace NEO {
@@ -40,7 +40,7 @@ struct GetDevicesTest : ::testing::Test {
 
 HWTEST_F(GetDevicesTest, givenGetDevicesWhenCsrIsSetToVariousTypesThenTheFunctionReturnsTheExpectedValueOfHardwareInfo) {
     uint32_t expectedDevices = 1;
-    DebugManager.flags.CreateMultipleDevices.set(expectedDevices);
+    DebugManager.flags.CreateMultipleRootDevices.set(expectedDevices);
     for (int productFamilyIndex = 0; productFamilyIndex < IGFX_MAX_PRODUCT; productFamilyIndex++) {
         const char *hwPrefix = hardwarePrefix[productFamilyIndex];
         if (hwPrefix == nullptr) {
@@ -109,9 +109,39 @@ HWTEST_F(GetDevicesTest, givenGetDevicesWhenCsrIsSetToVariousTypesThenTheFunctio
     }
 }
 
+HWTEST_F(GetDevicesTest, givenUpperCaseProductFamilyOverrideFlagSetWhenCreatingDevicesThenFindExpectedPlatform) {
+    std::string hwPrefix;
+    std::string hwPrefixUpperCase;
+    PRODUCT_FAMILY productFamily;
+
+    for (int productFamilyIndex = 0; productFamilyIndex < IGFX_MAX_PRODUCT; productFamilyIndex++) {
+        if (hardwarePrefix[productFamilyIndex]) {
+            hwPrefix = hardwarePrefix[productFamilyIndex];
+            productFamily = static_cast<PRODUCT_FAMILY>(productFamilyIndex);
+            break;
+        }
+    }
+
+    EXPECT_NE(0u, hwPrefix.length());
+    hwPrefixUpperCase.resize(hwPrefix.length());
+    std::transform(hwPrefix.begin(), hwPrefix.end(), hwPrefixUpperCase.begin(), ::toupper);
+    EXPECT_NE(hwPrefix, hwPrefixUpperCase);
+
+    DebugManager.flags.ProductFamilyOverride.set(hwPrefixUpperCase);
+    DebugManager.flags.SetCommandStreamReceiver.set(CommandStreamReceiverType::CSR_AUB);
+
+    ExecutionEnvironment *exeEnv = platformImpl->peekExecutionEnvironment();
+    bool ret = getDevices(numDevices, *exeEnv);
+
+    EXPECT_TRUE(ret);
+    EXPECT_EQ(productFamily, exeEnv->getHardwareInfo()->platform.eProductFamily);
+
+    DeviceFactory::releaseDevices();
+}
+
 HWTEST_F(GetDevicesTest, givenGetDevicesAndUnknownProductFamilyWhenCsrIsSetToValidTypeThenTheFunctionReturnsTheExpectedValueOfHardwareInfo) {
     uint32_t expectedDevices = 1;
-    DebugManager.flags.CreateMultipleDevices.set(expectedDevices);
+    DebugManager.flags.CreateMultipleRootDevices.set(expectedDevices);
     for (int csrTypes = 0; csrTypes <= CSR_TYPES_NUM; csrTypes++) {
         CommandStreamReceiverType csrType = static_cast<CommandStreamReceiverType>(csrTypes);
         std::string productFamily("unk");

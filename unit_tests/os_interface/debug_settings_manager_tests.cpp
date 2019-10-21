@@ -5,18 +5,18 @@
  *
  */
 
-#include "runtime/utilities/debug_file_reader.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
+#include "core/unit_tests/utilities/base_object_utils.h"
+#include "core/utilities/debug_file_reader.h"
+#include "runtime/os_interface/ocl_reg_path.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/image_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
-#include "unit_tests/helpers/memory_management.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_kernel.h"
 #include "unit_tests/mocks/mock_mdi.h"
 #include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/os_interface/debug_settings_manager_fixture.h"
-#include "unit_tests/utilities/base_object_utils.h"
 
 #include <cstdio>
 #include <memory>
@@ -43,7 +43,7 @@ TEST(DebugSettingsManager, WithDebugFunctionalityCreatesAndDumpsToLogFile) {
 
     FullyEnabledTestDebugManager debugManager;
     if (debugManager.registryReadAvailable()) {
-        debugManager.setReaderImpl(SettingsReader::create());
+        debugManager.setReaderImpl(SettingsReader::create(oclRegPath));
         debugManager.injectSettingsFromReader();
     }
     debugManager.logApiCall("searchString", true, 0);
@@ -851,21 +851,22 @@ TEST(DebugSettingsManager, givenStringDebugVariableWhenLongValueExeedingSmallStr
 
 TEST(DebugSettingsManager, givenNullAsReaderImplInDebugManagerWhenSettingReaderImplThenItsSetProperly) {
     FullyDisabledTestDebugManager debugManager;
-    auto readerImpl = SettingsReader::create();
+    auto readerImpl = SettingsReader::create(oclRegPath);
     debugManager.setReaderImpl(readerImpl);
     EXPECT_EQ(readerImpl, debugManager.getReaderImpl());
 }
 TEST(DebugSettingsManager, givenReaderImplInDebugManagerWhenSettingDifferentReaderImplThenItsSetProperly) {
     FullyDisabledTestDebugManager debugManager;
-    auto readerImpl = SettingsReader::create();
+    auto readerImpl = SettingsReader::create(oclRegPath);
     debugManager.setReaderImpl(readerImpl);
 
-    auto readerImpl2 = SettingsReader::create();
+    auto readerImpl2 = SettingsReader::create(oclRegPath);
     debugManager.setReaderImpl(readerImpl2);
     EXPECT_EQ(readerImpl2, debugManager.getReaderImpl());
 }
 
 TEST(DebugSettingsManager, givenPrintDebugSettingsEnabledWhenCallingDumpFlagsThenFlagsAreWrittenToDumpFile) {
+    testing::internal::CaptureStdout();
     FullyEnabledTestDebugManager debugManager;
     debugManager.flags.PrintDebugSettings.set(true);
     debugManager.flags.LoopAtPlatformInitialize.set(true);
@@ -884,6 +885,13 @@ TEST(DebugSettingsManager, givenPrintDebugSettingsEnabledWhenCallingDumpFlagsThe
 #include "debug_variables.inl"
 #undef DECLARE_DEBUG_VARIABLE
     std::remove(FullyEnabledTestDebugManager::settingsDumpFileName);
+    std::string output = testing::internal::GetCapturedStdout();
+    ASSERT_NE(0u, output.size());
+
+    EXPECT_NE(std::string::npos, output.find("Non-default value of debug variable: TbxServer = 192.168.0.1"));
+    EXPECT_NE(std::string::npos, output.find("Non-default value of debug variable: LoopAtPlatformInitialize = 1"));
+    EXPECT_NE(std::string::npos, output.find("Non-default value of debug variable: PrintDebugSettings = 1"));
+    EXPECT_NE(std::string::npos, output.find("Non-default value of debug variable: Enable64kbpages = 1"));
 }
 
 struct AllocationTypeTestCase {
@@ -925,7 +933,8 @@ AllocationTypeTestCase allocationTypeValues[] = {
     {GraphicsAllocation::AllocationType::SVM_ZERO_COPY, "SVM_ZERO_COPY"},
     {GraphicsAllocation::AllocationType::TAG_BUFFER, "TAG_BUFFER"},
     {GraphicsAllocation::AllocationType::TIMESTAMP_PACKET_TAG_BUFFER, "TIMESTAMP_PACKET_TAG_BUFFER"},
-    {GraphicsAllocation::AllocationType::UNKNOWN, "UNKNOWN"}};
+    {GraphicsAllocation::AllocationType::UNKNOWN, "UNKNOWN"},
+    {GraphicsAllocation::AllocationType::WRITE_COMBINED, "WRITE_COMBINED"}};
 
 class AllocationTypeLogging : public ::testing::TestWithParam<AllocationTypeTestCase> {};
 

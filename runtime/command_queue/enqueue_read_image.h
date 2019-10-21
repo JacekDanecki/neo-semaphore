@@ -7,6 +7,7 @@
 
 #pragma once
 #include "core/helpers/basic_math.h"
+#include "core/memory_manager/graphics_allocation.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
@@ -17,7 +18,6 @@
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/surface.h"
 
 #include "hw_cmds.h"
@@ -81,7 +81,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadImage(
         if (region[0] != 0 &&
             region[1] != 0 &&
             region[2] != 0) {
-            bool status = getCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, true);
+            bool status = getGpgpuCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, true);
             if (!status) {
                 return CL_OUT_OF_RESOURCES;
             }
@@ -92,7 +92,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueReadImage(
     void *alignedDstPtr = alignDown(dstPtr, 4);
     size_t dstPtrOffset = ptrDiff(dstPtr, alignedDstPtr);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    BuiltinOpParams dc;
     dc.srcMemObj = srcImage;
     dc.dstPtr = alignedDstPtr;
     dc.dstOffset.x = dstPtrOffset;

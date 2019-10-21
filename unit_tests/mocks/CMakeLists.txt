@@ -6,7 +6,6 @@
 
 set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-  ${CMAKE_CURRENT_SOURCE_DIR}/mock_32bitAllocator.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_allocation_properties.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_async_event_handler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_async_event_handler.h
@@ -19,6 +18,7 @@ set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_block_kernel_manager.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_buffer.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_builtins.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_builtins.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_cif.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_cif.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_command_queue.h
@@ -46,7 +46,6 @@ set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_resource_info.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_gmm_resource_info.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_graphics_allocation.h
-  ${CMAKE_CURRENT_SOURCE_DIR}${IGDRCL__INSTRUMENTATION_DIR_SUFFIX}/mock_instrumentation.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/mock_gmm_client_context.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}${BRANCH_DIR_SUFFIX}/mock_gmm_client_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_host_ptr_manager.h
@@ -57,6 +56,7 @@ set(IGDRCL_SRCS_tests_mocks
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_lrca_helper.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_memory_manager.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_memory_manager.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/mock_memory_operations_handler.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_os_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_ostime.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_physical_address_allocator.h
@@ -87,6 +87,8 @@ if(WIN32)
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm_interface23.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mock_wddm_residency_allocations_container.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/wddm_mock_helpers.h
     ${IGDRCL_SRC_tests_mock_wddm}
   )
 else()
@@ -99,11 +101,11 @@ endif()
 
 add_subdirectories()
 
-add_library(igdrcl_mocks STATIC ${IGDRCL_SRCS_tests_mocks})
+add_library(igdrcl_mocks STATIC EXCLUDE_FROM_ALL ${IGDRCL_SRCS_tests_mocks})
 
 if(WIN32)
   target_include_directories(igdrcl_mocks PUBLIC
-    ${IGDRCL_SOURCE_DIR}/unit_tests/mocks/gmm_memory${BRANCH_DIR_SUFFIX}
+    ${NEO_SOURCE_DIR}/unit_tests/mocks/gmm_memory${BRANCH_DIR_SUFFIX}
   )
 endif()
 

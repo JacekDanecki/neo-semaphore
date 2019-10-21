@@ -7,6 +7,7 @@
 
 #pragma once
 #include "core/helpers/basic_math.h"
+#include "core/memory_manager/graphics_allocation.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
@@ -14,7 +15,6 @@
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 
 #include "hw_cmds.h"
 
@@ -72,7 +72,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteImage(
         if (region[0] != 0 &&
             region[1] != 0 &&
             region[2] != 0) {
-            bool status = getCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, false);
+            bool status = getGpgpuCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, false);
             if (!status) {
                 return CL_OUT_OF_RESOURCES;
             }
@@ -83,7 +83,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteImage(
     void *alignedSrcPtr = alignDown(srcPtr, 4);
     size_t srcPtrOffset = ptrDiff(srcPtr, alignedSrcPtr);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    BuiltinOpParams dc;
     dc.srcPtr = alignedSrcPtr;
     dc.srcOffset.x = srcPtrOffset;
     dc.dstMemObj = dstImage;

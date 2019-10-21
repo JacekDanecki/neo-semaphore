@@ -8,32 +8,33 @@ project(ocloc_tests)
 
 
 set(IGDRCL_SRCS_cloc
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/binary_decoder.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/decoder/binary_encoder.cpp
-${IGDRCL_SOURCE_DIR}/offline_compiler/offline_compiler.cpp
+${NEO_SOURCE_DIR}/offline_compiler/decoder/binary_decoder.cpp
+${NEO_SOURCE_DIR}/offline_compiler/decoder/binary_encoder.cpp
+${NEO_SOURCE_DIR}/offline_compiler/offline_compiler.cpp
 )
 
 set(IGDRCL_SRCS_offline_compiler_mock
 ${CMAKE_CURRENT_SOURCE_DIR}/decoder/mock/mock_decoder.h
 ${CMAKE_CURRENT_SOURCE_DIR}/decoder/mock/mock_encoder.h
+${CMAKE_CURRENT_SOURCE_DIR}/decoder/mock/mock_iga_wrapper.h
 ${CMAKE_CURRENT_SOURCE_DIR}/mock/mock_offline_compiler.h
 )
 
 set(CLOC_SRCS_UTILITIES
-  ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/safety_caller.h
+  ${NEO_SOURCE_DIR}/offline_compiler/utilities/safety_caller.h
 )
 
 if(WIN32)
   list(APPEND CLOC_SRCS_UTILITIES
-    ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/windows/safety_caller_windows.cpp
-    ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/windows/safety_guard_windows.h
-    ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/windows/seh_exception.cpp
-    ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/windows/seh_exception.h
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/safety_caller_windows.cpp
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/safety_guard_windows.h
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/seh_exception.cpp
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/seh_exception.h
   )
 else()
   list(APPEND CLOC_SRCS_UTILITIES
-    ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/linux/safety_caller_linux.cpp
-    ${IGDRCL_SOURCE_DIR}/offline_compiler/utilities/linux/safety_guard_linux.h
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/linux/safety_caller_linux.cpp
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/linux/safety_guard_linux.h
   )
 endif()
 
@@ -47,11 +48,11 @@ set(IGDRCL_SRCS_offline_compiler_tests
   ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/offline_compiler_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/offline_compiler_tests.h
-  ${IGDRCL_SOURCE_DIR}/runtime/helpers/abort.cpp
-  ${IGDRCL_SOURCE_DIR}/runtime/helpers/file_io.cpp
-  ${IGDRCL_SOURCE_DIR}/runtime/memory_manager/deferred_deleter.cpp
-  ${IGDRCL_SOURCE_DIR}/runtime/memory_manager/deferred_deleter.h
-  ${IGDRCL_SOURCE_DIR}/unit_tests/helpers/test_files.cpp
+  ${NEO_SOURCE_DIR}/core/helpers/abort.cpp
+  ${NEO_SOURCE_DIR}/core/helpers/file_io.cpp
+  ${NEO_SOURCE_DIR}/runtime/memory_manager/deferred_deleter.cpp
+  ${NEO_SOURCE_DIR}/runtime/memory_manager/deferred_deleter.h
+  ${NEO_SOURCE_DIR}/unit_tests/helpers/test_files.cpp
   ${IGDRCL_SRCS_cloc}
   ${IGDRCL_SRCS_offline_compiler_mock}
   ${CLOC_SRCS_LIB}
@@ -60,11 +61,11 @@ set(IGDRCL_SRCS_offline_compiler_tests
 
 if(WIN32)
   list(APPEND IGDRCL_SRCS_offline_compiler_tests
-    ${IGDRCL_SOURCE_DIR}/runtime/os_interface/windows/os_thread_win.cpp
+    ${NEO_SOURCE_DIR}/runtime/os_interface/windows/os_thread_win.cpp
   )
 else()
   list(APPEND IGDRCL_SRCS_offline_compiler_tests
-    ${IGDRCL_SOURCE_DIR}/runtime/os_interface/linux/os_thread_linux.cpp
+    ${NEO_SOURCE_DIR}/runtime/os_interface/linux/os_thread_linux.cpp
   )
 endif()
 
@@ -99,7 +100,7 @@ add_custom_target(run_ocloc_tests ALL
 )
 macro(macro_for_each_platform)
   if("${PLATFORM_IT_LOWER}" STREQUAL "${CLOC_DEFAULT_DEVICE}")
-    foreach(PLATFORM_TYPE "CORE" "LP")
+    foreach(PLATFORM_TYPE ${PLATFORM_TYPES})
       if(${PLATFORM_IT}_IS_${PLATFORM_TYPE})
         get_family_name_with_type(${GEN_TYPE} ${PLATFORM_TYPE})
         add_dependencies(run_ocloc_tests test_kernels_${family_name_with_type})
@@ -145,4 +146,4 @@ else()
 endif()
 
 add_subdirectories()
-create_project_source_tree(ocloc_tests ${IGDRCL_SOURCE_DIR}/runtime ${IGDRCL_SOURCE_DIR}/unit_tests ${IGDRCL_SOURCE_DIR})
+create_project_source_tree(ocloc_tests)

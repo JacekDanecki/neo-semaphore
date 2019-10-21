@@ -178,17 +178,23 @@ Drm *Drm::create(int32_t deviceOrdinal) {
     // Activate the Turbo Boost Frequency feature
     ret = drmObject->enableTurboBoost();
     if (ret != 0) {
-        // turbo patch not present, we are not on custom Kernel, switch to simplified Mocs selection
-        // do this only for GEN9+
-        if (device->pHwInfo->platform.eRenderCoreFamily >= IGFX_GEN9_CORE) {
-            drmObject->setSimplifiedMocsTableUsage(true);
-        }
         printDebugString(DebugManager.flags.PrintDebugMessages.get(), stderr, "%s", "WARNING: Failed to request OCL Turbo Boost\n");
     }
 
     drmObject->queryEngineInfo();
+    ret = drmObject->setEngines();
+    if (ret != 0) {
+        printDebugString(DebugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Failed to set engines\n");
+        return nullptr;
+    }
+
     if (HwHelper::get(device->pHwInfo->platform.eRenderCoreFamily).getEnableLocalMemory(*device->pHwInfo)) {
         drmObject->queryMemoryInfo();
+        ret = drmObject->setMemoryRegions();
+        if (ret != 0) {
+            printDebugString(DebugManager.flags.PrintDebugMessages.get(), stderr, "%s", "FATAL: Failed to set memory regions\n");
+            return nullptr;
+        }
     }
 
     drms[deviceOrdinal % drms.size()] = drmObject.release();

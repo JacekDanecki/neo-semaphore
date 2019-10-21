@@ -6,9 +6,9 @@
  */
 
 #pragma once
-#include "runtime/helpers/hash.h"
+#include "core/helpers/hash.h"
+#include "core/helpers/string.h"
 #include "runtime/helpers/options.h"
-#include "runtime/helpers/string.h"
 #include "runtime/program/program.h"
 
 #include "gmock/gmock.h"
@@ -25,31 +25,48 @@ class GraphicsAllocation;
 class MockProgram : public Program {
   public:
     using Program::createProgramFromBinary;
+    using Program::getKernelNamesString;
     using Program::getProgramCompilerVersion;
     using Program::isKernelDebugEnabled;
+    using Program::linkBinary;
+    using Program::prepareLinkerInputStorage;
     using Program::rebuildProgramFromIr;
     using Program::resolveProgramBinary;
     using Program::updateNonUniformFlag;
 
+    using Program::areSpecializationConstantsInitialized;
+    using Program::constantSurface;
+    using Program::context;
+    using Program::debugData;
+    using Program::debugDataSize;
     using Program::elfBinary;
     using Program::elfBinarySize;
+    using Program::exportedFunctionsSurface;
     using Program::genBinary;
     using Program::genBinarySize;
+    using Program::getKernelInfo;
+    using Program::globalSurface;
     using Program::irBinary;
     using Program::irBinarySize;
     using Program::isProgramBinaryResolved;
     using Program::isSpirV;
+    using Program::linkerInput;
+    using Program::pDevice;
     using Program::programBinaryType;
-
     using Program::sourceCode;
+    using Program::specConstantsIds;
+    using Program::specConstantsSizes;
+    using Program::specConstantsValues;
+    using Program::symbols;
 
-    MockProgram(ExecutionEnvironment &executionEnvironment) : Program(executionEnvironment) {}
-    MockProgram(ExecutionEnvironment &executionEnvironment, Context *context, bool isBuiltinKernel) : Program(executionEnvironment, context, isBuiltinKernel) {}
+    template <typename... T>
+    MockProgram(T &&... args) : Program(std::forward<T>(args)...) {
+    }
+
     ~MockProgram() {
         if (contextSet)
             context = nullptr;
     }
-    const KernelInfo *getKernelInfo() { return &mockKernelInfo; }
     KernelInfo mockKernelInfo;
     void setBuildOptions(const char *buildOptions) {
         options = buildOptions != nullptr ? buildOptions : "";
@@ -60,9 +77,6 @@ class MockProgram : public Program {
     }
     void setGlobalSurface(GraphicsAllocation *gfxAllocation) {
         globalSurface = gfxAllocation;
-    }
-    cl_int createProgramFromBinary(const void *pBinary, size_t binarySize) override {
-        return Program::createProgramFromBinary(pBinary, binarySize);
     }
     void setDevice(Device *device) {
         this->pDevice = device;
@@ -104,10 +118,8 @@ class MockProgram : public Program {
     void SetGlobalVariableTotalSize(size_t globalVarSize) { globalVarTotalSize = globalVarSize; }
     void SetDevice(Device *pDev) { pDevice = pDev; }
 
-    char *GetIrBinary() { return irBinary; }
-    size_t GetIrBinarySize() { return irBinarySize; }
     void SetIrBinary(char *ptr, bool isSpirv) {
-        irBinary = ptr;
+        irBinary.reset(ptr);
         this->isSpirV = isSpirV;
     }
     void SetIrBinarySize(size_t bsz, bool isSpirv) {
@@ -118,11 +130,6 @@ class MockProgram : public Program {
     std::string getCachedFileName() const;
     void setAllowNonUniform(bool allow) {
         allowNonUniform = allow;
-    }
-
-    char *getDebugDataBinary(size_t &debugDataBinarySize) const {
-        debugDataBinarySize = this->debugDataSize;
-        return this->debugData;
     }
 
     Device *getDevicePtr() { return this->pDevice; }

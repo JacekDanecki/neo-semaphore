@@ -5,15 +5,15 @@
  *
  */
 
+#include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/ptr_math.h"
+#include "core/helpers/string.h"
 #include "runtime/command_queue/local_id_gen.h"
 #include "runtime/command_stream/csr_definitions.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/helpers/address_patch.h"
-#include "runtime/helpers/aligned_memory.h"
 #include "runtime/helpers/dispatch_info.h"
-#include "runtime/helpers/string.h"
 #include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/os_interface/debug_settings_manager.h"
@@ -23,7 +23,12 @@
 namespace NEO {
 
 template <typename GfxFamily>
-bool HardwareCommandsHelper<GfxFamily>::isPipeControlWArequired() { return false; }
+bool HardwareCommandsHelper<GfxFamily>::isPipeControlWArequired(const HardwareInfo &hwInfo) { return false; }
+
+template <typename GfxFamily>
+bool HardwareCommandsHelper<GfxFamily>::isPipeControlPriorToPipelineSelectWArequired(const HardwareInfo &hwInfo) {
+    return false;
+}
 
 template <typename GfxFamily>
 uint32_t HardwareCommandsHelper<GfxFamily>::computeSlmValues(uint32_t valueIn) {
@@ -126,9 +131,8 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
     size_t offsetSamplerState,
     uint32_t numSamplers,
     uint32_t threadsPerThreadGroup,
-    uint32_t sizeSlm,
+    const Kernel &kernel,
     uint32_t bindingTablePrefetchSize,
-    bool barrierEnable,
     PreemptionMode preemptionMode,
     INTERFACE_DESCRIPTOR_DATA *inlineInterfaceDescriptor) {
     using SAMPLER_STATE = typename GfxFamily::SAMPLER_STATE;
@@ -146,7 +150,7 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
 
     pInterfaceDescriptor->setDenormMode(INTERFACE_DESCRIPTOR_DATA::DENORM_MODE_SETBYKERNEL);
 
-    setAdditionalInfo(pInterfaceDescriptor, sizeCrossThreadData, sizePerThreadData);
+    setAdditionalInfo(pInterfaceDescriptor, kernel, sizeCrossThreadData, sizePerThreadData, threadsPerThreadGroup);
 
     pInterfaceDescriptor->setBindingTablePointer(static_cast<uint32_t>(bindingTablePointer));
 
@@ -156,10 +160,11 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
     auto samplerCountState = static_cast<typename INTERFACE_DESCRIPTOR_DATA::SAMPLER_COUNT>((numSamplers + 3) / 4);
     pInterfaceDescriptor->setSamplerCount(samplerCountState);
 
-    auto programmableIDSLMSize = static_cast<typename INTERFACE_DESCRIPTOR_DATA::SHARED_LOCAL_MEMORY_SIZE>(computeSlmValues(sizeSlm));
+    auto programmableIDSLMSize = static_cast<typename INTERFACE_DESCRIPTOR_DATA::SHARED_LOCAL_MEMORY_SIZE>(computeSlmValues(kernel.slmTotalSize));
 
     pInterfaceDescriptor->setSharedLocalMemorySize(programmableIDSLMSize);
-    pInterfaceDescriptor->setBarrierEnable(barrierEnable);
+    programBarrierEnable(pInterfaceDescriptor, kernel.getKernelInfo().patchInfo.executionEnvironment->HasBarriers,
+                         kernel.getDevice().getHardwareInfo());
 
     PreemptionHelper::programInterfaceDescriptorDataPreemption<GfxFamily>(pInterfaceDescriptor, preemptionMode);
 
@@ -234,7 +239,8 @@ size_t HardwareCommandsHelper<GfxFamily>::sendIndirectState(
     PreemptionMode preemptionMode,
     WALKER_TYPE<GfxFamily> *walkerCmd,
     INTERFACE_DESCRIPTOR_DATA *inlineInterfaceDescriptor,
-    bool localIdsGenerationByRuntime) {
+    bool localIdsGenerationByRuntime,
+    bool isCcsUsed) {
 
     using SAMPLER_STATE = typename GfxFamily::SAMPLER_STATE;
 
@@ -247,7 +253,8 @@ size_t HardwareCommandsHelper<GfxFamily>::sendIndirectState(
     const auto &kernelInfo = kernel.getKernelInfo();
     auto kernelAllocation = kernelInfo.getGraphicsAllocation();
     DEBUG_BREAK_IF(!kernelAllocation);
-    setKernelStartOffset(kernelStartOffset, kernelAllocation, kernelInfo, localIdsGenerationByRuntime, kernelUsesLocalIds, kernel);
+    setKernelStartOffset(kernelStartOffset, kernelAllocation, kernelInfo, localIdsGenerationByRuntime,
+                         kernelUsesLocalIds, kernel, isCcsUsed);
 
     const auto &patchInfo = kernelInfo.patchInfo;
 
@@ -332,9 +339,8 @@ size_t HardwareCommandsHelper<GfxFamily>::sendIndirectState(
         samplerStateOffset,
         samplerCount,
         threadsPerThreadGroup,
-        kernel.slmTotalSize,
+        kernel,
         bindingTablePrefetchSize,
-        !!patchInfo.executionEnvironment->HasBarriers,
         preemptionMode,
         inlineInterfaceDescriptor);
 
@@ -394,11 +400,18 @@ typename GfxFamily::MI_ATOMIC *HardwareCommandsHelper<GfxFamily>::programMiAtomi
                                                                                   typename MI_ATOMIC::DATA_SIZE dataSize) {
     auto miAtomic = commandStream.getSpaceForCmd<MI_ATOMIC>();
     *miAtomic = GfxFamily::cmdInitAtomic;
-    miAtomic->setAtomicOpcode(opcode);
-    miAtomic->setDataSize(dataSize);
-    miAtomic->setMemoryAddress(static_cast<uint32_t>(writeAddress & 0x0000FFFFFFFFULL));
-    miAtomic->setMemoryAddressHigh(static_cast<uint32_t>(writeAddress >> 32));
+    HardwareCommandsHelper<GfxFamily>::programMiAtomic(*miAtomic, writeAddress, opcode, dataSize);
     return miAtomic;
+}
+
+template <typename GfxFamily>
+void HardwareCommandsHelper<GfxFamily>::programMiAtomic(MI_ATOMIC &atomic, uint64_t writeAddress,
+                                                        typename MI_ATOMIC::ATOMIC_OPCODES opcode,
+                                                        typename MI_ATOMIC::DATA_SIZE dataSize) {
+    atomic.setAtomicOpcode(opcode);
+    atomic.setDataSize(dataSize);
+    atomic.setMemoryAddress(static_cast<uint32_t>(writeAddress & 0x0000FFFFFFFFULL));
+    atomic.setMemoryAddressHigh(static_cast<uint32_t>(writeAddress >> 32));
 }
 
 template <typename GfxFamily>
@@ -408,7 +421,11 @@ bool HardwareCommandsHelper<GfxFamily>::doBindingTablePrefetch() {
 
 template <typename GfxFamily>
 bool HardwareCommandsHelper<GfxFamily>::inlineDataProgrammingRequired(const Kernel &kernel) {
-    if (DebugManager.flags.EnablePassInlineData.get()) {
+    auto checkKernelForInlineData = true;
+    if (DebugManager.flags.EnablePassInlineData.get() != -1) {
+        checkKernelForInlineData = !!DebugManager.flags.EnablePassInlineData.get();
+    }
+    if (checkKernelForInlineData) {
         return kernel.getKernelInfo().patchInfo.threadPayload->PassInlineData;
     }
     return false;

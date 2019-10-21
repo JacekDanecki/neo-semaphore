@@ -43,6 +43,10 @@
 
 using cl_mem_properties_intel = cl_bitfield;
 using cl_mem_flags_intel = cl_mem_flags;
+using cl_mem_info_intel = cl_uint;
+using cl_mem_advice_intel = cl_uint;
+using cl_unified_shared_memory_type_intel = cl_uint;
+using cl_unified_shared_memory_capabilities_intel = cl_bitfield;
 
 /******************************
  * Internal only cl_mem_flags *
@@ -50,6 +54,7 @@ using cl_mem_flags_intel = cl_mem_flags;
 
 #define CL_MEM_FLAGS_INTEL 0x10001
 #define CL_MEM_LOCALLY_UNCACHED_RESOURCE (1 << 18)
+#define CL_MEM_LOCALLY_UNCACHED_SURFACE_STATE_RESOURCE (1 << 25)
 
 // Used with clEnqueueVerifyMemory
 #define CL_MEM_COMPARE_EQUAL 0u
@@ -60,11 +65,62 @@ using cl_mem_flags_intel = cl_mem_flags;
 
 #define CL_MEM_ALLOCATION_HANDLE_INTEL 0x10050
 
+//Used with createBuffer
+#define CL_MEM_ALLOW_UNRESTRICTED_SIZE_INTEL (1 << 23)
+
 /******************************
 *        UNIFIED MEMORY       *
 *******************************/
 
-#define CL_KERNEL_EXEC_INFO_INDIRECT_HOST_ACCESS_INTEL 0x10000
-#define CL_KERNEL_EXEC_INFO_INDIRECT_DEVICE_ACCESS_INTEL 0x10001
-#define CL_KERNEL_EXEC_INFO_INDIRECT_SHARED_ACCESS_INTEL 0x10002
-#define CL_KERNEL_EXEC_INFO_USM_PTRS_INTEL 0x10003
+/* cl_device_info */
+#define CL_DEVICE_HOST_MEM_CAPABILITIES_INTEL 0x4190
+#define CL_DEVICE_DEVICE_MEM_CAPABILITIES_INTEL 0x4191
+#define CL_DEVICE_SINGLE_DEVICE_SHARED_MEM_CAPABILITIES_INTEL 0x4192
+#define CL_DEVICE_CROSS_DEVICE_SHARED_MEM_CAPABILITIES_INTEL 0x4193
+#define CL_DEVICE_SHARED_SYSTEM_MEM_CAPABILITIES_INTEL 0x4194
+
+/* cl_unified_shared_memory_capabilities_intel - bitfield */
+#define CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL (1 << 0)
+#define CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL (1 << 1)
+#define CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ACCESS_INTEL (1 << 2)
+#define CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ATOMIC_ACCESS_INTEL (1 << 3)
+
+/* cl_mem_properties_intel */
+#define CL_MEM_ALLOC_FLAGS_INTEL 0x4195
+
+/* cl_mem_alloc_flags_intel - bitfield */
+#define CL_MEM_ALLOC_DEFAULT_INTEL 0
+#define CL_MEM_ALLOC_WRITE_COMBINED_INTEL (1 << 0)
+
+/* cl_mem_alloc_info_intel */
+#define CL_MEM_ALLOC_TYPE_INTEL 0x419A
+#define CL_MEM_ALLOC_BASE_PTR_INTEL 0x419B
+#define CL_MEM_ALLOC_SIZE_INTEL 0x419C
+
+/* cl_unified_shared_memory_type_intel */
+#define CL_MEM_TYPE_UNKNOWN_INTEL 0x4196
+#define CL_MEM_TYPE_HOST_INTEL 0x4197
+#define CL_MEM_TYPE_DEVICE_INTEL 0x4198
+#define CL_MEM_TYPE_SHARED_INTEL 0x4199
+
+/* cl_kernel_exec_info */
+#define CL_KERNEL_EXEC_INFO_INDIRECT_HOST_ACCESS_INTEL 0x4200
+#define CL_KERNEL_EXEC_INFO_INDIRECT_DEVICE_ACCESS_INTEL 0x4201
+#define CL_KERNEL_EXEC_INFO_INDIRECT_SHARED_ACCESS_INTEL 0x4202
+#define CL_KERNEL_EXEC_INFO_USM_PTRS_INTEL 0x4203
+
+/* cl_command_type */
+#define CL_COMMAND_MEMSET_INTEL 0x4204
+#define CL_COMMAND_MEMCPY_INTEL 0x4205
+#define CL_COMMAND_MIGRATEMEM_INTEL 0x4206
+#define CL_COMMAND_MEMADVISE_INTEL 0x4207
+
+/******************************
+*    SLICE COUNT SELECTING    *
+*******************************/
+
+/* cl_device_info */
+#define CL_DEVICE_SLICE_COUNT_INTEL 0x10020
+
+/* cl_queue_properties */
+#define CL_QUEUE_SLICE_COUNT_INTEL 0x10021

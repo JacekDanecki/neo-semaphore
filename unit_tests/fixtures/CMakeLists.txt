@@ -11,8 +11,10 @@ set(IGDRCL_SRCS_tests_fixtures
   ${CMAKE_CURRENT_SOURCE_DIR}/context_fixture.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/context_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/d3d_test_fixture.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/dispatch_flags_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/device_host_queue_fixture.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/device_host_queue_fixture.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/device_info_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/device_instrumentation_fixture.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/device_instrumentation_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/enqueue_handler_fixture.h
@@ -39,6 +41,7 @@ set(IGDRCL_SRCS_tests_fixtures
   ${CMAKE_CURRENT_SOURCE_DIR}/scenario_test_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/simple_arg_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/simple_arg_kernel_fixture.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/templated_fixture_tests.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/two_walker_fixture.h
   ${CMAKE_CURRENT_SOURCE_DIR}/ult_command_stream_receiver_fixture.h
 )

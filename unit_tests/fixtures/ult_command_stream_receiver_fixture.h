@@ -6,12 +6,14 @@
  */
 
 #pragma once
+#include "core/command_stream/linear_stream.h"
+#include "core/memory_manager/graphics_allocation.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
+#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/helpers/cache_policy.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 #include "unit_tests/fixtures/device_fixture.h"
+#include "unit_tests/helpers/dispatch_flags_helper.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 #include "unit_tests/mocks/mock_graphics_allocation.h"
@@ -55,11 +57,11 @@ struct UltCommandStreamReceiverTest
         graphicsAllocation = new MockGraphicsAllocation(sshBuffer, sizeStream);
         ssh.replaceGraphicsAllocation(graphicsAllocation);
 
-        pDevice->getCommandStreamReceiver().setupContext(*pDevice->getDefaultEngine().osContext);
+        pDevice->getGpgpuCommandStreamReceiver().setupContext(*pDevice->getDefaultEngine().osContext);
     }
 
     void TearDown() override {
-        pDevice->getCommandStreamReceiver().flushBatchedSubmissions();
+        pDevice->getGpgpuCommandStreamReceiver().flushBatchedSubmissions();
         delete dsh.getGraphicsAllocation();
         delete ioh.getGraphicsAllocation();
         delete ssh.getGraphicsAllocation();
@@ -117,7 +119,10 @@ struct UltCommandStreamReceiverTest
         commandStreamReceiver.isPreambleSent = true;
         commandStreamReceiver.lastPreemptionMode = pDevice->getPreemptionMode();
         commandStreamReceiver.setMediaVFEStateDirty(false);
-        commandStreamReceiver.latestSentStatelessMocsConfig = CacheSettings::l3CacheOn;
+        auto gmmHelper = commandStreamReceiver.peekExecutionEnvironment().getGmmHelper();
+        auto mocsIndex = gmmHelper->getMOCS(GMM_RESOURCE_USAGE_OCL_BUFFER);
+
+        commandStreamReceiver.latestSentStatelessMocsConfig = mocsIndex >> 1;
         commandStreamReceiver.lastSentL3Config = L3Config;
         configureCSRHeapStatesToNonDirty<GfxFamily>();
         commandStreamReceiver.taskLevel = taskLevel;
@@ -130,10 +135,10 @@ struct UltCommandStreamReceiverTest
 
     template <typename GfxFamily>
     UltCommandStreamReceiver<GfxFamily> &getUltCommandStreamReceiver() {
-        return reinterpret_cast<UltCommandStreamReceiver<GfxFamily> &>(pDevice->getCommandStreamReceiver());
+        return reinterpret_cast<UltCommandStreamReceiver<GfxFamily> &>(pDevice->getGpgpuCommandStreamReceiver());
     }
 
-    DispatchFlags flushTaskFlags = {};
+    DispatchFlags flushTaskFlags = DispatchFlagsHelper::createDefaultDispatchFlags();
     uint32_t taskLevel = 42;
     LinearStream commandStream;
     IndirectHeap dsh = {nullptr};

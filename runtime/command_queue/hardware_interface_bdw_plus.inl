@@ -7,6 +7,7 @@
 
 #pragma once
 #include "runtime/command_queue/hardware_interface_base.inl"
+#include "runtime/os_interface/os_context.h"
 
 namespace NEO {
 
@@ -50,21 +51,17 @@ inline void HardwareInterface<GfxFamily>::dispatchWorkarounds(
 
 template <typename GfxFamily>
 inline void HardwareInterface<GfxFamily>::dispatchProfilingPerfStartCommands(
-    const DispatchInfo &dispatchInfo,
-    const MultiDispatchInfo &multiDispatchInfo,
     TagNode<HwTimeStamps> *hwTimeStamps,
     TagNode<HwPerfCounter> *hwPerfCounter,
     LinearStream *commandStream,
     CommandQueue &commandQueue) {
 
-    if (&dispatchInfo == &*multiDispatchInfo.begin()) {
-        // If hwTimeStampAlloc is passed (not nullptr), then we know that profiling is enabled
-        if (hwTimeStamps != nullptr) {
-            GpgpuWalkerHelper<GfxFamily>::dispatchProfilingCommandsStart(*hwTimeStamps, commandStream);
-        }
-        if (hwPerfCounter != nullptr) {
-            GpgpuWalkerHelper<GfxFamily>::dispatchPerfCountersCommandsStart(commandQueue, *hwPerfCounter, commandStream);
-        }
+    // If hwTimeStampAlloc is passed (not nullptr), then we know that profiling is enabled
+    if (hwTimeStamps != nullptr) {
+        GpgpuWalkerHelper<GfxFamily>::dispatchProfilingCommandsStart(*hwTimeStamps, commandStream, commandQueue.getDevice().getHardwareInfo());
+    }
+    if (hwPerfCounter != nullptr) {
+        GpgpuWalkerHelper<GfxFamily>::dispatchPerfCountersCommandsStart(commandQueue, *hwPerfCounter, commandStream);
     }
 }
 
@@ -111,10 +108,12 @@ inline void HardwareInterface<GfxFamily>::programWalker(
     size_t startWorkGroups[3] = {startOfWorkgroups.x, startOfWorkgroups.y, startOfWorkgroups.z};
     size_t numWorkGroups[3] = {numberOfWorkgroups.x, numberOfWorkgroups.y, numberOfWorkgroups.z};
 
-    if (currentTimestampPacketNodes && commandQueue.getCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
+    if (currentTimestampPacketNodes && commandQueue.getGpgpuCommandStreamReceiver().peekTimestampPacketWriteEnabled()) {
         auto timestampPacketNode = currentTimestampPacketNodes->peekNodes().at(currentDispatchIndex);
-        GpgpuWalkerHelper<GfxFamily>::setupTimestampPacket(&commandStream, walkerCmd, timestampPacketNode, TimestampPacketStorage::WriteOperationType::AfterWalker);
+        GpgpuWalkerHelper<GfxFamily>::setupTimestampPacket(&commandStream, walkerCmd, timestampPacketNode, TimestampPacketStorage::WriteOperationType::AfterWalker, commandQueue.getDevice().getHardwareInfo());
     }
+
+    auto isCcsUsed = isCcs(commandQueue.getGpgpuEngine().osContext->getEngineType());
 
     HardwareCommandsHelper<GfxFamily>::sendIndirectState(
         commandStream,
@@ -129,12 +128,13 @@ inline void HardwareInterface<GfxFamily>::programWalker(
         preemptionMode,
         walkerCmd,
         nullptr,
-        true);
+        true,
+        isCcsUsed);
 
     GpgpuWalkerHelper<GfxFamily>::setGpgpuWalkerThreadData(walkerCmd, globalOffsets, startWorkGroups,
                                                            numWorkGroups, localWorkSizes, simd, dim,
                                                            false, false,
-                                                           *kernel.getKernelInfo().patchInfo.threadPayload);
+                                                           *kernel.getKernelInfo().patchInfo.threadPayload, 0u);
 }
 
 } // namespace NEO

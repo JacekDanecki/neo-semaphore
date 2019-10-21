@@ -5,6 +5,8 @@
  *
  */
 
+#include "runtime/os_interface/linux/drm_engine_mapper.h"
+
 #include "drm_neo.h"
 
 namespace NEO {
@@ -19,8 +21,16 @@ void Drm::queryEngineInfo() {
 void Drm::queryMemoryInfo() {
 }
 
-int Drm::bindDrmContext(uint32_t drmContextId, DeviceBitfield deviceBitfield, aub_stream::EngineType engineType) {
-    return -1;
+int Drm::setEngines() {
+    return 0;
+}
+
+int Drm::setMemoryRegions() {
+    return 0;
+}
+
+unsigned int Drm::bindDrmContext(uint32_t drmContextId, uint32_t deviceIndex, aub_stream::EngineType engineType) {
+    return DrmEngineMapper::engineNodeMap(engineType);
 }
 
 } // namespace NEO

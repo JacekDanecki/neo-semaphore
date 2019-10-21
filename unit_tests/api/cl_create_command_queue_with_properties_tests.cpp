@@ -5,14 +5,15 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/device_queue/device_queue.h"
-#include "runtime/helpers/base_object.h"
+#include "runtime/helpers/hw_helper.h"
 #include "runtime/os_interface/os_context.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
+#include "unit_tests/helpers/unit_test_helper.h"
 #include "unit_tests/mocks/mock_context.h"
 
 #include "CL/cl_ext.h"
@@ -74,8 +75,13 @@ TEST_P(clCreateCommandQueueWithPropertiesTests, GivenPropertiesWhenCreatingComma
             CL_QUEUE_THROTTLE_KHR, CL_QUEUE_THROTTLE_MED_KHR,
             0};
 
-    auto minimumCreateDeviceQueueFlags = static_cast<cl_command_queue_properties>(CL_QUEUE_ON_DEVICE |
-                                                                                  CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE);
+    const auto minimumCreateDeviceQueueFlags = static_cast<cl_command_queue_properties>(CL_QUEUE_ON_DEVICE |
+                                                                                        CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE);
+    const auto deviceQueueShouldBeCreated = (commandQueueProperties & minimumCreateDeviceQueueFlags) == minimumCreateDeviceQueueFlags;
+    if (deviceQueueShouldBeCreated && !castToObject<Device>(this->devices[0])->getHardwareInfo().capabilityTable.supportsDeviceEnqueue) {
+        return;
+    }
+
     bool queueOnDeviceUsed = false;
     bool priorityHintsUsed = false;
     bool throttleHintsUsed = false;
@@ -126,7 +132,7 @@ TEST_P(clCreateCommandQueueWithPropertiesTests, GivenPropertiesWhenCreatingComma
     auto deviceQueueObj = castToObject<DeviceQueue>(deviceQ);
     auto commandQueueObj = castToObject<CommandQueue>(cmdQ);
 
-    if ((commandQueueProperties & minimumCreateDeviceQueueFlags) == minimumCreateDeviceQueueFlags) { // created device queue
+    if (deviceQueueShouldBeCreated) { // created device queue
         ASSERT_NE(deviceQueueObj, nullptr);
         ASSERT_EQ(commandQueueObj, nullptr);
     } else { // created host queue
@@ -255,7 +261,10 @@ TEST_F(clCreateCommandQueueWithPropertiesApi, GivenDefaultDeviceQueueWithoutQueu
     EXPECT_EQ(retVal, CL_INVALID_VALUE);
 }
 
-TEST_F(clCreateCommandQueueWithPropertiesApi, GivenNumberOfDevicesGreaterThanMaxWhenCreatingCommandQueueWithPropertiesThenOutOfResourcesErrorIsReturned) {
+HWCMDTEST_F(IGFX_GEN8_CORE, clCreateCommandQueueWithPropertiesApi, GivenNumberOfDevicesGreaterThanMaxWhenCreatingCommandQueueWithPropertiesThenOutOfResourcesErrorIsReturned) {
+    if (!this->pContext->getDevice(0u)->getHardwareInfo().capabilityTable.supportsDeviceEnqueue) {
+        GTEST_SKIP();
+    }
     cl_int retVal = CL_SUCCESS;
     auto pDevice = castToObject<Device>(devices[0]);
     cl_queue_properties odq[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE | CL_QUEUE_ON_DEVICE, 0, 0};
@@ -279,14 +288,17 @@ TEST_F(clCreateCommandQueueWithPropertiesApi, GivenNumberOfDevicesGreaterThanMax
     }
 }
 
-TEST_F(clCreateCommandQueueWithPropertiesApi, GivenFailedAllocationWhenCreatingCommandQueueWithPropertiesThenOutOfHostMemoryErrorIsReturned) {
+HWCMDTEST_F(IGFX_GEN8_CORE, clCreateCommandQueueWithPropertiesApi, GivenFailedAllocationWhenCreatingCommandQueueWithPropertiesThenOutOfHostMemoryErrorIsReturned) {
+    if (!this->pContext->getDevice(0u)->getHardwareInfo().capabilityTable.supportsDeviceEnqueue) {
+        GTEST_SKIP();
+    }
     InjectedFunction method = [this](size_t failureIndex) {
         cl_queue_properties ooq[] = {CL_QUEUE_PROPERTIES, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE | CL_QUEUE_ON_DEVICE | CL_QUEUE_ON_DEVICE_DEFAULT, 0, 0};
         auto retVal = CL_INVALID_VALUE;
 
         auto cmdq = clCreateCommandQueueWithProperties(pContext, devices[0], ooq, &retVal);
 
-        if (nonfailingAllocation == failureIndex) {
+        if (MemoryManagement::nonfailingAllocation == failureIndex) {
             EXPECT_EQ(CL_SUCCESS, retVal);
             EXPECT_NE(nullptr, cmdq);
             clReleaseCommandQueue(cmdq);
@@ -355,15 +367,33 @@ TEST_F(clCreateCommandQueueWithPropertiesApi, GivenLowPriorityWhenCreatingComman
     EXPECT_EQ(retVal, CL_SUCCESS);
 }
 
-TEST_F(clCreateCommandQueueWithPropertiesApi, GivenLowPriorityWhenCreatingCommandQueueThenSelectRcsEngine) {
+HWTEST_F(clCreateCommandQueueWithPropertiesApi, GivenLowPriorityWhenCreatingCommandQueueThenSelectRcsEngine) {
     cl_queue_properties properties[] = {CL_QUEUE_PRIORITY_KHR, CL_QUEUE_PRIORITY_LOW_KHR, 0};
     auto cmdQ = clCreateCommandQueueWithProperties(pContext, devices[0], properties, nullptr);
 
     auto commandQueueObj = castToObject<CommandQueue>(cmdQ);
-    auto &osContext = commandQueueObj->getCommandStreamReceiver().getOsContext();
-    EXPECT_EQ(aub_stream::ENGINE_RCS, osContext.getEngineType());
+    auto &osContext = commandQueueObj->getGpgpuCommandStreamReceiver().getOsContext();
+    EXPECT_EQ(HwHelperHw<FamilyType>::lowPriorityEngineType, osContext.getEngineType());
     EXPECT_TRUE(osContext.isLowPriority());
 
+    clReleaseCommandQueue(cmdQ);
+}
+
+using LowPriorityCommandQueueTest = ::testing::Test;
+HWTEST_F(LowPriorityCommandQueueTest, GivenDeviceWithSubdevicesWhenCreatingLowPriorityCommandQueueThenEngineFromFirstSubdeviceIsTaken) {
+    DebugManagerStateRestore restorer;
+    DebugManager.flags.CreateMultipleSubDevices.set(2);
+    MockContext context;
+    cl_queue_properties properties[] = {CL_QUEUE_PRIORITY_KHR, CL_QUEUE_PRIORITY_LOW_KHR, 0};
+    EXPECT_EQ(2u, context.getDevice(0)->getNumAvailableDevices());
+    auto cmdQ = clCreateCommandQueueWithProperties(&context, context.getDevice(0), properties, nullptr);
+
+    auto commandQueueObj = castToObject<CommandQueue>(cmdQ);
+    auto subDevice = context.getDevice(0)->getDeviceById(0);
+    auto engine = subDevice->getEngine(HwHelperHw<FamilyType>::lowPriorityEngineType, true);
+
+    EXPECT_EQ(engine.commandStreamReceiver, &commandQueueObj->getGpgpuCommandStreamReceiver());
+    EXPECT_EQ(engine.osContext, &commandQueueObj->getGpgpuCommandStreamReceiver().getOsContext());
     clReleaseCommandQueue(cmdQ);
 }
 

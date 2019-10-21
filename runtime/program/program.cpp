@@ -7,13 +7,17 @@
 
 #include "program.h"
 
-#include "elf/writer.h"
+#include "core/elf/writer.h"
+#include "core/helpers/debug_helpers.h"
+#include "core/helpers/string.h"
+#include "core/memory_manager/unified_memory_manager.h"
+#include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/context/context.h"
-#include "runtime/helpers/debug_helpers.h"
+#include "runtime/device/device.h"
 #include "runtime/helpers/hw_helper.h"
-#include "runtime/helpers/string.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "runtime/os_interface/os_context.h"
 
 #include <sstream>
 
@@ -71,7 +75,8 @@ Program::Program(ExecutionEnvironment &executionEnvironment, Context *context, b
             internalOptions += "-m32 ";
         }
 
-        if (DebugManager.flags.DisableStatelessToStatefulOptimization.get()) {
+        if (pDevice->areSharedSystemAllocationsAllowed() ||
+            DebugManager.flags.DisableStatelessToStatefulOptimization.get()) {
             internalOptions += "-cl-intel-greater-than-4GB-buffer-required ";
         }
         kernelDebugEnabled = pDevice->isSourceLevelDebuggerActive();
@@ -90,15 +95,6 @@ Program::Program(ExecutionEnvironment &executionEnvironment, Context *context, b
 }
 
 Program::~Program() {
-    delete[] genBinary;
-    genBinary = nullptr;
-
-    delete[] irBinary;
-    irBinary = nullptr;
-
-    delete[] debugData;
-    debugData = nullptr;
-
     elfBinarySize = 0;
 
     cleanCurrentKernelInfo();
@@ -108,14 +104,23 @@ Program::~Program() {
     delete blockKernelManager;
 
     if (constantSurface) {
-        this->executionEnvironment.memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(constantSurface);
+        if ((nullptr != context) && (nullptr != context->getSVMAllocsManager()) && (context->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(constantSurface->getGpuAddress())))) {
+            context->getSVMAllocsManager()->freeSVMAlloc(reinterpret_cast<void *>(constantSurface->getGpuAddress()));
+        } else {
+            this->executionEnvironment.memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(constantSurface);
+        }
         constantSurface = nullptr;
     }
 
     if (globalSurface) {
-        this->executionEnvironment.memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(globalSurface);
+        if ((nullptr != context) && (nullptr != context->getSVMAllocsManager()) && (context->getSVMAllocsManager()->getSVMAlloc(reinterpret_cast<const void *>(globalSurface->getGpuAddress())))) {
+            context->getSVMAllocsManager()->freeSVMAlloc(reinterpret_cast<void *>(globalSurface->getGpuAddress()));
+        } else {
+            this->executionEnvironment.memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(globalSurface);
+        }
         globalSurface = nullptr;
     }
+
     if (context && !isBuiltIn) {
         context->decRefInternal();
     }
@@ -155,59 +160,91 @@ cl_int Program::createProgramFromBinary(
 }
 
 cl_int Program::rebuildProgramFromIr() {
-    cl_int retVal = CL_SUCCESS;
     size_t dataSize;
 
-    do {
-        if (!Program::isValidLlvmBinary(irBinary, irBinarySize)) {
-            if ((!Program::isValidSpirvBinary(irBinary, irBinarySize))) {
-                retVal = CL_INVALID_PROGRAM;
-                break;
-            }
-            isSpirV = true;
-        }
+    isSpirV = false;
+    if (Program::isValidSpirvBinary(irBinary.get(), irBinarySize)) {
+        isSpirV = true;
+    } else if (false == Program::isValidLlvmBinary(irBinary.get(), irBinarySize)) {
+        return CL_INVALID_PROGRAM;
+    }
 
-        CLElfLib::CElfWriter elfWriter(CLElfLib::E_EH_TYPE::EH_TYPE_OPENCL_OBJECTS, CLElfLib::E_EH_MACHINE::EH_MACHINE_NONE, 0);
+    CLElfLib::CElfWriter elfWriter(CLElfLib::E_EH_TYPE::EH_TYPE_OPENCL_OBJECTS, CLElfLib::E_EH_MACHINE::EH_MACHINE_NONE, 0);
 
-        elfWriter.addSection(CLElfLib::SSectionNode(isSpirV ? CLElfLib::E_SH_TYPE::SH_TYPE_SPIRV : CLElfLib::E_SH_TYPE::SH_TYPE_OPENCL_LLVM_BINARY,
-                                                    CLElfLib::E_SH_FLAG::SH_FLAG_NONE, "", std::string(irBinary, irBinarySize), static_cast<uint32_t>(irBinarySize)));
+    elfWriter.addSection(CLElfLib::SSectionNode(isSpirV ? CLElfLib::E_SH_TYPE::SH_TYPE_SPIRV : CLElfLib::E_SH_TYPE::SH_TYPE_OPENCL_LLVM_BINARY,
+                                                CLElfLib::E_SH_FLAG::SH_FLAG_NONE, "", std::string(irBinary.get(), irBinarySize), static_cast<uint32_t>(irBinarySize)));
 
-        dataSize = elfWriter.getTotalBinarySize();
-        CLElfLib::ElfBinaryStorage data(dataSize);
-        elfWriter.resolveBinary(data);
+    dataSize = elfWriter.getTotalBinarySize();
+    CLElfLib::ElfBinaryStorage data(dataSize);
+    elfWriter.resolveBinary(data);
 
-        CompilerInterface *pCompilerInterface = this->executionEnvironment.getCompilerInterface();
+    CompilerInterface *pCompilerInterface = this->executionEnvironment.getCompilerInterface();
+    if (nullptr == pCompilerInterface) {
+        return CL_OUT_OF_HOST_MEMORY;
+    }
+
+    TranslationInput inputArgs = {IGC::CodeType::elf, IGC::CodeType::oclGenBin};
+    inputArgs.src = ArrayRef<const char>(data);
+    inputArgs.apiOptions = ArrayRef<const char>(options);
+    inputArgs.internalOptions = ArrayRef<const char>(internalOptions);
+
+    TranslationOutput output = {};
+    auto err = pCompilerInterface->link(*this->pDevice, inputArgs, output);
+    if (TranslationOutput::ErrorCode::Success != err) {
+        return asClError(err);
+    }
+
+    auto retVal = processGenBinary();
+    if (retVal != CL_SUCCESS) {
+        return retVal;
+    }
+
+    programBinaryType = CL_PROGRAM_BINARY_TYPE_EXECUTABLE;
+    isCreatedFromBinary = true;
+    isProgramBinaryResolved = true;
+
+    return CL_SUCCESS;
+}
+
+cl_int Program::setProgramSpecializationConstant(cl_uint specId, size_t specSize, const void *specValue) {
+    if (!isSpirV) {
+        return CL_INVALID_PROGRAM;
+    }
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (!areSpecializationConstantsInitialized) {
+        auto pCompilerInterface = this->executionEnvironment.getCompilerInterface();
         if (nullptr == pCompilerInterface) {
-            retVal = CL_OUT_OF_HOST_MEMORY;
-            break;
+            return CL_OUT_OF_HOST_MEMORY;
         }
 
-        TranslationArgs inputArgs = {};
-        inputArgs.pInput = data.data();
-        inputArgs.InputSize = static_cast<uint32_t>(dataSize);
-        inputArgs.pOptions = options.c_str();
-        inputArgs.OptionsSize = static_cast<uint32_t>(options.length());
-        inputArgs.pInternalOptions = internalOptions.c_str();
-        inputArgs.InternalOptionsSize = static_cast<uint32_t>(internalOptions.length());
-        inputArgs.pTracingOptions = nullptr;
-        inputArgs.TracingOptionsCount = 0;
+        SpecConstantInfo specConstInfo;
+        auto retVal = pCompilerInterface->getSpecConstantsInfo(this->getDevice(0), ArrayRef<const char>(sourceCode), specConstInfo);
 
-        retVal = pCompilerInterface->link(*this, inputArgs);
-        if (retVal != CL_SUCCESS) {
-            break;
+        if (retVal != TranslationOutput::ErrorCode::Success) {
+            return CL_INVALID_VALUE;
         }
 
-        retVal = processGenBinary();
-        if (retVal != CL_SUCCESS) {
-            break;
+        areSpecializationConstantsInitialized = true;
+    }
+
+    return updateSpecializationConstant(specId, specSize, specValue);
+}
+
+cl_int Program::updateSpecializationConstant(cl_uint specId, size_t specSize, const void *specValue) {
+    for (uint32_t i = 0; i < specConstantsIds->GetSize<cl_uint>(); i++) {
+        if (specConstantsIds->GetMemory<cl_uint>()[i] == specId) {
+            if (specConstantsSizes->GetMemory<size_t>()[i] == specSize) {
+                specConstantsValues->GetMemoryWriteable<const void *>()[i] = specValue;
+                return CL_SUCCESS;
+            } else {
+                return CL_INVALID_VALUE;
+            }
         }
-
-        programBinaryType = CL_PROGRAM_BINARY_TYPE_EXECUTABLE;
-        isCreatedFromBinary = true;
-        isProgramBinaryResolved = true;
-    } while (false);
-
-    return retVal;
+    }
+    return CL_INVALID_SPEC_ID;
 }
 
 void Program::getProgramCompilerVersion(
@@ -234,22 +271,6 @@ bool Program::isValidLlvmBinary(
     return retVal;
 }
 
-void Program::setSource(const char *pSourceString) {
-    sourceCode = pSourceString;
-}
-
-cl_int Program::getSource(char *&pBinary, unsigned int &dataSize) const {
-    cl_int retVal = CL_INVALID_PROGRAM;
-    pBinary = nullptr;
-    dataSize = 0;
-    if (!sourceCode.empty()) {
-        pBinary = (char *)(sourceCode.c_str());
-        dataSize = (unsigned int)(sourceCode.size());
-        retVal = CL_SUCCESS;
-    }
-    return retVal;
-}
-
 cl_int Program::getSource(std::string &binary) const {
     cl_int retVal = CL_INVALID_PROGRAM;
     binary = {};
@@ -258,42 +279,6 @@ cl_int Program::getSource(std::string &binary) const {
         retVal = CL_SUCCESS;
     }
     return retVal;
-}
-
-void Program::storeGenBinary(
-    const void *pSrc,
-    const size_t srcSize) {
-    storeBinary(genBinary, genBinarySize, pSrc, srcSize);
-}
-
-void Program::storeIrBinary(
-    const void *pSrc,
-    const size_t srcSize,
-    bool isSpirV) {
-    storeBinary(irBinary, irBinarySize, pSrc, srcSize);
-    this->isSpirV = isSpirV;
-}
-
-void Program::storeDebugData(
-    const void *pSrc,
-    const size_t srcSize) {
-    storeBinary(debugData, debugDataSize, pSrc, srcSize);
-}
-
-void Program::storeBinary(
-    char *&pDst,
-    size_t &dstSize,
-    const void *pSrc,
-    const size_t srcSize) {
-    dstSize = 0;
-
-    DEBUG_BREAK_IF(!(pSrc && srcSize > 0));
-
-    delete[] pDst;
-    pDst = new char[srcSize];
-
-    dstSize = (cl_uint)srcSize;
-    memcpy_s(pDst, dstSize, pSrc, srcSize);
 }
 
 void Program::updateBuildLog(const Device *pDevice, const char *pErrorString,
@@ -409,6 +394,14 @@ void Program::freeBlockResources() {
 void Program::cleanCurrentKernelInfo() {
     for (auto &kernelInfo : kernelInfoArray) {
         if (kernelInfo->kernelAllocation) {
+            //register cache flush in all csrs where kernel allocation was used
+            for (auto &engine : this->executionEnvironment.memoryManager->getRegisteredEngines()) {
+                auto contextId = engine.osContext->getContextId();
+                if (kernelInfo->kernelAllocation->isUsedByOsContext(contextId)) {
+                    engine.commandStreamReceiver->registerInstructionCacheFlush();
+                }
+            }
+
             this->executionEnvironment.memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(kernelInfo->kernelAllocation);
         }
         delete kernelInfo;
@@ -442,5 +435,11 @@ void Program::updateNonUniformFlag(const Program **inputPrograms, size_t numInpu
         allowNonUniform = allowNonUniform && inputPrograms[i]->getAllowNonUniform();
     }
     this->allowNonUniform = allowNonUniform;
+}
+
+void Program::prepareLinkerInputStorage() {
+    if (this->linkerInput == nullptr) {
+        this->linkerInput = std::make_unique<LinkerInput>();
+    }
 }
 } // namespace NEO

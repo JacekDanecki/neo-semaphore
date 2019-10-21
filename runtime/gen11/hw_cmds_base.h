@@ -6,8 +6,8 @@
  */
 
 #pragma once
+#include "core/helpers/debug_helpers.h"
 #include "runtime/commands/bxml_generator_glue.h"
-#include "runtime/helpers/debug_helpers.h"
 
 #include "hw_info.h"
 #include "igfxfmid.h"
@@ -18,13 +18,14 @@ struct CmdParse;
 namespace NEO {
 
 struct GEN11 {
-#include "runtime/gen11/hw_cmds_generated.h"
-#include "runtime/gen11/hw_cmds_generated_patched.h"
+#include "core/gen11/hw_cmds_generated.inl"
+#include "core/gen11/hw_cmds_generated_patched.inl"
 };
 struct ICLFamily : public GEN11 {
     using PARSE = CmdParse<ICLFamily>;
     using GfxFamily = ICLFamily;
     using WALKER_TYPE = GPGPU_WALKER;
+    using VFE_STATE_TYPE = MEDIA_VFE_STATE;
     using XY_COPY_BLT = typename GfxFamily::XY_SRC_COPY_BLT;
     using MI_STORE_REGISTER_MEM_CMD = typename GfxFamily::MI_STORE_REGISTER_MEM;
     static const GPGPU_WALKER cmdInitGpgpuWalker;

@@ -16,6 +16,7 @@
 namespace NEO {
 class BufferObject;
 class Drm;
+class DrmAllocation;
 class DrmMemoryManager;
 
 template <typename GfxFamily>
@@ -38,22 +39,26 @@ class DrmCommandStreamReceiver : public DeviceCommandStreamReceiver<GfxFamily> {
 
     FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override;
     void makeResident(GraphicsAllocation &gfxAllocation) override;
-    void processResidency(ResidencyContainer &allocationsForResidency) override;
+    void processResidency(const ResidencyContainer &allocationsForResidency) override;
     void makeNonResident(GraphicsAllocation &gfxAllocation) override;
     bool waitForFlushStamp(FlushStamp &flushStampToWait) override;
 
-    DrmMemoryManager *getMemoryManager();
+    DrmMemoryManager *getMemoryManager() const;
 
-    gemCloseWorkerMode peekGemCloseWorkerOperationMode() {
+    gemCloseWorkerMode peekGemCloseWorkerOperationMode() const {
         return this->gemCloseWorkerOperationMode;
     }
 
   protected:
+    void makeResidentBufferObjects(const DrmAllocation *drmAllocation);
     void makeResident(BufferObject *bo);
+    void flushInternal(const BatchBuffer &batchBuffer, const ResidencyContainer &allocationsForResidency);
+    void exec(const BatchBuffer &batchBuffer, uint32_t drmContextId);
 
     std::vector<BufferObject *> residency;
     std::vector<drm_i915_gem_exec_object2> execObjectsStorage;
     Drm *drm;
     gemCloseWorkerMode gemCloseWorkerOperationMode;
+    uint32_t handleIndex = 0u;
 };
 } // namespace NEO

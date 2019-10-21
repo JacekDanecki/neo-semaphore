@@ -5,8 +5,10 @@
  *
  */
 
+#include "core/utilities/time_measure_wrapper.h"
 #include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/compiler_interface/compiler_options.h"
+#include "runtime/device/device.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/validators.h"
 #include "runtime/os_interface/debug_settings_manager.h"
@@ -67,7 +69,11 @@ cl_int Program::build(
                 break;
             }
 
-            TranslationArgs inputArgs = {};
+            auto inType = IGC::CodeType::oclC;
+            if ((createdFrom == CreatedFrom::IL) || (this->programBinaryType == CL_PROGRAM_BINARY_TYPE_INTERMEDIATE)) {
+                inType = isSpirV ? IGC::CodeType::spirV : IGC::CodeType::llvmBc;
+            }
+            TranslationInput inputArgs = {inType, IGC::CodeType::oclGenBin};
 
             if (strcmp(sourceCode.c_str(), "") == 0) {
                 retVal = CL_INVALID_PROGRAM;
@@ -89,27 +95,41 @@ cl_int Program::build(
                 internalOptions.append(compilerExtensionsOptions);
             }
 
-            inputArgs.pInput = (char *)(sourceCode.c_str());
-            inputArgs.InputSize = (uint32_t)sourceCode.size();
-            inputArgs.pOptions = options.c_str();
-            inputArgs.OptionsSize = (uint32_t)options.length();
-            inputArgs.pInternalOptions = internalOptions.c_str();
-            inputArgs.InternalOptionsSize = (uint32_t)internalOptions.length();
-            inputArgs.pTracingOptions = nullptr;
-            inputArgs.TracingOptionsCount = 0;
+            inputArgs.src = ArrayRef<const char>(sourceCode.c_str(), sourceCode.size());
+            inputArgs.apiOptions = ArrayRef<const char>(options.c_str(), options.length());
+            inputArgs.internalOptions = ArrayRef<const char>(internalOptions.c_str(), internalOptions.length());
             inputArgs.GTPinInput = gtpinGetIgcInit();
+            inputArgs.specConstants.idsBuffer = this->specConstantsIds.get();
+            inputArgs.specConstants.sizesBuffer = this->specConstantsSizes.get();
+            inputArgs.specConstants.valuesBuffer = this->specConstantsValues.get();
             DBG_LOG(LogApiCalls,
-                    "Build Options", inputArgs.pOptions,
-                    "\nBuild Internal Options", inputArgs.pInternalOptions);
-
-            retVal = pCompilerInterface->build(*this, inputArgs, enableCaching);
+                    "Build Options", inputArgs.apiOptions.begin(),
+                    "\nBuild Internal Options", inputArgs.internalOptions.begin());
+            inputArgs.allowCaching = enableCaching;
+            NEO::TranslationOutput compilerOuput = {};
+            auto compilerErr = pCompilerInterface->build(*this->pDevice, inputArgs, compilerOuput);
+            this->updateBuildLog(this->pDevice, compilerOuput.frontendCompilerLog.c_str(), compilerOuput.frontendCompilerLog.size());
+            this->updateBuildLog(this->pDevice, compilerOuput.backendCompilerLog.c_str(), compilerOuput.backendCompilerLog.size());
+            retVal = asClError(compilerErr);
             if (retVal != CL_SUCCESS) {
                 break;
             }
+            this->irBinary = std::move(compilerOuput.intermediateRepresentation.mem);
+            this->irBinarySize = compilerOuput.intermediateRepresentation.size;
+            this->isSpirV = compilerOuput.intermediateCodeType == IGC::CodeType::spirV;
+            this->genBinary = std::move(compilerOuput.deviceBinary.mem);
+            this->genBinarySize = compilerOuput.deviceBinary.size;
+            this->debugData = std::move(compilerOuput.debugData.mem);
+            this->debugDataSize = compilerOuput.debugData.size;
         }
         updateNonUniformFlag();
 
-        retVal = processGenBinary();
+        if (DebugManager.flags.PrintProgramBinaryProcessingTime.get()) {
+            retVal = TimeMeasureWrapper::functionExecution(*this, &Program::processGenBinary);
+        } else {
+            retVal = processGenBinary();
+        }
+
         if (retVal != CL_SUCCESS) {
             break;
         }
@@ -117,8 +137,8 @@ cl_int Program::build(
         if (isKernelDebugEnabled()) {
             processDebugData();
             if (pDevice->getSourceLevelDebugger()) {
-                for (size_t i = 0; i < kernelInfoArray.size(); i++) {
-                    pDevice->getSourceLevelDebugger()->notifyKernelDebugData(kernelInfoArray[i]);
+                for (auto kernelInfo : kernelInfoArray) {
+                    pDevice->getSourceLevelDebugger()->notifyKernelDebugData(kernelInfo);
                 }
             }
         }
@@ -179,7 +199,7 @@ cl_int Program::build(
     const char *pKernelData,
     size_t kernelDataSize) {
     cl_int retVal = CL_SUCCESS;
-    processKernel(pKernelData, retVal);
+    processKernel(pKernelData, 0U, retVal);
 
     return retVal;
 }

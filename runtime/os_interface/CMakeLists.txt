@@ -6,14 +6,19 @@
 
 set(RUNTIME_SRCS_OS_INTERFACE_BASE
   ${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
-  ${CMAKE_CURRENT_SOURCE_DIR}/32bit_memory.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/debug_settings_manager.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/debug_settings_manager.h
   ${CMAKE_CURRENT_SOURCE_DIR}/debug_variables_base.inl
   ${CMAKE_CURRENT_SOURCE_DIR}/definitions${BRANCH_DIR_SUFFIX}/debug_variables.inl
   ${CMAKE_CURRENT_SOURCE_DIR}/definitions${BRANCH_DIR_SUFFIX}/translate_debug_settings.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/debug_settings_manager.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/debug_settings_manager.h
   ${CMAKE_CURRENT_SOURCE_DIR}/device_factory.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/device_factory.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/hw_info_config.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/hw_info_config.inl
+  ${CMAKE_CURRENT_SOURCE_DIR}/hw_info_config_bdw_plus.inl
+  ${CMAKE_CURRENT_SOURCE_DIR}/metrics_library.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/metrics_library.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/ocl_reg_path.h
   ${CMAKE_CURRENT_SOURCE_DIR}/os_context.h
   ${CMAKE_CURRENT_SOURCE_DIR}/os_inc_base.h
   ${CMAKE_CURRENT_SOURCE_DIR}/os_interface.h
@@ -24,9 +29,10 @@ set(RUNTIME_SRCS_OS_INTERFACE_BASE
   ${CMAKE_CURRENT_SOURCE_DIR}/performance_counters.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/performance_counters.h
   ${CMAKE_CURRENT_SOURCE_DIR}/print.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/hw_info_config.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/hw_info_config.inl  
 )
+
+get_property(NEO_CORE_OS_INTERFACE GLOBAL PROPERTY NEO_CORE_OS_INTERFACE)
+list(APPEND RUNTIME_SRCS_OS_INTERFACE_BASE ${NEO_CORE_OS_INTERFACE})
 
 target_sources(${NEO_STATIC_LIB_NAME} PRIVATE ${RUNTIME_SRCS_OS_INTERFACE_BASE})
 set_property(GLOBAL PROPERTY RUNTIME_SRCS_OS_INTERFACE_BASE ${RUNTIME_SRCS_OS_INTERFACE_BASE})

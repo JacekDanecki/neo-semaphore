@@ -5,11 +5,18 @@
  *
  */
 
+#pragma once
+#include "runtime/os_interface/linux/drm_command_stream.h"
+
+using namespace NEO;
+
 template <typename GfxFamily>
 class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily> {
   public:
     using CommandStreamReceiver::commandStream;
+    using DrmCommandStreamReceiver<GfxFamily>::makeResidentBufferObjects;
     using DrmCommandStreamReceiver<GfxFamily>::residency;
+    using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiver::lastSentSliceCount;
 
     TestedDrmCommandStreamReceiver(gemCloseWorkerMode mode, ExecutionEnvironment &executionEnvironment)
         : DrmCommandStreamReceiver<GfxFamily>(executionEnvironment, mode) {
@@ -18,23 +25,8 @@ class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily
         : DrmCommandStreamReceiver<GfxFamily>(executionEnvironment, gemCloseWorkerMode::gemCloseWorkerInactive) {
     }
 
-    void overrideGemCloseWorkerOperationMode(gemCloseWorkerMode overrideValue) {
-        this->gemCloseWorkerOperationMode = overrideValue;
-    }
-
     void overrideDispatchPolicy(DispatchMode overrideValue) {
         this->dispatchMode = overrideValue;
-    }
-
-    bool isResident(BufferObject *bo) {
-        bool resident = false;
-        for (auto it : this->residency) {
-            if (it == bo) {
-                resident = true;
-                break;
-            }
-        }
-        return resident;
     }
 
     void makeNonResident(GraphicsAllocation &gfxAllocation) override {
@@ -43,31 +35,21 @@ class TestedDrmCommandStreamReceiver : public DrmCommandStreamReceiver<GfxFamily
         DrmCommandStreamReceiver<GfxFamily>::makeNonResident(gfxAllocation);
     }
 
-    const BufferObject *getResident(BufferObject *bo) {
-        BufferObject *ret = nullptr;
-        for (auto it : this->residency) {
-            if (it == bo) {
-                ret = it;
-                break;
-            }
-        }
-        return ret;
-    }
-
     struct MakeResidentNonResidentResult {
-        bool called;
-        GraphicsAllocation *allocation;
+        bool called = false;
+        GraphicsAllocation *allocation = nullptr;
     };
 
     MakeResidentNonResidentResult makeNonResidentResult;
-    std::vector<BufferObject *> *getResidencyVector() { return &this->residency; }
 
-    SubmissionAggregator *peekSubmissionAggregator() {
+    SubmissionAggregator *peekSubmissionAggregator() const {
         return this->submissionAggregator.get();
     }
+
     void overrideSubmissionAggregator(SubmissionAggregator *newSubmissionsAggregator) {
         this->submissionAggregator.reset(newSubmissionsAggregator);
     }
+
     std::vector<drm_i915_gem_exec_object2> &getExecStorage() {
         return this->execObjectsStorage;
     }

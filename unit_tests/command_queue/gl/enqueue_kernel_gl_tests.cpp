@@ -5,11 +5,11 @@
  *
  */
 
+#include "core/helpers/preamble.h"
+#include "core/memory_manager/graphics_allocation.h"
+#include "core/memory_manager/memory_constants.h"
+#include "core/os_interface/windows/windows_wrapper.h"
 #include "runtime/built_ins/built_ins.h"
-#include "runtime/helpers/preamble.h"
-#include "runtime/memory_manager/graphics_allocation.h"
-#include "runtime/memory_manager/memory_constants.h"
-#include "runtime/os_interface/windows/windows_wrapper.h"
 #include "runtime/sharings/gl/gl_buffer.h"
 #include "unit_tests/command_queue/enqueue_fixture.h"
 #include "unit_tests/fixtures/hello_world_fixture.h"
@@ -44,7 +44,10 @@ TEST_F(EnqueueKernelTest, givenKernelWithSharedObjArgsWhenEnqueueIsCalledThenRes
         (uint32_t *)(pKernel->getCrossThreadData() + kernelInfo.kernelArgInfo[0].kernelArgPatchInfoVector[0].crossthreadOffset);
 
     auto address1 = static_cast<uint64_t>(*pKernelArg);
-    EXPECT_EQ(sharedBuffer->getGraphicsAllocation()->getGpuAddress(), address1);
+    auto sharedBufferGpuAddress =
+        pKernel->isBuiltIn ? sharedBuffer->getGraphicsAllocation()->getGpuAddress()
+                           : sharedBuffer->getGraphicsAllocation()->getGpuAddressToPatch();
+    EXPECT_EQ(sharedBufferGpuAddress, address1);
 
     // update address
     glSharing.uploadDataToBufferInfo(1, 1);
@@ -54,7 +57,10 @@ TEST_F(EnqueueKernelTest, givenKernelWithSharedObjArgsWhenEnqueueIsCalledThenRes
 
     auto address2 = static_cast<uint64_t>(*pKernelArg);
     EXPECT_NE(address1, address2);
-    EXPECT_EQ(sharedBuffer->getGraphicsAllocation()->getGpuAddress(), address2);
+    sharedBufferGpuAddress =
+        pKernel->isBuiltIn ? sharedBuffer->getGraphicsAllocation()->getGpuAddress()
+                           : sharedBuffer->getGraphicsAllocation()->getGpuAddressToPatch();
+    EXPECT_EQ(sharedBufferGpuAddress, address2);
 
     delete sharedBuffer;
     delete nonSharedBuffer;

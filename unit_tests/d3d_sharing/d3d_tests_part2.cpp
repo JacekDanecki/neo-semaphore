@@ -5,6 +5,8 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
+#include "core/utilities/arrayref.h"
 #include "runtime/api/api.h"
 #include "runtime/helpers/options.h"
 #include "runtime/mem_obj/image.h"
@@ -15,9 +17,7 @@
 #include "runtime/sharings/d3d/d3d_sharing.h"
 #include "runtime/sharings/d3d/d3d_surface.h"
 #include "runtime/sharings/d3d/d3d_texture.h"
-#include "runtime/utilities/arrayref.h"
 #include "unit_tests/fixtures/d3d_test_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -35,13 +35,11 @@ TYPED_TEST_P(D3DTests, givenSharedResourceBufferAndInteropUserSyncEnabledWhenRel
     class MockCmdQ : public CommandQueue {
       public:
         MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
-        cl_int finish(bool dcFlush) override {
+        cl_int finish() override {
             finishCalled++;
-            dcFlushRequested = dcFlush;
             return CL_SUCCESS;
         }
         uint32_t finishCalled = 0;
-        bool dcFlushRequested = false;
     };
 
     auto mockCmdQ = std::unique_ptr<MockCmdQ>(new MockCmdQ(this->context, this->context->getDevice(0), 0));
@@ -65,13 +63,11 @@ TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncDisabledWhe
     class MockCmdQ : public CommandQueue {
       public:
         MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
-        cl_int finish(bool dcFlush) override {
+        cl_int finish() override {
             finishCalled++;
-            dcFlushRequested = dcFlush;
             return CL_SUCCESS;
         }
         uint32_t finishCalled = 0;
-        bool dcFlushRequested = false;
     };
 
     auto mockCmdQ = std::unique_ptr<MockCmdQ>(new MockCmdQ(this->context, this->context->getDevice(0), 0));
@@ -87,7 +83,6 @@ TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncDisabledWhe
     retVal = this->enqueueReleaseD3DObjectsApi(this->mockSharingFcns, mockCmdQ.get(), 1, &bufferMem, 0, nullptr, nullptr);
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(2u, mockCmdQ->finishCalled);
-    EXPECT_TRUE(mockCmdQ->dcFlushRequested);
 }
 
 TYPED_TEST_P(D3DTests, givenSharedResourceBufferAndInteropUserSyncDisabledWhenReleaseIsCalledThenDoExplicitFinishOnce) {
@@ -101,13 +96,11 @@ TYPED_TEST_P(D3DTests, givenSharedResourceBufferAndInteropUserSyncDisabledWhenRe
     class MockCmdQ : public CommandQueue {
       public:
         MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
-        cl_int finish(bool dcFlush) override {
+        cl_int finish() override {
             finishCalled++;
-            dcFlushRequested = dcFlush;
             return CL_SUCCESS;
         }
         uint32_t finishCalled = 0;
-        bool dcFlushRequested = false;
     };
 
     auto mockCmdQ = std::unique_ptr<MockCmdQ>(new MockCmdQ(this->context, this->context->getDevice(0), 0));
@@ -123,7 +116,6 @@ TYPED_TEST_P(D3DTests, givenSharedResourceBufferAndInteropUserSyncDisabledWhenRe
     retVal = this->enqueueReleaseD3DObjectsApi(this->mockSharingFcns, mockCmdQ.get(), 1, &bufferMem, 0, nullptr, nullptr);
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(1u, mockCmdQ->finishCalled);
-    EXPECT_TRUE(mockCmdQ->dcFlushRequested);
 }
 
 TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncEnabledWhenReleaseIsCalledThenDoExplicitFinishOnce) {
@@ -132,13 +124,11 @@ TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncEnabledWhen
     class MockCmdQ : public CommandQueue {
       public:
         MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
-        cl_int finish(bool dcFlush) override {
+        cl_int finish() override {
             finishCalled++;
-            dcFlushRequested = dcFlush;
             return CL_SUCCESS;
         }
         uint32_t finishCalled = 0;
-        bool dcFlushRequested = false;
     };
 
     auto mockCmdQ = std::unique_ptr<MockCmdQ>(new MockCmdQ(this->context, this->context->getDevice(0), 0));
@@ -154,7 +144,6 @@ TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncEnabledWhen
     retVal = this->enqueueReleaseD3DObjectsApi(this->mockSharingFcns, mockCmdQ.get(), 1, &bufferMem, 0, nullptr, nullptr);
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(1u, mockCmdQ->finishCalled);
-    EXPECT_TRUE(mockCmdQ->dcFlushRequested);
 }
 
 TYPED_TEST_P(D3DTests, givenSharedResourceFlagWhenCreate2dTextureThenStagingTextureEqualsPassedTexture) {
@@ -287,7 +276,7 @@ TYPED_TEST_P(D3DTests, givenD3DDeviceParamWhenContextCreationThenSetProperValues
 
     EXPECT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, ctx.get());
-    EXPECT_EQ(1u, ctx->peekPreferD3dSharedResources());
+    EXPECT_EQ(1u, ctx->preferD3dSharedResources);
     EXPECT_NE(nullptr, ctx->getSharing<D3DSharingFunctions<TypeParam>>());
 }
 

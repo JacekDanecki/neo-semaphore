@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/api/api.h"
 #include "runtime/helpers/options.h"
 #include "runtime/mem_obj/image.h"
@@ -14,7 +15,6 @@
 #include "runtime/sharings/d3d/d3d_surface.h"
 #include "test.h"
 #include "unit_tests/fixtures/platform_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/mocks/mock_command_queue.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_d3d_objects.h"
@@ -92,8 +92,8 @@ class D3D9Tests : public PlatformFixture, public ::testing::Test {
         PlatformFixture::SetUp();
         memoryManager = std::make_unique<MockMM>(*pPlatform->peekExecutionEnvironment());
         context = new MockContext(pPlatform->getDevice(0));
-        context->forcePreferD3dSharedResources(true);
-        context->setMemoryManager(memoryManager.get());
+        context->preferD3dSharedResources = true;
+        context->memoryManager = memoryManager.get();
 
         mockSharingFcns = new NiceMock<MockD3DSharingFunctions<D3D9>>();
         context->setSharingFunctions(mockSharingFcns);
@@ -189,7 +189,7 @@ TEST_F(D3D9Tests, createSurface) {
     auto image = castToObject<Image>(memObj);
     EXPECT_NE(nullptr, image->getSharingHandler());
 
-    EXPECT_TRUE(CL_MEM_READ_WRITE == image->getFlags());
+    EXPECT_TRUE(CL_MEM_READ_WRITE == image->getMemoryPropertiesFlags());
 
     EXPECT_TRUE(expectedImgFormat.image_channel_data_type == image->getImageFormat().image_channel_data_type);
     EXPECT_TRUE(expectedImgFormat.image_channel_order == image->getImageFormat().image_channel_order);
@@ -223,7 +223,7 @@ TEST_F(D3D9Tests, createSurfaceIntel) {
     auto image = castToObject<Image>(memObj);
     EXPECT_NE(nullptr, image->getSharingHandler());
 
-    EXPECT_TRUE(CL_MEM_READ_WRITE == image->getFlags());
+    EXPECT_TRUE(CL_MEM_READ_WRITE == image->getMemoryPropertiesFlags());
 
     EXPECT_TRUE(expectedImgFormat.image_channel_data_type == image->getImageFormat().image_channel_data_type);
     EXPECT_TRUE(expectedImgFormat.image_channel_order == image->getImageFormat().image_channel_order);

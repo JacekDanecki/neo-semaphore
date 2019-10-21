@@ -8,6 +8,8 @@
 #include "runtime/context/context.h"
 
 #include "core/helpers/ptr_math.h"
+#include "core/helpers/string.h"
+#include "core/memory_manager/unified_memory_manager.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_stream/command_stream_receiver.h"
@@ -16,12 +18,10 @@
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/get_info.h"
-#include "runtime/helpers/string.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/deferred_deleter.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/memory_manager/svm_memory_manager.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/platform/platform.h"
 #include "runtime/sharings/sharing.h"
@@ -90,7 +90,7 @@ void Context::overrideSpecialQueueAndDecrementRefCount(CommandQueue *commandQueu
     this->decRefInternal();
 };
 
-bool Context::areMultiStorageAllocationsPreffered() {
+bool Context::areMultiStorageAllocationsPreferred() {
     return this->contextType != ContextType::CONTEXT_TYPE_SPECIALIZED;
 }
 
@@ -247,6 +247,14 @@ cl_int Context::getInfo(cl_context_info paramName, size_t paramValueSize,
 
 size_t Context::getNumDevices() const {
     return devices.size();
+}
+
+size_t Context::getTotalNumDevices() const {
+    size_t numAvailableDevices = 0u;
+    for (auto &device : devices) {
+        numAvailableDevices += device->getNumAvailableDevices();
+    }
+    return numAvailableDevices;
 }
 
 Device *Context::getDevice(size_t deviceOrdinal) {

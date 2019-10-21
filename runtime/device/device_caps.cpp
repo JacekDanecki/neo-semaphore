@@ -12,6 +12,7 @@
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/memory_manager.h"
+#include "runtime/os_interface/hw_info_config.h"
 #include "runtime/os_interface/os_interface.h"
 #include "runtime/platform/extensions.h"
 #include "runtime/sharings/sharing_factory.h"
@@ -68,13 +69,11 @@ void Device::setupFp64Flags() {
 
 void Device::initializeCaps() {
     auto &hwInfo = getHardwareInfo();
+    auto hwInfoConfig = HwInfoConfig::get(hwInfo.platform.eProductFamily);
     deviceExtensions.clear();
     deviceExtensions.append(deviceExtensionsList);
     // Add our graphics family name to the device name
-    auto addressing32bitAllowed = is32BitOsAllocatorAvailable;
-    if (is32bit) {
-        addressing32bitAllowed = false;
-    }
+    auto addressing32bitAllowed = is64bit;
 
     driverVersion = TOSTR(NEO_DRIVER_VERSION);
 
@@ -122,6 +121,7 @@ void Device::initializeCaps() {
     deviceInfo.platformLP = (hwInfo.capabilityTable.clVersionSupport == 12) ? true : false;
     deviceInfo.spirVersions = spirVersions.c_str();
     auto supportsVme = hwInfo.capabilityTable.supportsVme;
+    auto supportsAdvancedVme = hwInfo.capabilityTable.supportsVme;
 
     if (enabledClVersion >= 21) {
         deviceInfo.independentForwardProgress = true;
@@ -136,7 +136,7 @@ void Device::initializeCaps() {
     }
 
     if (enabledClVersion >= 20) {
-        deviceExtensions += "cl_khr_mipmap_image cl_khr_mipmap_image_writes ";
+        deviceExtensions += "cl_khr_mipmap_image cl_khr_mipmap_image_writes cl_intel_unified_shared_memory_preview ";
     }
 
     if (DebugManager.flags.EnableNV12.get()) {
@@ -147,12 +147,25 @@ void Device::initializeCaps() {
         deviceExtensions += "cl_intel_packed_yuv ";
         deviceInfo.packedYuvExtension = true;
     }
-    if (DebugManager.flags.EnableIntelVme.get() && supportsVme) {
-        deviceExtensions += "cl_intel_motion_estimation ";
+    if (DebugManager.flags.EnableIntelVme.get() != -1) {
+        supportsVme = !!DebugManager.flags.EnableIntelVme.get();
+    }
+
+    if (supportsVme) {
+        deviceExtensions += "cl_intel_motion_estimation cl_intel_device_side_avc_motion_estimation ";
         deviceInfo.vmeExtension = true;
     }
-    if (DebugManager.flags.EnableIntelAdvancedVme.get() && supportsVme) {
+
+    if (DebugManager.flags.EnableIntelAdvancedVme.get() != -1) {
+        supportsAdvancedVme = !!DebugManager.flags.EnableIntelAdvancedVme.get();
+    }
+    if (supportsAdvancedVme) {
         deviceExtensions += "cl_intel_advanced_motion_estimation ";
+    }
+
+    if (hwInfo.capabilityTable.ftrSupportsInteger64BitAtomics) {
+        deviceExtensions += "cl_khr_int64_base_atomics ";
+        deviceExtensions += "cl_khr_int64_extended_atomics ";
     }
 
     deviceExtensions += sharingFactory.getExtensions();
@@ -165,10 +178,11 @@ void Device::initializeCaps() {
     deviceInfo.deviceExtensions = deviceExtensions.c_str();
 
     exposedBuiltinKernels = builtInKernels;
-    if (deviceExtensions.find("cl_intel_motion_estimation") != std::string::npos) {
+
+    if (supportsVme) {
         exposedBuiltinKernels.append("block_motion_estimate_intel;");
     }
-    if (deviceExtensions.find("cl_intel_advanced_motion_estimation") != std::string::npos) {
+    if (supportsAdvancedVme) {
         auto advVmeKernels = "block_advanced_motion_estimate_check_intel;block_advanced_motion_estimate_bidirectional_check_intel;";
         exposedBuiltinKernels.append(advVmeKernels);
     }
@@ -209,7 +223,9 @@ void Device::initializeCaps() {
     deviceInfo.globalMemCachelineSize = 64;
     deviceInfo.globalMemCacheSize = systemInfo.L3BankCount * 128 * KB;
 
-    deviceInfo.globalMemSize = (cl_ulong)getMemoryManager()->getSystemSharedMemory();
+    deviceInfo.globalMemSize = getMemoryManager()->isLocalMemorySupported()
+                                   ? getMemoryManager()->getLocalMemorySize()
+                                   : getMemoryManager()->getSystemSharedMemory();
     deviceInfo.globalMemSize = std::min(deviceInfo.globalMemSize, (cl_ulong)(getMemoryManager()->getMaxApplicationAddress() + 1));
     deviceInfo.globalMemSize = (cl_ulong)((double)deviceInfo.globalMemSize * 0.8);
 
@@ -236,8 +252,7 @@ void Device::initializeCaps() {
     deviceInfo.preferredInteropUserSync = 1u;
 
     // OpenCL 1.2 requires 128MB minimum
-    auto maxMemAllocSize = std::max((uint64_t)(deviceInfo.globalMemSize / 2), (uint64_t)(128 * MB));
-    deviceInfo.maxMemAllocSize = std::min(maxMemAllocSize, this->hardwareCapabilities.maxMemAllocSize);
+    deviceInfo.maxMemAllocSize = std::min(std::max(deviceInfo.globalMemSize / 2, static_cast<uint64_t>(128llu * MB)), this->hardwareCapabilities.maxMemAllocSize);
 
     deviceInfo.maxConstantBufferSize = deviceInfo.maxMemAllocSize;
 
@@ -249,6 +264,7 @@ void Device::initializeCaps() {
     deviceInfo.maxComputUnits = systemInfo.EUCount;
     deviceInfo.maxConstantArgs = 8;
     deviceInfo.maxNumEUsPerSubSlice = 0;
+    deviceInfo.maxSliceCount = systemInfo.SliceCount;
     deviceInfo.numThreadsPerEU = 0;
     auto simdSizeUsed = DebugManager.flags.UseMaxSimdSizeToDeduceMaxWorkgroupSize.get() ? 32 : 8;
 
@@ -286,9 +302,9 @@ void Device::initializeCaps() {
     printDebugString(DebugManager.flags.PrintDebugMessages.get(), stderr, "computeUnitsUsedForScratch: %d\n", deviceInfo.computeUnitsUsedForScratch);
 
     deviceInfo.localMemType = CL_LOCAL;
-    deviceInfo.localMemSize = hwInfo.capabilityTable.slmSize << 10;
+    deviceInfo.localMemSize = hwInfo.capabilityTable.slmSize * KB;
 
-    deviceInfo.imageSupport = CL_TRUE;
+    deviceInfo.imageSupport = hwInfo.capabilityTable.supportsImages;
     deviceInfo.image2DMaxWidth = 16384;
     deviceInfo.image2DMaxHeight = 16384;
     deviceInfo.image3DMaxWidth = this->hardwareCapabilities.image3DMaxWidth;
@@ -297,7 +313,7 @@ void Device::initializeCaps() {
     deviceInfo.imageMaxArraySize = 2048;
 
     // cl_khr_image2d_from_buffer
-    deviceInfo.imagePitchAlignment = 4;
+    deviceInfo.imagePitchAlignment = hwHelper.getPitchAlignmentForImage(&hwInfo);
     deviceInfo.imageBaseAddressAlignment = 4;
     deviceInfo.maxPipeArgs = 16;
     deviceInfo.pipeMaxPacketSize = 1024;
@@ -325,8 +341,10 @@ void Device::initializeCaps() {
 
     deviceInfo.vmeAvcSupportsPreemption = hwInfo.capabilityTable.ftrSupportsVmeAvcPreemption;
     deviceInfo.vmeAvcSupportsTextureSampler = hwInfo.capabilityTable.ftrSupportsVmeAvcTextureSampler;
-    deviceInfo.vmeAvcVersion = CL_AVC_ME_VERSION_1_INTEL;
-    deviceInfo.vmeVersion = CL_ME_VERSION_ADVANCED_VER_2_INTEL;
+    if (hwInfo.capabilityTable.supportsVme) {
+        deviceInfo.vmeAvcVersion = CL_AVC_ME_VERSION_1_INTEL;
+        deviceInfo.vmeVersion = CL_ME_VERSION_ADVANCED_VER_2_INTEL;
+    }
     deviceInfo.platformHostTimerResolution = getPlatformHostTimerResolution();
 
     deviceInfo.internalDriverVersion = CL_DEVICE_DRIVER_VERSION_INTEL_NEO1;
@@ -338,6 +356,19 @@ void Device::initializeCaps() {
     deviceInfo.sourceLevelDebuggerActive = (executionEnvironment->sourceLevelDebugger) ? executionEnvironment->sourceLevelDebugger->isDebuggerActive() : false;
     if (deviceInfo.sourceLevelDebuggerActive) {
         this->preemptionMode = PreemptionMode::Disabled;
+    }
+
+    deviceInfo.hostMemCapabilities = hwInfoConfig->getHostMemCapabilities();
+    deviceInfo.deviceMemCapabilities = hwInfoConfig->getDeviceMemCapabilities();
+    deviceInfo.singleDeviceSharedMemCapabilities = hwInfoConfig->getSingleDeviceSharedMemCapabilities();
+    deviceInfo.crossDeviceSharedMemCapabilities = hwInfoConfig->getCrossDeviceSharedMemCapabilities();
+    deviceInfo.sharedSystemMemCapabilities = hwInfoConfig->getSharedSystemMemCapabilities();
+    if (DebugManager.flags.EnableSharedSystemUsmSupport.get() != -1) {
+        if (DebugManager.flags.EnableSharedSystemUsmSupport.get() == 0) {
+            deviceInfo.sharedSystemMemCapabilities = 0u;
+        } else {
+            deviceInfo.sharedSystemMemCapabilities = CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ATOMIC_ACCESS_INTEL;
+        }
     }
 }
 } // namespace NEO

@@ -8,6 +8,7 @@
 #include "core/helpers/ptr_math.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
+#include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/kernel/kernel.h"
 #include "test.h"
@@ -22,7 +23,7 @@
 
 using namespace NEO;
 
-HWTEST_F(EnqueueCopyBufferTest, null_src_mem_object) {
+HWTEST_F(EnqueueCopyBufferTest, GivenNullSrcMemObjWhenCopyingBufferThenClInvalidMemObjectErrorIsReturned) {
     auto dstBuffer = std::unique_ptr<Buffer>(BufferHelper<>::create());
 
     auto retVal = clEnqueueCopyBuffer(
@@ -38,7 +39,7 @@ HWTEST_F(EnqueueCopyBufferTest, null_src_mem_object) {
     EXPECT_EQ(CL_INVALID_MEM_OBJECT, retVal);
 }
 
-HWTEST_F(EnqueueCopyBufferTest, null_dst_mem_object) {
+HWTEST_F(EnqueueCopyBufferTest, GivenNullDstMemObjWhenCopyingBufferThenClInvalidMemObjectErrorIsReturned) {
     auto srcBuffer = std::unique_ptr<Buffer>(BufferHelper<>::create());
 
     auto retVal = clEnqueueCopyBuffer(
@@ -54,7 +55,7 @@ HWTEST_F(EnqueueCopyBufferTest, null_dst_mem_object) {
     EXPECT_EQ(CL_INVALID_MEM_OBJECT, retVal);
 }
 
-HWTEST_F(EnqueueCopyBufferTest, invalid_value) {
+HWTEST_F(EnqueueCopyBufferTest, GivenInvalidMemoryLocationWhenCopyingBufferThenClInvalidValueErrorIsReturned) {
     auto retVal = clEnqueueCopyBuffer(
         pCmdQ,
         srcBuffer,
@@ -68,7 +69,7 @@ HWTEST_F(EnqueueCopyBufferTest, invalid_value) {
     EXPECT_EQ(CL_INVALID_VALUE, retVal);
 }
 
-HWTEST_F(EnqueueCopyBufferTest, alignsToCSR) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenTaskCountIsAlignedWithCsr) {
     //this test case assumes IOQ
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.taskCount = pCmdQ->taskCount + 100;
@@ -79,7 +80,7 @@ HWTEST_F(EnqueueCopyBufferTest, alignsToCSR) {
     EXPECT_EQ(csr.peekTaskLevel(), pCmdQ->taskLevel + 1);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, GPGPUWalker) {
+HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, WhenCopyingBufferThenGpgpuWalkerIsCorrect) {
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     enqueueCopyBufferAndParse<FamilyType>();
 
@@ -110,21 +111,21 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, GPGPUWalker) {
     }
 }
 
-HWTEST_F(EnqueueCopyBufferTest, bumpsTaskLevel) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenTaskLevelIsIncremented) {
     auto taskLevelBefore = pCmdQ->taskLevel;
 
     enqueueCopyBuffer();
     EXPECT_GT(pCmdQ->taskLevel, taskLevelBefore);
 }
 
-HWTEST_F(EnqueueCopyBufferTest, addsCommands) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenCommandsAreAdded) {
     auto usedCmdBufferBefore = pCS->getUsed();
 
     enqueueCopyBuffer();
     EXPECT_NE(usedCmdBufferBefore, pCS->getUsed());
 }
 
-HWTEST_F(EnqueueCopyBufferTest, addsIndirectData) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenIndirectDataGetsAdded) {
     auto dshBefore = pDSH->getUsed();
     auto iohBefore = pIOH->getUsed();
     auto sshBefore = pSSH->getUsed();
@@ -136,9 +137,9 @@ HWTEST_F(EnqueueCopyBufferTest, addsIndirectData) {
                                                                                                      pCmdQ->getContext(), pCmdQ->getDevice());
     ASSERT_NE(nullptr, &builder);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    BuiltinOpParams dc;
     dc.srcMemObj = srcBuffer;
-    dc.srcMemObj = dstBuffer;
+    dc.dstMemObj = dstBuffer;
     dc.srcOffset = {EnqueueCopyBufferTraits::srcOffset, 0, 0};
     dc.dstOffset = {EnqueueCopyBufferTraits::dstOffset, 0, 0};
     dc.size = {EnqueueCopyBufferTraits::size, 0, 0};
@@ -154,18 +155,42 @@ HWTEST_F(EnqueueCopyBufferTest, addsIndirectData) {
     }
 }
 
-HWTEST_F(EnqueueCopyBufferTest, LoadRegisterImmediateL3CNTLREG) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferStatelessThenStatelessKernelIsUsed) {
+
+    auto srcBuffer = std::unique_ptr<Buffer>(BufferHelper<>::create());
+    auto dstBuffer = std::unique_ptr<Buffer>(BufferHelper<>::create());
+
+    MultiDispatchInfo multiDispatchInfo;
+    auto &builder = pDevice->getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBufferStateless,
+                                                                                                     pCmdQ->getContext(), pCmdQ->getDevice());
+
+    ASSERT_NE(nullptr, &builder);
+    BuiltinOpParams dc;
+    dc.srcMemObj = srcBuffer.get();
+    dc.dstMemObj = dstBuffer.get();
+    dc.srcOffset = {EnqueueCopyBufferTraits::srcOffset, 0, 0};
+    dc.dstOffset = {EnqueueCopyBufferTraits::dstOffset, 0, 0};
+    dc.size = {EnqueueCopyBufferTraits::size, 0, 0};
+    builder.buildDispatchInfos(multiDispatchInfo, dc);
+    EXPECT_NE(0u, multiDispatchInfo.size());
+
+    auto kernel = multiDispatchInfo.begin()->getKernel();
+    EXPECT_TRUE(kernel->getKernelInfo().patchInfo.executionEnvironment->CompiledForGreaterThan4GBBuffers);
+    EXPECT_FALSE(kernel->getKernelInfo().kernelArgInfo[0].pureStatefulBufferAccess);
+}
+
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenL3ProgrammingIsCorrect) {
     enqueueCopyBufferAndParse<FamilyType>();
     validateL3Programming<FamilyType>(cmdList, itorWalker);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, WhenEnqueueIsDoneThenStateBaseAddressIsProperlyProgrammed) {
     enqueueCopyBufferAndParse<FamilyType>();
-    validateStateBaseAddress<FamilyType>(this->pCmdQ->getCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
+    validateStateBaseAddress<FamilyType>(this->pCmdQ->getGpgpuCommandStreamReceiver().getMemoryManager()->getInternalHeapBaseAddress(),
                                          pDSH, pIOH, pSSH, itorPipelineSelect, itorWalker, cmdList, 0llu);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, MediaInterfaceDescriptorLoad) {
+HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, WhenCopyingBufferThenMediaInterfaceDescriptorLoadIsCorrect) {
     typedef typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD MEDIA_INTERFACE_DESCRIPTOR_LOAD;
     typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
 
@@ -190,7 +215,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, MediaInterfaceDescriptorLoad)
     FamilyType::PARSE::template validateCommand<MEDIA_INTERFACE_DESCRIPTOR_LOAD *>(cmdList.begin(), itorMediaInterfaceDescriptorLoad);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, InterfaceDescriptorData) {
+HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, WhenCopyingBufferThenInterfaceDescriptorDataIsCorrect) {
     typedef typename FamilyType::MEDIA_INTERFACE_DESCRIPTOR_LOAD MEDIA_INTERFACE_DESCRIPTOR_LOAD;
     typedef typename FamilyType::STATE_BASE_ADDRESS STATE_BASE_ADDRESS;
     typedef typename FamilyType::INTERFACE_DESCRIPTOR_DATA INTERFACE_DESCRIPTOR_DATA;
@@ -209,18 +234,18 @@ HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, InterfaceDescriptorData) {
     EXPECT_NE(0u, cmdIDD->getConstantIndirectUrbEntryReadLength());
 }
 
-HWTEST_F(EnqueueCopyBufferTest, PipelineSelect) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenNumberOfPipelineSelectsIsOne) {
     enqueueCopyBufferAndParse<FamilyType>();
     int numCommands = getNumberOfPipelineSelectsThatEnablePipelineSelect<FamilyType>();
     EXPECT_EQ(1, numCommands);
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, MediaVFEState) {
+HWCMDTEST_F(IGFX_GEN8_CORE, EnqueueCopyBufferTest, WhenCopyingBufferThenMediaVfeStateIsSetCorrectly) {
     enqueueCopyBufferAndParse<FamilyType>();
     validateMediaVFEState<FamilyType>(&pDevice->getHardwareInfo(), cmdMediaVfeState, cmdList, itorMediaVfeState);
 }
 
-HWTEST_F(EnqueueCopyBufferTest, argumentZeroShouldMatchSourceAddress) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenArgumentZeroMatchesSourceAddress) {
     enqueueCopyBufferAndParse<FamilyType>();
 
     // Extract the kernel used
@@ -229,7 +254,7 @@ HWTEST_F(EnqueueCopyBufferTest, argumentZeroShouldMatchSourceAddress) {
                                                                                                      pCmdQ->getContext(), pCmdQ->getDevice());
     ASSERT_NE(nullptr, &builder);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    BuiltinOpParams dc;
     dc.srcMemObj = srcBuffer;
     dc.dstMemObj = dstBuffer;
     dc.srcOffset = {EnqueueCopyBufferTraits::srcOffset, 0, 0};
@@ -247,7 +272,7 @@ HWTEST_F(EnqueueCopyBufferTest, argumentZeroShouldMatchSourceAddress) {
     EXPECT_EQ((void *)((uintptr_t)srcBuffer->getGraphicsAllocation()->getGpuAddress()), *pArgument);
 }
 
-HWTEST_F(EnqueueCopyBufferTest, argumentOneShouldMatchDestAddress) {
+HWTEST_F(EnqueueCopyBufferTest, WhenCopyingBufferThenArgumentOneMatchesDestinationAddress) {
     enqueueCopyBufferAndParse<FamilyType>();
 
     // Extract the kernel used
@@ -256,7 +281,7 @@ HWTEST_F(EnqueueCopyBufferTest, argumentOneShouldMatchDestAddress) {
                                                                                                      pCmdQ->getContext(), pCmdQ->getDevice());
     ASSERT_NE(nullptr, &builder);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    BuiltinOpParams dc;
     dc.srcMemObj = srcBuffer;
     dc.dstMemObj = dstBuffer;
     dc.srcOffset = {EnqueueCopyBufferTraits::srcOffset, 0, 0};
@@ -272,4 +297,84 @@ HWTEST_F(EnqueueCopyBufferTest, argumentOneShouldMatchDestAddress) {
     auto pArgument = (void **)getStatelessArgumentPointer<FamilyType>(*kernel, 1u, pCmdQ->getIndirectHeap(IndirectHeap::INDIRECT_OBJECT, 0));
 
     EXPECT_EQ((void *)((uintptr_t)dstBuffer->getGraphicsAllocation()->getGpuAddress()), *pArgument);
+}
+
+struct EnqueueCopyBufferHw : public ::testing::Test {
+    template <typename FamilyType>
+    struct MyCmdQStateless : public CommandQueueHw<FamilyType> {
+        using CommandQueueHw<FamilyType>::commandStream;
+        MyCmdQStateless(Context *context, Device *device) : CommandQueueHw<FamilyType>(context, device, nullptr){};
+
+        bool forceStateless(size_t size) override {
+            return true;
+        }
+    };
+
+    template <typename FamilyType>
+    struct MyCmdQStatefull : public CommandQueueHw<FamilyType> {
+        using CommandQueueHw<FamilyType>::commandStream;
+        MyCmdQStatefull(Context *context, Device *device) : CommandQueueHw<FamilyType>(context, device, nullptr){};
+
+        bool forceStateless(size_t size) override {
+            return false;
+        }
+    };
+
+    void SetUp() override {
+        device.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(*platformDevices));
+        context.reset(new MockContext(device.get()));
+
+        srcBuffer = std::unique_ptr<Buffer>(BufferHelper<>::create(context.get()));
+        dstBuffer = std::unique_ptr<Buffer>(BufferHelper<>::create(context.get()));
+    }
+
+    std::unique_ptr<MockDevice> device;
+    std::unique_ptr<MockContext> context;
+    std::unique_ptr<Buffer> srcBuffer;
+    std::unique_ptr<Buffer> dstBuffer;
+};
+
+using EnqueueCopyBufferStatelessTest = EnqueueCopyBufferHw;
+
+HWTEST_F(EnqueueCopyBufferStatelessTest, givenBuffersWhenCopyingBufferStatelessThenSuccessIsReturned) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+    auto cmdQ = std::make_unique<MyCmdQStateless<FamilyType>>(context.get(), device.get());
+
+    auto retVal = cmdQ->enqueueCopyBuffer(
+        srcBuffer.get(),
+        dstBuffer.get(),
+        0,
+        0,
+        sizeof(float),
+        0,
+        nullptr,
+        nullptr);
+
+    EXPECT_EQ(CL_SUCCESS, retVal);
+}
+
+using EnqueueCopyBufferStatefullTest = EnqueueCopyBufferHw;
+
+HWTEST_F(EnqueueCopyBufferStatefullTest, givenBuffersWhenCopyingBufferStatefullThenSuccessIsReturned) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+
+    auto cmdQ = std::make_unique<MyCmdQStatefull<FamilyType>>(context.get(), device.get());
+
+    auto retVal = cmdQ->enqueueCopyBuffer(
+        srcBuffer.get(),
+        dstBuffer.get(),
+        0,
+        0,
+        sizeof(float),
+        0,
+        nullptr,
+        nullptr);
+
+    EXPECT_EQ(CL_SUCCESS, retVal);
 }

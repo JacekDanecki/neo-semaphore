@@ -124,7 +124,7 @@ TEST_F(GlSharingTextureTests, givenMockGlWhenGlTextureIsCreatedFromWrongHandleTh
     auto tempMemoryManager = clContext->getMemoryManager();
     tempMM->useForcedGmm = false;
     auto memoryManager = std::unique_ptr<FailingMemoryManager>(new FailingMemoryManager());
-    clContext->setMemoryManager(memoryManager.get());
+    clContext->memoryManager = memoryManager.get();
 
     auto retVal = CL_SUCCESS;
     auto glTexture = GlTexture::createSharedGlTexture(clContext.get(), (cl_mem_flags)0, GL_TEXTURE_1D, 0, textureId, &retVal);
@@ -132,7 +132,7 @@ TEST_F(GlSharingTextureTests, givenMockGlWhenGlTextureIsCreatedFromWrongHandleTh
     EXPECT_EQ(nullptr, glTexture);
     EXPECT_EQ(CL_INVALID_GL_OBJECT, retVal);
 
-    clContext->setMemoryManager(tempMemoryManager);
+    clContext->memoryManager = tempMemoryManager;
 }
 
 GLboolean OSAPI mockGLAcquireSharedTexture(GLDisplay, GLContext, GLContext, GLvoid *pResourceInfo) {
@@ -537,7 +537,11 @@ TEST_F(GlSharingTextureTests, givenMockGlWhenGlTextureIsCreatedWithUnifiedAuxSur
 
     auto glTexture = std::unique_ptr<Image>(GlTexture::createSharedGlTexture(clContext.get(), CL_MEM_WRITE_ONLY, GL_SRGB8_ALPHA8, 0, textureId, &retVal));
 
-    EXPECT_EQ(1u, tempMM->mapAuxGpuVACalled);
+    auto hwInfo = executionEnvironment->getHardwareInfo();
+    auto &hwHelper = HwHelper::get(hwInfo->platform.eRenderCoreFamily);
+    uint32_t expectedMapAuxGpuVaCalls = hwHelper.isPageTableManagerSupported(*hwInfo) ? 1 : 0;
+
+    EXPECT_EQ(expectedMapAuxGpuVaCalls, tempMM->mapAuxGpuVACalled);
 }
 class GetGlTextureInfoTests : public GlSharingTextureTests,
                               public ::testing::WithParamInterface<unsigned int /*cl_GLenum*/> {

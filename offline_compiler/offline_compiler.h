@@ -6,7 +6,7 @@
  */
 
 #pragma once
-#include "elf/writer.h"
+#include "core/elf/writer.h"
 
 #include "cif/common/cif_main.h"
 #include "ocl_igc_interface/fcl_ocl_device_ctx.h"
@@ -30,6 +30,7 @@ enum ErrorCode {
 };
 
 std::string generateFilePath(const std::string &directory, const std::string &fileNameBase, const char *extension);
+std::string getDevicesTypes();
 
 class OfflineCompiler {
   public:
@@ -58,6 +59,7 @@ class OfflineCompiler {
     int initialize(size_t numArgs, const std::vector<std::string> &allArgs);
     int parseCommandLine(size_t numArgs, const std::vector<std::string> &allArgs);
     void setStatelessToStatefullBufferOffsetFlag();
+    void resolveExtraSettings();
     void parseDebugSettings();
     void storeBinary(char *&pDst, size_t &dstSize, const void *pSrc, const size_t srcSize);
     int buildSourceCode();
@@ -87,11 +89,13 @@ class OfflineCompiler {
     std::string buildLog;
 
     bool useLlvmText = false;
+    bool useLlvmBc = false;
     bool useCppFile = false;
     bool useOptionsSuffix = false;
     bool quiet = false;
     bool inputFileLlvm = false;
     bool inputFileSpirV = false;
+    bool outputNoSuffix = false;
 
     CLElfLib::ElfBinaryStorage elfBinary;
     size_t elfBinarySize = 0;

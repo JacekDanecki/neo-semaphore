@@ -8,14 +8,15 @@
 #include "debug_settings_manager.h"
 
 #include "core/helpers/ptr_math.h"
+#include "core/helpers/string.h"
+#include "core/utilities/debug_settings_reader_creator.h"
 #include "runtime/event/event.h"
 #include "runtime/helpers/dispatch_info.h"
-#include "runtime/helpers/string.h"
 #include "runtime/helpers/timestamp_packet.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/mem_obj.h"
 #include "runtime/os_interface/definitions/translate_debug_settings.h"
-#include "runtime/utilities/debug_settings_reader_creator.h"
+#include "runtime/os_interface/ocl_reg_path.h"
 
 #include "CL/cl.h"
 
@@ -37,7 +38,7 @@ DebugSettingsManager<DebugLevel>::DebugSettingsManager() {
 
     logFileName = "igdrcl.log";
     if (registryReadAvailable()) {
-        readerImpl = SettingsReaderCreator::create();
+        readerImpl = SettingsReaderCreator::create(oclRegPath);
         injectSettingsFromReader();
         dumpFlags();
     }
@@ -170,7 +171,7 @@ template <typename DataType>
 void DebugSettingsManager<DebugLevel>::dumpNonDefaultFlag(const char *variableName, const DataType &variableValue, const DataType &defaultValue) {
     if (variableValue != defaultValue) {
         const auto variableStringValue = std::to_string(variableValue);
-        printDebugString(DebugManager.flags.PrintDebugMessages.get(), stdout, "Non-default value of debug variable: %s = %s\n", variableName, variableStringValue.c_str());
+        printDebugString(true, stdout, "Non-default value of debug variable: %s = %s\n", variableName, variableStringValue.c_str());
     }
 }
 
@@ -233,7 +234,7 @@ void DebugSettingsManager<DebugLevel>::dumpKernelArgs(const Kernel *kernel) {
                 if (memObj != nullptr) {
                     ptr = static_cast<char *>(memObj->getCpuAddress());
                     size = memObj->getSize();
-                    flags = memObj->getFlags();
+                    flags = memObj->getMemoryPropertiesFlags();
                 }
             } else if (argInfo.typeStr.find("sampler") != std::string::npos) {
                 type = "sampler";
@@ -244,7 +245,7 @@ void DebugSettingsManager<DebugLevel>::dumpKernelArgs(const Kernel *kernel) {
                 if (memObj != nullptr) {
                     ptr = static_cast<char *>(memObj->getCpuAddress());
                     size = memObj->getSize();
-                    flags = memObj->getFlags();
+                    flags = memObj->getMemoryPropertiesFlags();
                 }
             } else {
                 type = "immediate";
@@ -375,7 +376,8 @@ const char *DebugSettingsManager<DebugLevel>::getAllocationTypeString(GraphicsAl
         return "TIMESTAMP_PACKET_TAG_BUFFER";
     case GraphicsAllocation::AllocationType::UNKNOWN:
         return "UNKNOWN";
-
+    case GraphicsAllocation::AllocationType::WRITE_COMBINED:
+        return "WRITE_COMBINED";
     default:
         return "ILLEGAL_VALUE";
     }

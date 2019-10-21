@@ -15,22 +15,7 @@
 
 using namespace NEO;
 
-struct BarrierTest : public CommandEnqueueFixture,
-                     public ::testing::Test {
-
-    void SetUp() override {
-        CommandEnqueueFixture::SetUp();
-        WhitelistedRegisters forceRegs = {false};
-        if (pDevice->getPreemptionMode() != PreemptionMode::Disabled) {
-            forceRegs.csChicken1_0x2580 = true;
-        }
-        pDevice->setForceWhitelistedRegs(true, &forceRegs);
-    }
-
-    void TearDown() override {
-        CommandEnqueueFixture::TearDown();
-    }
-};
+using BarrierTest = Test<CommandEnqueueFixture>;
 
 HWTEST_F(BarrierTest, givenCsrWithHigherLevelThenCommandQueueWhenEnqueueBarrierIsCalledThenCommandQueueAlignsToCsrWithoutSendingAnyCommands) {
     auto pCmdQ = this->pCmdQ;
@@ -72,7 +57,7 @@ HWTEST_F(BarrierTest, givenCsrWithHigherLevelThenCommandQueueWhenEnqueueBarrierI
     EXPECT_EQ(&csrCommandStream, &commandStreamReceiver.commandStream);
 }
 
-HWTEST_F(BarrierTest, CS_GT_CQ_ShouldNotAddPipeControl) {
+HWTEST_F(BarrierTest, GivenCsrTaskLevelGreaterThenCmdqTaskLevelWhenEnqueingBarrierWithWaitListThenAddPipeControlIsNotAdded) {
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     auto pCS = this->pCS;
     auto pCmdQ = this->pCmdQ;
@@ -106,7 +91,7 @@ HWTEST_F(BarrierTest, CS_GT_CQ_ShouldNotAddPipeControl) {
     ASSERT_EQ(cmdList.end(), itorCmd);
 }
 
-HWTEST_F(BarrierTest, returnsEvent) {
+HWTEST_F(BarrierTest, GivenEventWhenEnqueingBarrierWithWaitListThenEventIsSetupCorrectly) {
     auto pCmdQ = this->pCmdQ;
 
     cl_uint numEventsInWaitList = 0;
@@ -133,7 +118,7 @@ HWTEST_F(BarrierTest, returnsEvent) {
     }
 }
 
-HWTEST_F(BarrierTest, returnedEventShouldHaveEqualDepth) {
+HWTEST_F(BarrierTest, WhenEnqueingBarrierWithWaitListThenReturnedEventShouldHaveEqualDepth) {
     auto pCmdQ = this->pCmdQ;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
 
@@ -159,7 +144,7 @@ HWTEST_F(BarrierTest, returnedEventShouldHaveEqualDepth) {
     delete pEvent;
 }
 
-HWTEST_F(BarrierTest, eventWithWaitDependenciesShouldSync) {
+HWTEST_F(BarrierTest, WhenEnqueingBarrierWithWaitListThenDependenciesShouldSync) {
     auto pCmdQ = this->pCmdQ;
     auto &commandStreamReceiver = pDevice->getUltCommandStreamReceiver<FamilyType>();
 
@@ -186,11 +171,16 @@ HWTEST_F(BarrierTest, eventWithWaitDependenciesShouldSync) {
         &event);
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, event);
-    auto pEvent = (Event *)event;
+    auto pEvent = castToObject<Event>(event);
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
 
     // in this case only cmdQ raises the taskLevel why csr stay intact
     EXPECT_EQ(8u, pCmdQ->taskLevel);
-    EXPECT_EQ(7u, commandStreamReceiver.peekTaskLevel());
+    if (csr.peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(pCmdQ->taskLevel + 1, commandStreamReceiver.peekTaskLevel());
+    } else {
+        EXPECT_EQ(7u, commandStreamReceiver.peekTaskLevel());
+    }
     EXPECT_EQ(pCmdQ->taskLevel, pEvent->taskLevel);
     EXPECT_EQ(8u, pEvent->taskLevel);
 
@@ -215,10 +205,17 @@ HWTEST_F(BarrierTest, givenNotBlockedCommandQueueAndEnqueueBarrierWithWaitlistRe
         eventWaitList,
         &event);
 
+    auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
+
     EXPECT_EQ(CL_SUCCESS, retVal);
     EXPECT_EQ(latestTaskCountWaitedBeforeEnqueue, this->pCmdQ->latestTaskCountWaited);
-    auto pEvent = (Event *)event;
-    EXPECT_EQ(17u, pEvent->peekTaskCount());
+    auto pEvent = castToObject<Event>(event);
+
+    if (csr.peekTimestampPacketWriteEnabled()) {
+        EXPECT_EQ(csr.peekTaskCount(), pEvent->peekTaskCount());
+    } else {
+        EXPECT_EQ(17u, pEvent->peekTaskCount());
+    }
     EXPECT_TRUE(pEvent->updateStatusAndCheckCompletion());
     delete pEvent;
 }
@@ -243,7 +240,7 @@ HWTEST_F(BarrierTest, givenBlockedCommandQueueAndEnqueueBarrierWithWaitlistRetur
     clReleaseEvent(event);
 }
 
-HWTEST_F(BarrierTest, givenEmptyCommandStreamAndBlockedBarrierCommandWhenUserEventIsSignaledThenNewCommandStreamIsAcquired) {
+HWTEST_F(BarrierTest, givenEmptyCommandStreamAndBlockedBarrierCommandWhenUserEventIsSignaledThenNewCommandStreamIsNotAcquired) {
     UserEvent event2(&pCmdQ->getContext());
     cl_event eventWaitList[] =
         {
@@ -276,7 +273,7 @@ HWTEST_F(BarrierTest, givenEmptyCommandStreamAndBlockedBarrierCommandWhenUserEve
 
     EXPECT_EQ(0u, commandStreamStart);
     EXPECT_GT(commandStreamStart2, 0u);
-    EXPECT_NE(commandStreamBuffer2, commandStreamBuffer);
+    EXPECT_EQ(commandStreamBuffer2, commandStreamBuffer);
     EXPECT_GE(commandStream.getMaxAvailableSpace(), commandStream.getMaxAvailableSpace());
 
     clReleaseEvent(event);

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 #
 
-add_library(${BUILTINS_BINARIES_LIB_NAME} OBJECT builtins_binary.cmake)
+add_library(${BUILTINS_BINARIES_LIB_NAME} OBJECT EXCLUDE_FROM_ALL builtins_binary.cmake)
 
 # Add builtins sources
 add_subdirectory(registry)
@@ -24,16 +24,23 @@ set(GENERATED_BUILTINS
   "fill_image3d"
 )
 
+set(GENERATED_BUILTINS_STATELESS
+  "copy_buffer_to_buffer_stateless"
+)
+
 # Generate builtins cpps
 if(COMPILE_BUILT_INS)
   add_subdirectory(kernels)
 endif()
 
 macro(macro_for_each_gen)
-  foreach(PLATFORM_TYPE "CORE" "LP")
+  foreach(PLATFORM_TYPE ${PLATFORM_TYPES})
     get_family_name_with_type(${GEN_TYPE} ${PLATFORM_TYPE})
     foreach(GENERATED_BUILTIN ${GENERATED_BUILTINS})
       list(APPEND GENERATED_BUILTINS_CPPS ${BUILTINS_INCLUDE_DIR}/${RUNTIME_GENERATED_${GENERATED_BUILTIN}_${family_name_with_type}})
+    endforeach()
+    foreach(GENERATED_BUILTIN_STATELESS ${GENERATED_BUILTINS_STATELESS})
+      list(APPEND GENERATED_BUILTINS_CPPS ${BUILTINS_INCLUDE_DIR}/${RUNTIME_GENERATED_${GENERATED_BUILTIN_STATELESS}_${family_name_with_type}})
     endforeach()
   endforeach()
   source_group("generated files\\${GEN_TYPE_LOWER}" FILES ${GENERATED_BUILTINS_CPPS})

@@ -7,8 +7,8 @@
 
 #include "runtime/command_stream/aub_command_stream_receiver.h"
 
+#include "core/helpers/debug_helpers.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/debug_helpers.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
@@ -227,7 +227,7 @@ void AubFileStream::expectMemory(uint64_t physAddress, const void *memory, size_
         auto sizeThisIteration = std::min(sizeRemaining, blockSizeMax);
 
         // Round up to the number of dwords
-        auto dwordCount = (headerSize + sizeThisIteration + sizeof(uint32_t) - 1) / sizeof(uint32_t);
+        auto dwordCount = Math::divideAndRoundUp(headerSize + sizeThisIteration, sizeof(uint32_t));
 
         header.dwordCount = static_cast<uint32_t>(dwordCount - 1);
         header.dataSizeInBytes = static_cast<uint32_t>(sizeThisIteration);

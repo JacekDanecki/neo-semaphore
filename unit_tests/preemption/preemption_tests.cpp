@@ -5,13 +5,14 @@
  *
  */
 
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/options.h"
 #include "unit_tests/fixtures/preemption_fixture.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
+#include "unit_tests/helpers/dispatch_flags_helper.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/mocks/mock_builtins.h"
 #include "unit_tests/mocks/mock_device.h"
@@ -165,7 +166,7 @@ TEST_F(MidThreadPreemptionTests, allowMidThreadPreemptionNullKernel) {
 
 TEST_F(MidThreadPreemptionTests, allowMidThreadPreemptionDeviceSupportPreemptionOnVmeKernel) {
     device->setPreemptionMode(PreemptionMode::MidThread);
-    device->getMutableDeviceInfo()->vmeAvcSupportsPreemption = true;
+    device->deviceInfo.vmeAvcSupportsPreemption = true;
     kernelInfo->isVmeWorkload = true;
     kernel.reset(new MockKernel(program.get(), *kernelInfo, *device));
     EXPECT_TRUE(PreemptionHelper::allowMidThreadPreemption(kernel.get(), *device));
@@ -185,7 +186,7 @@ TEST_F(MidThreadPreemptionTests, disallowMidThreadPreemptionByKernel) {
 
 TEST_F(MidThreadPreemptionTests, disallowMidThreadPreemptionByVmeKernel) {
     device->setPreemptionMode(PreemptionMode::MidThread);
-    device->getMutableDeviceInfo()->vmeAvcSupportsPreemption = false;
+    device->deviceInfo.vmeAvcSupportsPreemption = false;
     kernelInfo->isVmeWorkload = true;
     kernel.reset(new MockKernel(program.get(), *kernelInfo, *device));
     EXPECT_FALSE(PreemptionHelper::allowMidThreadPreemption(kernel.get(), *device));
@@ -207,7 +208,7 @@ TEST_F(MidThreadPreemptionTests, taskPreemptionDisallowMidThreadByKernel) {
 
 TEST_F(MidThreadPreemptionTests, taskPreemptionDisallowMidThreadByVmeKernel) {
     kernelInfo->isVmeWorkload = true;
-    device->getMutableDeviceInfo()->vmeAvcSupportsPreemption = false;
+    device->deviceInfo.vmeAvcSupportsPreemption = false;
     kernel.reset(new MockKernel(program.get(), *kernelInfo, *device));
     device->setPreemptionMode(PreemptionMode::MidThread);
     PreemptionMode outMode = PreemptionHelper::taskPreemptionMode(*device, kernel.get());
@@ -226,7 +227,7 @@ TEST_F(MidThreadPreemptionTests, taskPreemptionAllowDeviceSupportsPreemptionOnVm
     executionEnvironment->DisableMidThreadPreemption = 0;
     kernelInfo->isVmeWorkload = true;
     kernel.reset(new MockKernel(program.get(), *kernelInfo, *device));
-    device->getMutableDeviceInfo()->vmeAvcSupportsPreemption = true;
+    device->deviceInfo.vmeAvcSupportsPreemption = true;
     device->setPreemptionMode(PreemptionMode::MidThread);
     PreemptionMode outMode = PreemptionHelper::taskPreemptionMode(*device, kernel.get());
     EXPECT_EQ(PreemptionMode::MidThread, outMode);
@@ -312,8 +313,7 @@ HWTEST_P(PreemptionHwTest, getRequiredCmdStreamSizeReturns0WhenPreemptionModeIsN
 
         builtIns->overrideSipKernel(std::unique_ptr<NEO::SipKernel>(new NEO::SipKernel{SipKernelType::Csr, GlobalMockSipProgram::getSipProgramWithCustomBinary()}));
         mockDevice->getExecutionEnvironment()->builtins.reset(builtIns);
-        PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, mode,
-                                                       nullptr, *mockDevice);
+        PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, mode, nullptr);
     }
     EXPECT_EQ(0U, cmdStream.getUsed());
 }
@@ -341,8 +341,7 @@ HWTEST_P(PreemptionHwTest, getRequiredCmdStreamSizeReturnsSizeOfMiLoadRegisterIm
     uint64_t minCsrAlignment = 2 * 256 * MemoryConstants::kiloByte;
     MockGraphicsAllocation csrSurface((void *)minCsrAlignment, minCsrSize);
 
-    PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, differentPreemptionMode,
-                                                   nullptr, *mockDevice);
+    PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, differentPreemptionMode, nullptr);
     EXPECT_EQ(requiredSize, cmdStream.getUsed());
 }
 
@@ -353,7 +352,7 @@ HWTEST_P(PreemptionHwTest, programCmdStreamAddsProperMiLoadRegisterImmCommandToT
 
     if (false == GetPreemptionTestHwDetails<FamilyType>().supportsPreemptionProgramming()) {
         LinearStream cmdStream(nullptr, 0U);
-        PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, differentPreemptionMode, nullptr, *mockDevice);
+        PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, differentPreemptionMode, nullptr);
         EXPECT_EQ(0U, cmdStream.getUsed());
         return;
     }
@@ -376,8 +375,7 @@ HWTEST_P(PreemptionHwTest, programCmdStreamAddsProperMiLoadRegisterImmCommandToT
     uint64_t minCsrAlignment = 2 * 256 * MemoryConstants::kiloByte;
     MockGraphicsAllocation csrSurface((void *)minCsrAlignment, minCsrSize);
 
-    PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, differentPreemptionMode,
-                                                   &csrSurface, *mockDevice);
+    PreemptionHelper::programCmdStream<FamilyType>(cmdStream, mode, differentPreemptionMode, &csrSurface);
 
     HardwareParse cmdParser;
     cmdParser.parseCommands<FamilyType>(cmdStream);
@@ -439,6 +437,39 @@ HWTEST_P(PreemptionTest, whenInNonMidThreadModeThenCsrBaseAddressIsNotProgrammed
     EXPECT_EQ(0u, cmdStream.getUsed());
 }
 
+HWTEST_P(PreemptionTest, whenFailToCreatePreemptionAllocationThenFailToCreateDevice) {
+
+    class MockUltCsr : public UltCommandStreamReceiver<FamilyType> {
+
+      public:
+        MockUltCsr(ExecutionEnvironment &executionEnvironment) : UltCommandStreamReceiver<FamilyType>(executionEnvironment) {
+        }
+
+        bool createPreemptionAllocation() override {
+            return false;
+        }
+    };
+
+    class MockDeviceReturnedDebuggerActive : public MockDevice {
+      public:
+        MockDeviceReturnedDebuggerActive(ExecutionEnvironment *executionEnvironment, uint32_t deviceIndex)
+            : MockDevice(executionEnvironment, deviceIndex) {}
+        bool isSourceLevelDebuggerActive() const override {
+            return true;
+        }
+    };
+
+    ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
+
+    platformImpl->peekExecutionEnvironment()->commandStreamReceivers.resize(1);
+    platformImpl->peekExecutionEnvironment()->commandStreamReceivers[0].resize(2);
+    executionEnvironment->commandStreamReceivers[0][1].reset(new MockUltCsr(*executionEnvironment));
+    executionEnvironment->commandStreamReceivers[0][0].reset(new MockUltCsr(*executionEnvironment));
+
+    std::unique_ptr<MockDevice> mockDevice(MockDevice::create<MockDeviceReturnedDebuggerActive>(executionEnvironment, 0));
+    EXPECT_EQ(nullptr, mockDevice);
+}
+
 INSTANTIATE_TEST_CASE_P(
     NonMidThread,
     PreemptionTest,
@@ -452,21 +483,22 @@ HWTEST_F(MidThreadPreemptionTests, createCsrSurfaceNoWa) {
     ASSERT_NE(nullptr, mockDevice.get());
 
     auto &csr = mockDevice->getUltCommandStreamReceiver<FamilyType>();
-    MemoryAllocation *csrSurface = static_cast<MemoryAllocation *>(csr.getPreemptionCsrAllocation());
+    MemoryAllocation *csrSurface = static_cast<MemoryAllocation *>(csr.getPreemptionAllocation());
     ASSERT_NE(nullptr, csrSurface);
     EXPECT_FALSE(csrSurface->uncacheable);
 
-    GraphicsAllocation *devCsrSurface = mockDevice->getPreemptionAllocation();
+    GraphicsAllocation *devCsrSurface = csr.getPreemptionAllocation();
     EXPECT_EQ(csrSurface, devCsrSurface);
 }
 
 HWTEST_F(MidThreadPreemptionTests, givenMidThreadPreemptionWhenFailingOnCsrSurfaceAllocationThenFailToCreateDevice) {
+
     class FailingMemoryManager : public OsAgnosticMemoryManager {
       public:
         FailingMemoryManager(ExecutionEnvironment &executionEnvironment) : OsAgnosticMemoryManager(executionEnvironment) {}
 
         GraphicsAllocation *allocateGraphicsMemoryWithAlignment(const AllocationData &allocationData) override {
-            if (++allocateGraphicsMemoryCount > HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances().size()) {
+            if (++allocateGraphicsMemoryCount > HwHelper::get(platformDevices[0]->platform.eRenderCoreFamily).getGpgpuEngineInstances().size() - 1) {
                 return nullptr;
             }
             return OsAgnosticMemoryManager::allocateGraphicsMemoryWithAlignment(allocationData);
@@ -489,11 +521,11 @@ HWTEST_F(MidThreadPreemptionTests, createCsrSurfaceWa) {
     ASSERT_NE(nullptr, mockDevice.get());
 
     auto &csr = mockDevice->getUltCommandStreamReceiver<FamilyType>();
-    MemoryAllocation *csrSurface = static_cast<MemoryAllocation *>(csr.getPreemptionCsrAllocation());
+    MemoryAllocation *csrSurface = static_cast<MemoryAllocation *>(csr.getPreemptionAllocation());
     ASSERT_NE(nullptr, csrSurface);
     EXPECT_TRUE(csrSurface->uncacheable);
 
-    GraphicsAllocation *devCsrSurface = mockDevice->getPreemptionAllocation();
+    GraphicsAllocation *devCsrSurface = csr.getPreemptionAllocation();
     EXPECT_EQ(csrSurface, devCsrSurface);
 }
 
@@ -512,8 +544,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, MidThreadPreemptionTests, givenDirtyCsrStateWhenStat
         CommandQueueHw<FamilyType> commandQueue(nullptr, device.get(), 0);
         auto &commandStream = commandQueue.getCS(4096u);
 
-        DispatchFlags dispatchFlags;
-        dispatchFlags.preemptionMode = PreemptionMode::MidThread;
+        DispatchFlags dispatchFlags = DispatchFlagsHelper::createDefaultDispatchFlags();
 
         void *buffer = alignedMalloc(MemoryConstants::pageSize, MemoryConstants::pageSize64k);
 

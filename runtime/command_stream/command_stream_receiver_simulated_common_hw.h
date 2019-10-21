@@ -25,8 +25,8 @@ template <typename GfxFamily>
 class CommandStreamReceiverSimulatedCommonHw : public CommandStreamReceiverHw<GfxFamily> {
   protected:
     using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiverHw;
-    using CommandStreamReceiverHw<GfxFamily>::deviceIndex;
     using CommandStreamReceiverHw<GfxFamily>::osContext;
+    using CommandStreamReceiverHw<GfxFamily>::getDeviceIndex;
     using AUB = typename AUBFamilyMapper<GfxFamily>::AUB;
     using MiContextDescriptorReg = typename AUB::MiContextDescriptorReg;
 
@@ -53,6 +53,11 @@ class CommandStreamReceiverSimulatedCommonHw : public CommandStreamReceiverHw<Gf
     virtual bool writeMemory(GraphicsAllocation &gfxAllocation) = 0;
     virtual void writeMemory(uint64_t gpuAddress, void *cpuAddress, size_t size, uint32_t memoryBank, uint64_t entryBits) = 0;
     virtual void writeMemoryWithAubManager(GraphicsAllocation &graphicsAllocation) = 0;
+
+    virtual void setAubWritable(bool writable, GraphicsAllocation &graphicsAllocation) = 0;
+    virtual bool isAubWritable(GraphicsAllocation &graphicsAllocation) const = 0;
+    virtual void setTbxWritable(bool writable, GraphicsAllocation &graphicsAllocation) = 0;
+    virtual bool isTbxWritable(GraphicsAllocation &graphicsAllocation) const = 0;
 
     size_t getPreferredTagPoolSize() const override { return 1; }
 

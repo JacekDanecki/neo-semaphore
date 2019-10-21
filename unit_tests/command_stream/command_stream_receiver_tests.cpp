@@ -5,14 +5,15 @@
  *
  */
 
+#include "core/command_stream/linear_stream.h"
+#include "core/memory_manager/graphics_allocation.h"
+#include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/aub_mem_dump/aub_services.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/command_stream/linear_stream.h"
 #include "runtime/command_stream/preemption.h"
 #include "runtime/helpers/cache_policy.h"
 #include "runtime/helpers/timestamp_packet.h"
 #include "runtime/mem_obj/buffer.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/memory_manager/surface.h"
@@ -21,7 +22,6 @@
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/gen_common/matchers.h"
-#include "unit_tests/helpers/debug_manager_state_restore.h"
 #include "unit_tests/helpers/unit_test_helper.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_builtins.h"
@@ -41,7 +41,7 @@ struct CommandStreamReceiverTest : public DeviceFixture,
     void SetUp() override {
         DeviceFixture::SetUp();
 
-        commandStreamReceiver = &pDevice->getCommandStreamReceiver();
+        commandStreamReceiver = &pDevice->getGpgpuCommandStreamReceiver();
         ASSERT_NE(nullptr, commandStreamReceiver);
         memoryManager = commandStreamReceiver->getMemoryManager();
         internalAllocationStorage = commandStreamReceiver->getInternalAllocationStorage();
@@ -55,15 +55,6 @@ struct CommandStreamReceiverTest : public DeviceFixture,
     MemoryManager *memoryManager;
     InternalAllocationStorage *internalAllocationStorage;
 };
-
-TEST_F(CommandStreamReceiverTest, whenCommandStreamReceiverIsSetAsSpecialCommandStreamReceiverInExecutionEnvironmentThenItIsMulitOsContextCapable) {
-    EXPECT_FALSE(commandStreamReceiver->isMultiOsContextCapable());
-
-    auto executionEnvironment = pDevice->getExecutionEnvironment();
-    executionEnvironment->specialCommandStreamReceiver.reset(commandStreamReceiver);
-    EXPECT_TRUE(commandStreamReceiver->isMultiOsContextCapable());
-    executionEnvironment->specialCommandStreamReceiver.release();
-}
 
 HWTEST_F(CommandStreamReceiverTest, testCtor) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
@@ -154,36 +145,6 @@ TEST_F(CommandStreamReceiverTest, givenCommandStreamReceiverWhenGetCSIsCalledThe
     EXPECT_EQ(GraphicsAllocation::AllocationType::COMMAND_BUFFER, commandStreamAllocation->getAllocationType());
 }
 
-HWTEST_F(CommandStreamReceiverTest, givenPtrAndSizeThatMeetL3CriteriaWhenMakeResidentHostPtrThenCsrEnableL3) {
-    void *hostPtr = reinterpret_cast<void *>(0xF000);
-    auto size = 0x2000u;
-
-    auto memoryManager = commandStreamReceiver->getMemoryManager();
-    GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, hostPtr);
-    ASSERT_NE(nullptr, graphicsAllocation);
-    commandStreamReceiver->makeResidentHostPtrAllocation(graphicsAllocation);
-
-    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
-
-    EXPECT_FALSE(csr.disableL3Cache);
-    memoryManager->freeGraphicsMemory(graphicsAllocation);
-}
-
-HWTEST_F(CommandStreamReceiverTest, givenPtrAndSizeThatDoNotMeetL3CriteriaWhenMakeResidentHostPtrThenCsrDisableL3) {
-    void *hostPtr = reinterpret_cast<void *>(0xF001);
-    auto size = 0x2001u;
-
-    auto memoryManager = commandStreamReceiver->getMemoryManager();
-    GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{false, size}, hostPtr);
-    ASSERT_NE(nullptr, graphicsAllocation);
-    commandStreamReceiver->makeResidentHostPtrAllocation(graphicsAllocation);
-
-    auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
-
-    EXPECT_TRUE(csr.disableL3Cache);
-    memoryManager->freeGraphicsMemory(graphicsAllocation);
-}
-
 TEST_F(CommandStreamReceiverTest, memoryManagerHasAccessToCSR) {
     auto *memoryManager = commandStreamReceiver->getMemoryManager();
     EXPECT_EQ(commandStreamReceiver, memoryManager->getDefaultCommandStreamReceiver(0));
@@ -206,7 +167,6 @@ HWTEST_F(CommandStreamReceiverTest, whenStoreAllocationThenStoredAllocationHasTa
 HWTEST_F(CommandStreamReceiverTest, givenCommandStreamReceiverWhenCheckedForInitialStatusOfStatelessMocsIndexThenUnknownMocsIsReturend) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     EXPECT_EQ(CacheSettings::unknownMocs, csr.latestSentStatelessMocsConfig);
-    EXPECT_FALSE(csr.disableL3Cache);
 }
 
 TEST_F(CommandStreamReceiverTest, makeResidentPushesAllocationToMemoryManagerResidencyList) {
@@ -272,6 +232,7 @@ HWTEST_F(CommandStreamReceiverTest, givenCsrWhenAllocateHeapMemoryIsCalledThenHe
 
 TEST(CommandStreamReceiverSimpleTest, givenCSRWithoutTagAllocationWhenGetTagAllocationIsCalledThenNullptrIsReturned) {
     ExecutionEnvironment executionEnvironment;
+    executionEnvironment.initializeMemoryManager();
     MockCommandStreamReceiver csr(executionEnvironment);
     EXPECT_EQ(nullptr, csr.getTagAllocation());
 }
@@ -301,9 +262,10 @@ TEST_F(CommandStreamReceiverTest, whenGetEventTsAllocatorIsCalledItReturnsSameTa
 }
 
 TEST_F(CommandStreamReceiverTest, whenGetEventPerfCountAllocatorIsCalledItReturnsSameTagAllocator) {
-    TagAllocator<HwPerfCounter> *allocator = commandStreamReceiver->getEventPerfCountAllocator();
+    const uint32_t gpuReportSize = 100;
+    TagAllocator<HwPerfCounter> *allocator = commandStreamReceiver->getEventPerfCountAllocator(gpuReportSize);
     EXPECT_NE(nullptr, allocator);
-    TagAllocator<HwPerfCounter> *allocator2 = commandStreamReceiver->getEventPerfCountAllocator();
+    TagAllocator<HwPerfCounter> *allocator2 = commandStreamReceiver->getEventPerfCountAllocator(gpuReportSize);
     EXPECT_EQ(allocator2, allocator);
 }
 
@@ -331,24 +293,16 @@ HWTEST_F(CommandStreamReceiverTest, givenUltCommandStreamReceiverWhenAddAubComme
     EXPECT_TRUE(csr.addAubCommentCalled);
 }
 
-TEST(CommandStreamReceiverSimpleTest, givenCSRWithTagAllocationSetWhenGetTagAllocationIsCalledThenCorrectAllocationIsReturned) {
-    ExecutionEnvironment executionEnvironment;
-    MockCommandStreamReceiver csr(executionEnvironment);
-    MockGraphicsAllocation allocation(reinterpret_cast<void *>(0x1000), 0x1000);
-    csr.setTagAllocation(&allocation);
-    EXPECT_EQ(&allocation, csr.getTagAllocation());
-}
-
 TEST(CommandStreamReceiverSimpleTest, givenCommandStreamReceiverWhenItIsDestroyedThenItDestroysTagAllocation) {
-    struct MockGraphicsAllocationWithDestructorTracing : public GraphicsAllocation {
-        using GraphicsAllocation::GraphicsAllocation;
+    struct MockGraphicsAllocationWithDestructorTracing : public MockGraphicsAllocation {
+        using MockGraphicsAllocation::MockGraphicsAllocation;
         ~MockGraphicsAllocationWithDestructorTracing() override { *destructorCalled = true; }
         bool *destructorCalled = nullptr;
     };
 
     bool destructorCalled = false;
 
-    auto mockGraphicsAllocation = new MockGraphicsAllocationWithDestructorTracing(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, 0llu, 0llu, 1u, MemoryPool::MemoryNull, false);
+    auto mockGraphicsAllocation = new MockGraphicsAllocationWithDestructorTracing(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, 0llu, 0llu, 1u, MemoryPool::MemoryNull);
     mockGraphicsAllocation->destructorCalled = &destructorCalled;
     MockExecutionEnvironment executionEnvironment(*platformDevices);
     executionEnvironment.commandStreamReceivers.resize(1);
@@ -394,6 +348,7 @@ TEST(CommandStreamReceiverSimpleTest, givenNullHardwareDebugModeWhenInitializeTa
 
 TEST(CommandStreamReceiverSimpleTest, givenVariousDataSetsWhenVerifyingMemoryThenCorrectValueIsReturned) {
     ExecutionEnvironment executionEnvironment;
+    executionEnvironment.initializeMemoryManager();
     MockCommandStreamReceiver csr(executionEnvironment);
 
     constexpr size_t setSize = 6;
@@ -459,7 +414,7 @@ struct CreateAllocationForHostSurfaceTest : public ::testing::Test {
         gmockMemoryManager = new ::testing::NiceMock<GMockMemoryManager>(*executionEnvironment);
         executionEnvironment->memoryManager.reset(gmockMemoryManager);
         device.reset(MockDevice::create<MockDevice>(executionEnvironment, 0u));
-        commandStreamReceiver = &device->getCommandStreamReceiver();
+        commandStreamReceiver = &device->getGpgpuCommandStreamReceiver();
     }
     HardwareInfo hwInfo = *platformDevices[0];
     ExecutionEnvironment *executionEnvironment = nullptr;
@@ -649,6 +604,7 @@ HWTEST_P(CommandStreamReceiverWithAubSubCaptureTest, givenCommandStreamReceiverW
     bool isActive = status.second;
 
     ExecutionEnvironment executionEnvironment;
+    executionEnvironment.initializeMemoryManager();
     MyMockCsr mockCsr(executionEnvironment);
 
     mockCsr.programForAubSubCapture(wasActiveInPreviousEnqueue, isActive);
@@ -668,3 +624,23 @@ INSTANTIATE_TEST_CASE_P(
     CommandStreamReceiverWithAubSubCaptureTest_program,
     CommandStreamReceiverWithAubSubCaptureTest,
     testing::ValuesIn(aubSubCaptureStatus));
+
+TEST(CommandStreamReceiverDeviceIndexTest, givenCsrWithOsContextWhenGetDeviceIndexThenGetHighestEnabledBitInDeviceBitfield) {
+    ExecutionEnvironment executioneEnvironment;
+    executioneEnvironment.initializeMemoryManager();
+    MockCommandStreamReceiver csr(executioneEnvironment);
+    auto osContext = executioneEnvironment.memoryManager->createAndRegisterOsContext(&csr, aub_stream::EngineType::ENGINE_RCS, 0b10, PreemptionMode::Disabled, false);
+
+    csr.setupContext(*osContext);
+    EXPECT_EQ(1u, csr.getDeviceIndex());
+}
+
+TEST(CommandStreamReceiverDeviceIndexTest, givenOsContextWithNoDeviceBitfieldWhenGettingDeviceIndexThenZeroIsReturned) {
+    ExecutionEnvironment executioneEnvironment;
+    executioneEnvironment.initializeMemoryManager();
+    MockCommandStreamReceiver csr(executioneEnvironment);
+    auto osContext = executioneEnvironment.memoryManager->createAndRegisterOsContext(&csr, aub_stream::EngineType::ENGINE_RCS, 0b00, PreemptionMode::Disabled, false);
+
+    csr.setupContext(*osContext);
+    EXPECT_EQ(0u, csr.getDeviceIndex());
+}

@@ -49,7 +49,7 @@ struct WorkloadInfo {
     uint32_t slmStaticSize = 0;
     uint32_t simdSizeOffset;
     uint32_t parentEventOffset;
-    uint32_t prefferedWkgMultipleOffset;
+    uint32_t preferredWkgMultipleOffset;
 
     static const uint32_t undefinedOffset;
     static const uint32_t invalidParentEvent;
@@ -77,7 +77,7 @@ struct WorkloadInfo {
         workDimOffset = undefinedOffset;
         simdSizeOffset = undefinedOffset;
         parentEventOffset = undefinedOffset;
-        prefferedWkgMultipleOffset = undefinedOffset;
+        preferredWkgMultipleOffset = undefinedOffset;
     }
 };
 
@@ -231,6 +231,7 @@ struct KernelInfo {
     size_t requiredSubGroupSize = 0;
     std::array<uint8_t, 3> workgroupWalkOrder = {{0, 1, 2}};
     std::array<uint8_t, 3> workgroupDimensionsOrder = {{0, 1, 2}};
+    bool requiresWorkGroupOrder = false;
     uint32_t gpuPointerSize = 0;
     const BuiltinDispatchInfoBuilder *builtinDispatchBuilder = nullptr;
     uint32_t argumentsToPatchNum = 0;

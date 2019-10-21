@@ -6,6 +6,7 @@
  */
 
 #pragma once
+#include "core/memory_manager/memory_constants.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/gmm_helper/gmm_lib.h"
 
@@ -32,22 +33,24 @@ class GmmHelper {
 
     const HardwareInfo *getHardwareInfo();
     uint32_t getMOCS(uint32_t type);
-    void setSimplifiedMocsTableUsage(bool value);
 
-    static constexpr uint32_t cacheDisabledIndex = 0;
-    static constexpr uint32_t cacheEnabledIndex = 4;
     static constexpr uint64_t maxPossiblePitch = 2147483648;
 
-    static uint64_t canonize(uint64_t address);
-    static uint64_t decanonize(uint64_t address);
+    template <uint8_t addressWidth = 48>
+    static uint64_t canonize(uint64_t address) {
+        return ((int64_t)(address << (64 - addressWidth))) >> (64 - addressWidth);
+    }
+
+    template <uint8_t addressWidth = 48>
+    static uint64_t decanonize(uint64_t address) {
+        return (address & maxNBitValue<addressWidth>);
+    }
 
     static GmmClientContext *getClientContext();
     static GmmHelper *getInstance();
 
     static void queryImgFromBufferParams(ImageInfo &imgInfo, GraphicsAllocation *gfxAlloc);
     static GMM_CUBE_FACE_ENUM getCubeFaceIndex(uint32_t target);
-    static bool allowTiling(const cl_image_desc &imageDesc);
-    static uint32_t getRenderAlignment(uint32_t alignment);
     static uint32_t getRenderMultisamplesCount(uint32_t numSamples);
     static GMM_YUV_PLANE convertPlane(OCLPlane oclPlane);
 
@@ -57,7 +60,6 @@ class GmmHelper {
     void loadLib();
     void initContext(const PLATFORM *platform, const FeatureTable *featureTable, const WorkaroundTable *workaroundTable, const GT_SYSTEM_INFO *pGtSysInfo);
 
-    bool useSimplifiedMocsTable = false;
     const HardwareInfo *hwInfo = nullptr;
     std::unique_ptr<OsLibrary> gmmLib;
     std::unique_ptr<GmmClientContext> gmmClientContext;

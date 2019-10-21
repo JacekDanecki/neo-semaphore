@@ -6,6 +6,8 @@
  */
 
 #pragma once
+#include "core/helpers/string.h"
+#include "core/memory_manager/graphics_allocation.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/execution_environment/execution_environment.h"
@@ -13,8 +15,6 @@
 #include "runtime/helpers/flush_stamp.h"
 #include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
-#include "runtime/helpers/string.h"
-#include "runtime/memory_manager/graphics_allocation.h"
 #include "runtime/os_interface/os_context.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 
@@ -153,18 +153,22 @@ class MockCsr : public MockCsrBase<GfxFamily> {
 template <typename GfxFamily>
 class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
   public:
-    using CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiverHw;
     using CommandStreamReceiverHw<GfxFamily>::flushStamp;
     using CommandStreamReceiverHw<GfxFamily>::programL3;
     using CommandStreamReceiverHw<GfxFamily>::csrSizeRequestFlags;
+    using CommandStreamReceiverHw<GfxFamily>::programVFEState;
     using CommandStreamReceiver::commandStream;
     using CommandStreamReceiver::dispatchMode;
     using CommandStreamReceiver::isPreambleSent;
     using CommandStreamReceiver::lastSentCoherencyRequest;
     using CommandStreamReceiver::mediaVfeStateDirty;
+    using CommandStreamReceiver::nTo1SubmissionModelEnabled;
+    using CommandStreamReceiver::requiredScratchSize;
     using CommandStreamReceiver::taskCount;
     using CommandStreamReceiver::taskLevel;
     using CommandStreamReceiver::timestampPacketWriteEnabled;
+
+    MockCsrHw2(ExecutionEnvironment &executionEnvironment) : CommandStreamReceiverHw<GfxFamily>::CommandStreamReceiverHw(executionEnvironment) {}
 
     SubmissionAggregator *peekSubmissionAggregator() {
         return this->submissionAggregator.get();
@@ -192,15 +196,39 @@ class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
                               const IndirectHeap &dsh, const IndirectHeap &ioh,
                               const IndirectHeap &ssh, uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) override {
         passedDispatchFlags = dispatchFlags;
+
         recordedCommandBuffer = std::unique_ptr<CommandBuffer>(new CommandBuffer(device));
-        return CommandStreamReceiverHw<GfxFamily>::flushTask(commandStream, commandStreamStart,
-                                                             dsh, ioh, ssh, taskLevel, dispatchFlags, device);
+        auto completionStamp = CommandStreamReceiverHw<GfxFamily>::flushTask(commandStream, commandStreamStart,
+                                                                             dsh, ioh, ssh, taskLevel, dispatchFlags, device);
+
+        if (storeFlushedTaskStream && commandStream.getUsed() > commandStreamStart) {
+            storedTaskStreamSize = commandStream.getUsed() - commandStreamStart;
+            // Overfetch to allow command parser verify if "big" command is programmed at the end of allocation
+            auto overfetchedSize = storedTaskStreamSize + MemoryConstants::cacheLineSize;
+            storedTaskStream.reset(new uint8_t[overfetchedSize]);
+            memset(storedTaskStream.get(), 0, overfetchedSize);
+            memcpy_s(storedTaskStream.get(), storedTaskStreamSize,
+                     ptrOffset(commandStream.getCpuBase(), commandStreamStart), storedTaskStreamSize);
+        }
+
+        return completionStamp;
     }
+
+    void blitBuffer(const BlitProperties &blitProperites) override {
+        if (!skipBlitCalls) {
+            CommandStreamReceiverHw<GfxFamily>::blitBuffer(blitProperites);
+        }
+    }
+
+    bool skipBlitCalls = false;
+    bool storeFlushedTaskStream = false;
+    std::unique_ptr<uint8_t> storedTaskStream;
+    size_t storedTaskStreamSize = 0;
 
     int flushCalledCount = 0;
     std::unique_ptr<CommandBuffer> recordedCommandBuffer = nullptr;
     ResidencyContainer copyOfAllocations;
-    DispatchFlags passedDispatchFlags = {};
+    DispatchFlags passedDispatchFlags = DispatchFlagsHelper::createDefaultDispatchFlags();
 };
 
 template <typename GfxFamily>
@@ -218,6 +246,7 @@ class MockFlatBatchBufferHelper : public FlatBatchBufferHelperHw<GfxFamily> {
 class MockCommandStreamReceiver : public CommandStreamReceiver {
   public:
     using CommandStreamReceiver::CommandStreamReceiver;
+    using CommandStreamReceiver::getDeviceIndex;
     using CommandStreamReceiver::internalAllocationStorage;
     using CommandStreamReceiver::latestFlushedTaskCount;
     using CommandStreamReceiver::latestSentTaskCount;
@@ -225,6 +254,7 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
     std::vector<char> instructionHeapReserveredData;
     int *flushBatchedSubmissionsCallCounter = nullptr;
     uint32_t waitForCompletionWithTimeoutCalled = 0;
+    bool multiOsContextCapable = false;
 
     ~MockCommandStreamReceiver() {
     }
@@ -234,6 +264,8 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
         return true;
     }
     FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override;
+
+    bool isMultiOsContextCapable() const { return multiOsContextCapable; }
 
     CompletionStamp flushTask(
         LinearStream &commandStream,
@@ -254,8 +286,7 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
     void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool quickKmdSleep, bool forcePowerSavingMode) override {
     }
 
-    void blitBuffer(Buffer &dstBuffer, Buffer &srcBuffer, bool blocking, uint64_t dstOffset, uint64_t srcOffset,
-                    uint64_t copySize, CsrDependencies &csrDependencies, const TimestampPacketContainer &outputTimestampPacket) override{};
+    void blitBuffer(const BlitProperties &blitProperites) override{};
 
     void setOSInterface(OSInterface *osInterface);
 

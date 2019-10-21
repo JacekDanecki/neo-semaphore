@@ -6,11 +6,11 @@
  */
 
 #pragma once
+#include "core/helpers/string.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/helpers/hardware_commands_helper.h"
-#include "runtime/helpers/string.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
 
@@ -32,26 +32,22 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
     const cl_event *eventWaitList,
     cl_event *event) {
 
-    auto isMemTransferNeeded = buffer->isMemObjZeroCopy() ? buffer->checkIfMemoryTransferIsRequired(offset, 0, ptr, CL_COMMAND_WRITE_BUFFER) : true;
-    bool isCpuCopyAllowed = bufferCpuCopyAllowed(buffer, CL_COMMAND_WRITE_BUFFER, blockingWrite, size, const_cast<void *>(ptr),
+    const cl_command_type cmdType = CL_COMMAND_WRITE_BUFFER;
+    auto isMemTransferNeeded = buffer->isMemObjZeroCopy() ? buffer->checkIfMemoryTransferIsRequired(offset, 0, ptr, cmdType) : true;
+    bool isCpuCopyAllowed = bufferCpuCopyAllowed(buffer, cmdType, blockingWrite, size, const_cast<void *>(ptr),
                                                  numEventsInWaitList, eventWaitList);
-    bool blitOperationsSupported = device->getExecutionEnvironment()->getHardwareInfo()->capabilityTable.blitterOperationsSupported &&
-                                   DebugManager.flags.EnableBlitterOperationsForReadWriteBuffers.get();
 
     if (isCpuCopyAllowed) {
         if (isMemTransferNeeded) {
-            return enqueueReadWriteBufferOnCpuWithMemoryTransfer(CL_COMMAND_WRITE_BUFFER, buffer, offset, size, const_cast<void *>(ptr),
+            return enqueueReadWriteBufferOnCpuWithMemoryTransfer(cmdType, buffer, offset, size, const_cast<void *>(ptr),
                                                                  numEventsInWaitList, eventWaitList, event);
         } else {
-            return enqueueReadWriteBufferOnCpuWithoutMemoryTransfer(CL_COMMAND_WRITE_BUFFER, buffer, offset, size, const_cast<void *>(ptr),
+            return enqueueReadWriteBufferOnCpuWithoutMemoryTransfer(cmdType, buffer, offset, size, const_cast<void *>(ptr),
                                                                     numEventsInWaitList, eventWaitList, event);
         }
     } else if (!isMemTransferNeeded) {
-        return enqueueMarkerForReadWriteOperation(buffer, const_cast<void *>(ptr), CL_COMMAND_WRITE_BUFFER, blockingWrite,
+        return enqueueMarkerForReadWriteOperation(buffer, const_cast<void *>(ptr), cmdType, blockingWrite,
                                                   numEventsInWaitList, eventWaitList, event);
-    } else if (blitOperationsSupported) {
-        return enqueueReadWriteBufferWithBlitTransfer(CL_COMMAND_WRITE_BUFFER, buffer, offset, size, const_cast<void *>(ptr),
-                                                      numEventsInWaitList, eventWaitList, event);
     }
 
     auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBuffer,
@@ -76,7 +72,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
     } else {
         surfaces[1] = &hostPtrSurf;
         if (size != 0) {
-            bool status = getCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, false);
+            bool status = getGpgpuCommandStreamReceiver().createAllocationForHostSurface(hostPtrSurf, false);
             if (!status) {
                 return CL_OUT_OF_RESOURCES;
             }
@@ -86,12 +82,13 @@ cl_int CommandQueueHw<GfxFamily>::enqueueWriteBuffer(
     void *alignedSrcPtr = alignDown(srcPtr, 4);
     size_t srcPtrOffset = ptrDiff(srcPtr, alignedSrcPtr);
 
-    BuiltinDispatchInfoBuilder::BuiltinOpParams dc;
+    BuiltinOpParams dc;
     dc.srcPtr = alignedSrcPtr;
     dc.srcOffset = {srcPtrOffset, 0, 0};
     dc.dstMemObj = buffer;
     dc.dstOffset = {offset, 0, 0};
     dc.size = {size, 0, 0};
+    dc.mapAllocation = mapAllocation;
     builder.buildDispatchInfos(dispatchInfo, dc);
 
     enqueueHandler<CL_COMMAND_WRITE_BUFFER>(

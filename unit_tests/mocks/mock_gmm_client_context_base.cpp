@@ -15,14 +15,20 @@ MEMORY_OBJECT_CONTROL_STATE MockGmmClientContextBase::cachePolicyGetMemoryObject
     MEMORY_OBJECT_CONTROL_STATE retVal = {};
     memset(&retVal, 0, sizeof(MEMORY_OBJECT_CONTROL_STATE));
     switch (usage) {
+    case GMM_RESOURCE_USAGE_OCL_INLINE_CONST_HDC:
+        retVal.DwordValue = 32u;
+        break;
     case GMM_RESOURCE_USAGE_OCL_BUFFER:
-        retVal.DwordValue = 6u;
+        retVal.DwordValue = 16u;
         break;
     case GMM_RESOURCE_USAGE_OCL_BUFFER_CONST:
-        retVal.DwordValue = 5u;
+        retVal.DwordValue = 8u;
         break;
     case GMM_RESOURCE_USAGE_OCL_BUFFER_CACHELINE_MISALIGNED:
         retVal.DwordValue = 0u;
+        break;
+    case GMM_RESOURCE_USAGE_OCL_STATE_HEAP_BUFFER:
+        retVal.DwordValue = 2u;
         break;
     default:
         retVal.DwordValue = 4u;
@@ -42,4 +48,17 @@ GMM_RESOURCE_INFO *MockGmmClientContextBase::copyResInfoObject(GMM_RESOURCE_INFO
 void MockGmmClientContextBase::destroyResInfoObject(GMM_RESOURCE_INFO *pResInfo) {
     delete[] reinterpret_cast<char *>(pResInfo);
 }
+
+uint8_t MockGmmClientContextBase::getSurfaceStateCompressionFormat(GMM_RESOURCE_FORMAT format) {
+    capturedFormat = format;
+    getSurfaceStateCompressionFormatCalled++;
+    return compressionFormatToReturn;
+}
+
+uint8_t MockGmmClientContextBase::getMediaSurfaceStateCompressionFormat(GMM_RESOURCE_FORMAT format) {
+    capturedFormat = format;
+    getMediaSurfaceStateCompressionFormatCalled++;
+    return compressionFormatToReturn;
+}
+
 } // namespace NEO
