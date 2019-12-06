@@ -26,8 +26,6 @@
 #include "unit_tests/mocks/mock_mdi.h"
 #include "unit_tests/mocks/mock_program.h"
 
-#include "hw_cmds.h"
-
 using namespace NEO;
 
 struct DispatchWalkerTest : public CommandQueueFixture, public DeviceFixture, public ::testing::Test {
@@ -122,6 +120,27 @@ HWTEST_F(DispatchWalkerTest, WhenGettingComputeDimensionsThenCorrectNumberOfDime
 
     const size_t workItems3D[] = {100, 100, 100};
     EXPECT_EQ(3u, computeDimensions(workItems3D));
+}
+
+HWTEST_F(DispatchWalkerTest, givenSimd1WhenSetGpgpuWalkerThreadDataThenSimdInWalkerIsSetTo32Value) {
+    uint32_t pCmdBuffer[1024];
+    MockGraphicsAllocation gfxAllocation((void *)pCmdBuffer, sizeof(pCmdBuffer));
+    LinearStream linearStream(&gfxAllocation);
+
+    using WALKER_TYPE = typename FamilyType::WALKER_TYPE;
+    WALKER_TYPE *computeWalker = static_cast<WALKER_TYPE *>(linearStream.getSpace(sizeof(WALKER_TYPE)));
+    *computeWalker = FamilyType::cmdInitGpgpuWalker;
+
+    size_t globalOffsets[] = {0, 0, 0};
+    size_t startWorkGroups[] = {0, 0, 0};
+    size_t numWorkGroups[] = {1, 1, 1};
+    size_t localWorkSizesIn[] = {32, 1, 1};
+    uint32_t simd = 1;
+    iOpenCL::SPatchThreadPayload threadPayload;
+
+    GpgpuWalkerHelper<FamilyType>::setGpgpuWalkerThreadData(
+        computeWalker, globalOffsets, startWorkGroups, numWorkGroups, localWorkSizesIn, simd, 3, true, false, threadPayload, 5u);
+    EXPECT_EQ(computeWalker->getSimdSize(), 32 >> 4);
 }
 
 HWTEST_F(DispatchWalkerTest, WhenDispatchingWalkerThenCommandStreamMemoryIsntChanged) {
@@ -797,7 +816,7 @@ HWTEST_F(DispatchWalkerTest, givenThereAreAllocationsForReuseWhenDispatchWalkerI
     MockMultiDispatchInfo multiDispatchInfo(&kernel);
 
     auto &csr = pCmdQ->getGpgpuCommandStreamReceiver();
-    auto allocation = csr.getMemoryManager()->allocateGraphicsMemoryWithProperties({MemoryConstants::pageSize64k + CSRequirements::csOverfetchSize,
+    auto allocation = csr.getMemoryManager()->allocateGraphicsMemoryWithProperties({csr.getRootDeviceIndex(), MemoryConstants::pageSize64k + CSRequirements::csOverfetchSize,
                                                                                     GraphicsAllocation::AllocationType::COMMAND_BUFFER});
     csr.getInternalAllocationStorage()->storeAllocation(std::unique_ptr<GraphicsAllocation>{allocation}, REUSABLE_ALLOCATION);
     ASSERT_FALSE(csr.getInternalAllocationStorage()->getAllocationsForReuse().peekIsEmpty());
@@ -847,8 +866,8 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DispatchWalkerTest, GivenMultipleKernelsWhenDispatch
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
 
     auto memoryManager = this->pDevice->getMemoryManager();
-    auto kernelIsaAllocation = memoryManager->allocateGraphicsMemoryWithProperties({MemoryConstants::pageSize, GraphicsAllocation::AllocationType::KERNEL_ISA});
-    auto kernelIsaWithSamplerAllocation = memoryManager->allocateGraphicsMemoryWithProperties({MemoryConstants::pageSize, GraphicsAllocation::AllocationType::KERNEL_ISA});
+    auto kernelIsaAllocation = memoryManager->allocateGraphicsMemoryWithProperties({pDevice->getRootDeviceIndex(), MemoryConstants::pageSize, GraphicsAllocation::AllocationType::KERNEL_ISA});
+    auto kernelIsaWithSamplerAllocation = memoryManager->allocateGraphicsMemoryWithProperties({pDevice->getRootDeviceIndex(), MemoryConstants::pageSize, GraphicsAllocation::AllocationType::KERNEL_ISA});
     kernelInfo.kernelAllocation = kernelIsaAllocation;
     kernelInfoWithSampler.kernelAllocation = kernelIsaWithSamplerAllocation;
     auto gpuAddress1 = kernelIsaAllocation->getGpuAddressToPatch();
@@ -1238,11 +1257,11 @@ HWTEST_F(DispatchWalkerTest, givenKernelWhenAuxToNonAuxWhenTranslationRequiredTh
 
     MultiDispatchInfo multiDispatchInfo;
     MemObjsForAuxTranslation memObjsForAuxTranslation;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     memObjsForAuxTranslation.insert(&mockBuffer[0]);
     memObjsForAuxTranslation.insert(&mockBuffer[1]);
 
     BuiltinOpParams builtinOpsParams;
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
 
     builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams);
@@ -1294,11 +1313,11 @@ HWTEST_F(DispatchWalkerTest, givenKernelWhenNonAuxToAuxWhenTranslationRequiredTh
 
     MultiDispatchInfo multiDispatchInfo;
     MemObjsForAuxTranslation memObjsForAuxTranslation;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     memObjsForAuxTranslation.insert(&mockBuffer[0]);
     memObjsForAuxTranslation.insert(&mockBuffer[1]);
 
     BuiltinOpParams builtinOpsParams;
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
 
     builder.buildDispatchInfosForAuxTranslation<FamilyType>(multiDispatchInfo, builtinOpsParams);
@@ -1348,7 +1367,8 @@ HWTEST_P(ProfilingCommandsTest, givenKernelWhenProfilingCommandStartIsTakenThenT
     bool checkForStart = GetParam();
 
     auto &cmdStream = pCmdQ->getCS(0);
-    TagAllocator<HwTimeStamps> timeStampAllocator(this->pDevice->getMemoryManager(), 10, MemoryConstants::cacheLineSize);
+    TagAllocator<HwTimeStamps> timeStampAllocator(pDevice->getRootDeviceIndex(), this->pDevice->getMemoryManager(), 10,
+                                                  MemoryConstants::cacheLineSize, sizeof(HwTimeStamps), false);
 
     auto hwTimeStamp1 = timeStampAllocator.getTag();
     ASSERT_NE(nullptr, hwTimeStamp1);

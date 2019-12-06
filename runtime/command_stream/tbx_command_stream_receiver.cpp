@@ -7,8 +7,8 @@
 
 #include "runtime/command_stream/tbx_command_stream_receiver.h"
 
+#include "core/helpers/hw_info.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 
 #include <string>
@@ -17,7 +17,7 @@ namespace NEO {
 
 TbxCommandStreamReceiverCreateFunc tbxCommandStreamReceiverFactory[IGFX_MAX_CORE] = {};
 
-CommandStreamReceiver *TbxCommandStreamReceiver::create(const std::string &baseName, bool withAubDump, ExecutionEnvironment &executionEnvironment) {
+CommandStreamReceiver *TbxCommandStreamReceiver::create(const std::string &baseName, bool withAubDump, ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex) {
     auto hwInfo = executionEnvironment.getHardwareInfo();
 
     if (hwInfo->platform.eRenderCoreFamily >= IGFX_MAX_CORE) {
@@ -27,6 +27,6 @@ CommandStreamReceiver *TbxCommandStreamReceiver::create(const std::string &baseN
 
     auto pCreate = tbxCommandStreamReceiverFactory[hwInfo->platform.eRenderCoreFamily];
 
-    return pCreate ? pCreate(baseName, withAubDump, executionEnvironment) : nullptr;
+    return pCreate ? pCreate(baseName, withAubDump, executionEnvironment, rootDeviceIndex) : nullptr;
 }
 } // namespace NEO

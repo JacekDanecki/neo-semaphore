@@ -28,12 +28,20 @@ const char *getBuiltinAsString(EBuiltInOps::Type builtin) {
         return "copy_buffer_to_buffer_stateless.igdrcl_built_in";
     case EBuiltInOps::CopyBufferRect:
         return "copy_buffer_rect.igdrcl_built_in";
+    case EBuiltInOps::CopyBufferRectStateless:
+        return "copy_buffer_rect_stateless.igdrcl_built_in";
     case EBuiltInOps::FillBuffer:
         return "fill_buffer.igdrcl_built_in";
+    case EBuiltInOps::FillBufferStateless:
+        return "fill_buffer_stateless.igdrcl_built_in";
     case EBuiltInOps::CopyBufferToImage3d:
         return "copy_buffer_to_image3d.igdrcl_built_in";
+    case EBuiltInOps::CopyBufferToImage3dStateless:
+        return "copy_buffer_to_image3d_stateless.igdrcl_built_in";
     case EBuiltInOps::CopyImage3dToBuffer:
         return "copy_image3d_to_buffer.igdrcl_built_in";
+    case EBuiltInOps::CopyImage3dToBufferStateless:
+        return "copy_image3d_to_buffer_stateless.igdrcl_built_in";
     case EBuiltInOps::CopyImageToImage1d:
         return "copy_image_to_image1d.igdrcl_built_in";
     case EBuiltInOps::CopyImageToImage2d:

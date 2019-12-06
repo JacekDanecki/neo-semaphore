@@ -5,9 +5,8 @@
  *
  */
 
+#include "core/command_stream/preemption.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
-#include "runtime/command_stream/preemption.h"
-#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/helpers/flush_stamp.h"
 #include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/mem_obj/buffer.h"
@@ -62,7 +61,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, makeResident) {
         .Times(0);
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
-    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u);
+    DrmAllocation graphicsAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, (osHandle)1u, MemoryPool::MemoryNull);
     csr->makeResident(graphicsAllocation);
 }
 
@@ -76,7 +75,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, makeResidentTwiceTheSame) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
 
-    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u);
+    DrmAllocation graphicsAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, (osHandle)1u, MemoryPool::MemoryNull);
 
     csr->makeResident(graphicsAllocation);
     csr->makeResident(graphicsAllocation);
@@ -92,7 +91,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, makeResidentSizeZero) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
 
-    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 0, MemoryPool::MemoryNull, 1u);
+    DrmAllocation graphicsAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 0, (osHandle)1u, MemoryPool::MemoryNull);
 
     csr->makeResident(graphicsAllocation);
 }
@@ -107,8 +106,8 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, makeResidentResized) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(0);
 
-    DrmAllocation graphicsAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u);
-    DrmAllocation graphicsAllocation2(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 8192, MemoryPool::MemoryNull, 1u);
+    DrmAllocation graphicsAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, (osHandle)1u, MemoryPool::MemoryNull);
+    DrmAllocation graphicsAllocation2(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 8192, (osHandle)1u, MemoryPool::MemoryNull);
 
     csr->makeResident(graphicsAllocation);
     csr->makeResident(graphicsAllocation2);
@@ -171,8 +170,8 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, Flush) {
     CommandStreamReceiverHw<FamilyType>::alignToCacheLine(cs);
     BatchBuffer batchBuffer{cs.getGraphicsAllocation(), 0, 0, nullptr, false, false, QueueThrottle::MEDIUM, QueueSliceCount::defaultSliceCount, cs.getUsed(), &cs};
     auto availableSpacePriorToFlush = cs.getAvailableSpace();
-    auto flushStamp = csr->flush(batchBuffer, csr->getResidencyAllocations());
-    EXPECT_EQ(static_cast<uint64_t>(boHandle), flushStamp);
+    csr->flush(batchBuffer, csr->getResidencyAllocations());
+    EXPECT_EQ(static_cast<uint64_t>(boHandle), csr->obtainCurrentFlushStamp());
     EXPECT_NE(cs.getCpuBase(), nullptr);
     EXPECT_EQ(availableSpacePriorToFlush, cs.getAvailableSpace());
 }
@@ -272,7 +271,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, FlushInvalidAddress) {
     //allocate command buffer manually
     char *commandBuffer = new (std::nothrow) char[1024];
     ASSERT_NE(nullptr, commandBuffer);
-    DrmAllocation commandBufferAllocation(GraphicsAllocation::AllocationType::COMMAND_BUFFER, nullptr, commandBuffer, 1024, MemoryPool::MemoryNull, 1u);
+    DrmAllocation commandBufferAllocation(0, GraphicsAllocation::AllocationType::COMMAND_BUFFER, nullptr, commandBuffer, 1024, (osHandle)1u, MemoryPool::MemoryNull);
     LinearStream cs(&commandBufferAllocation);
 
     CommandStreamReceiverHw<FamilyType>::addBatchBufferEnd(cs, nullptr);
@@ -410,8 +409,8 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, FlushCheckFlags) {
         .Times(1)
         .WillRepeatedly(::testing::Return(0));
 
-    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, (void *)0x7FFFFFFF, 1024, MemoryPool::MemoryNull, 1u);
-    DrmAllocation allocation2(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, (void *)0x307FFFFFFF, 1024, MemoryPool::MemoryNull, 1u);
+    DrmAllocation allocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, (void *)0x7FFFFFFF, 1024, (osHandle)0u, MemoryPool::MemoryNull);
+    DrmAllocation allocation2(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, (void *)0x307FFFFFFF, 1024, (osHandle)0u, MemoryPool::MemoryNull);
     csr->makeResident(allocation);
     csr->makeResident(allocation2);
     CommandStreamReceiverHw<FamilyType>::addBatchBufferEnd(cs, nullptr);
@@ -444,7 +443,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, CheckDrmFree) {
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(2);
 
-    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u);
+    DrmAllocation allocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, (osHandle)0u, MemoryPool::MemoryNull);
 
     csr->makeResident(allocation);
     CommandStreamReceiverHw<FamilyType>::addBatchBufferEnd(cs, nullptr);
@@ -485,7 +484,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamTest, CheckDrmFreeCloseFailed) {
         .WillOnce(::testing::Return(-1));
     EXPECT_CALL(*mock, ioctl(DRM_IOCTL_I915_GEM_WAIT, ::testing::_))
         .Times(2);
-    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, MemoryPool::MemoryNull, 1u);
+    DrmAllocation allocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, 1024, (osHandle)0u, MemoryPool::MemoryNull);
 
     csr->makeResident(allocation);
     CommandStreamReceiverHw<FamilyType>::addBatchBufferEnd(cs, nullptr);
@@ -810,7 +809,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamBatchingTests, givenRecordedCommandBufferWhen
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenDrmAllocationWhenGetBufferObjectToModifyIsCalledForAGivenHandleIdThenTheCorrespondingBufferObjectGetsModified) {
     auto size = 1024u;
-    auto allocation = new DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, size, MemoryPool::MemoryNull, 1u);
+    auto allocation = new DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, nullptr, size, (osHandle)0u, MemoryPool::MemoryNull);
 
     auto &bos = allocation->getBOs();
     for (auto handleId = 0u; handleId < maxHandleCount; handleId++) {
@@ -830,7 +829,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenDrmAllocationWhenGetBuffer
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, makeResident) {
     auto buffer = this->createBO(1024);
-    auto allocation = new DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, buffer, nullptr, buffer->peekSize(), MemoryPool::MemoryNull, 1u);
+    auto allocation = new DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, buffer, nullptr, buffer->peekSize(), (osHandle)0u, MemoryPool::MemoryNull);
     EXPECT_EQ(nullptr, allocation->getUnderlyingBuffer());
 
     csr->makeResident(*allocation);
@@ -848,8 +847,8 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, makeResident) {
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, makeResidentOnly) {
     BufferObject *buffer1 = this->createBO(4096);
     BufferObject *buffer2 = this->createBO(4096);
-    auto allocation1 = new DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, buffer1, nullptr, buffer1->peekSize(), MemoryPool::MemoryNull, 1u);
-    auto allocation2 = new DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, buffer2, nullptr, buffer2->peekSize(), MemoryPool::MemoryNull, 1u);
+    auto allocation1 = new DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, buffer1, nullptr, buffer1->peekSize(), (osHandle)0u, MemoryPool::MemoryNull);
+    auto allocation2 = new DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, buffer2, nullptr, buffer2->peekSize(), (osHandle)0u, MemoryPool::MemoryNull);
     EXPECT_EQ(nullptr, allocation1->getUnderlyingBuffer());
     EXPECT_EQ(nullptr, allocation2->getUnderlyingBuffer());
 
@@ -872,7 +871,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, makeResidentOnly) {
 
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, makeResidentTwice) {
     auto buffer = this->createBO(1024);
-    auto allocation = new DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, buffer, nullptr, buffer->peekSize(), MemoryPool::MemoryNull, 1u);
+    auto allocation = new DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, buffer, nullptr, buffer->peekSize(), (osHandle)0u, MemoryPool::MemoryNull);
 
     csr->makeResident(*allocation);
     csr->processResidency(csr->getResidencyAllocations());
@@ -1096,18 +1095,6 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, GivenTwoAllocationsWhenBackingS
     csr->getResidencyAllocations().clear();
 }
 
-HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, makeResidentSizeZero) {
-    std::unique_ptr<BufferObject> buffer(this->createBO(0));
-    DrmAllocation allocation(GraphicsAllocation::AllocationType::UNKNOWN, buffer.get(), nullptr, buffer->peekSize(), MemoryPool::MemoryNull, 1u);
-    EXPECT_EQ(nullptr, allocation.getUnderlyingBuffer());
-    EXPECT_EQ(buffer->peekSize(), allocation.getUnderlyingBufferSize());
-
-    csr->makeResident(allocation);
-    csr->processResidency(csr->getResidencyAllocations());
-
-    EXPECT_FALSE(isResident<FamilyType>(buffer.get()));
-}
-
 HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, Flush) {
     auto &cs = csr->getCS();
     auto commandBuffer = static_cast<DrmAllocation *>(cs.getGraphicsAllocation());
@@ -1322,7 +1309,7 @@ class DrmMockBuffer : public Buffer {
   public:
     static DrmMockBuffer *create() {
         char *data = static_cast<char *>(::alignedMalloc(128, 64));
-        DrmAllocation *alloc = new (std::nothrow) DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, nullptr, &data, sizeof(data), MemoryPool::MemoryNull, 1u);
+        DrmAllocation *alloc = new (std::nothrow) DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, nullptr, &data, sizeof(data), (osHandle)0, MemoryPool::MemoryNull);
         return new DrmMockBuffer(data, 128, alloc);
     }
 
@@ -1331,7 +1318,7 @@ class DrmMockBuffer : public Buffer {
         delete gfxAllocation;
     }
 
-    DrmMockBuffer(char *data, size_t size, DrmAllocation *alloc) : Buffer(nullptr, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags({CL_MEM_USE_HOST_PTR}), CL_MEM_USE_HOST_PTR, 0, size, data, data, alloc, true, false, false),
+    DrmMockBuffer(char *data, size_t size, DrmAllocation *alloc) : Buffer(nullptr, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(CL_MEM_USE_HOST_PTR, 0), CL_MEM_USE_HOST_PTR, 0, size, data, data, alloc, true, false, false),
                                                                    data(data),
                                                                    gfxAllocation(alloc) {
     }
@@ -1375,7 +1362,7 @@ HWTEST_TEMPLATED_F(DrmCommandStreamEnhancedTest, givenAllocationWithSingleBuffer
     auto size = 1024u;
     auto bo = this->createBO(size);
     BufferObjects bos{{bo}};
-    auto allocation = new DrmAllocation(GraphicsAllocation::AllocationType::UNKNOWN, bos, nullptr, 0u, size, MemoryPool::LocalMemory);
+    auto allocation = new DrmAllocation(0, GraphicsAllocation::AllocationType::UNKNOWN, bos, nullptr, 0u, size, MemoryPool::LocalMemory);
     EXPECT_EQ(bo, allocation->getBO());
 
     makeResidentBufferObjects<FamilyType>(allocation);

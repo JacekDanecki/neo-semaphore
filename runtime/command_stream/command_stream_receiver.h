@@ -8,16 +8,16 @@
 #pragma once
 #include "core/command_stream/linear_stream.h"
 #include "core/helpers/aligned_memory.h"
+#include "core/helpers/completion_stamp.h"
+#include "core/indirect_heap/indirect_heap.h"
 #include "runtime/command_stream/aub_subcapture.h"
 #include "runtime/command_stream/csr_definitions.h"
 #include "runtime/command_stream/submissions_aggregator.h"
 #include "runtime/command_stream/thread_arbitration_policy.h"
 #include "runtime/helpers/address_patch.h"
 #include "runtime/helpers/blit_commands_helper.h"
-#include "runtime/helpers/completion_stamp.h"
 #include "runtime/helpers/flat_batch_buffer_helper.h"
 #include "runtime/helpers/options.h"
-#include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/grf_config.h"
 
 #include <cstddef>
@@ -62,18 +62,18 @@ class CommandStreamReceiver {
         samplerCacheFlushAfter   //add sampler cache flush after Walker with redescribed image
     };
     using MutexType = std::recursive_mutex;
-    CommandStreamReceiver(ExecutionEnvironment &executionEnvironment);
+    CommandStreamReceiver(ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex);
     virtual ~CommandStreamReceiver();
 
-    virtual FlushStamp flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) = 0;
+    virtual bool flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) = 0;
 
     virtual CompletionStamp flushTask(LinearStream &commandStream, size_t commandStreamStart,
                                       const IndirectHeap &dsh, const IndirectHeap &ioh, const IndirectHeap &ssh,
                                       uint32_t taskLevel, DispatchFlags &dispatchFlags, Device &device) = 0;
 
-    virtual void flushBatchedSubmissions() = 0;
+    virtual bool flushBatchedSubmissions() = 0;
 
-    virtual void makeResident(GraphicsAllocation &gfxAllocation);
+    MOCKABLE_VIRTUAL void makeResident(GraphicsAllocation &gfxAllocation);
     virtual void makeNonResident(GraphicsAllocation &gfxAllocation);
     MOCKABLE_VIRTUAL void makeSurfacePackNonResident(ResidencyContainer &allocationsForResidency);
     virtual void processResidency(const ResidencyContainer &allocationsForResidency) {}
@@ -176,7 +176,7 @@ class CommandStreamReceiver {
         this->latestSentTaskCount = latestSentTaskCount;
     }
 
-    virtual void blitBuffer(const BlitProperties &blitProperites) = 0;
+    virtual uint32_t blitBuffer(const BlitPropertiesContainer &blitPropertiesContainer, bool blocking) = 0;
 
     ScratchSpaceController *getScratchSpaceController() const {
         return scratchSpaceController.get();
@@ -188,6 +188,8 @@ class CommandStreamReceiver {
     }
 
     bool isLocalMemoryEnabled() const { return localMemoryEnabled; }
+
+    uint32_t getRootDeviceIndex() { return rootDeviceIndex; }
 
   protected:
     void cleanupResources();
@@ -244,6 +246,8 @@ class CommandStreamReceiver {
     uint32_t requiredScratchSize = 0;
     uint32_t requiredPrivateScratchSize = 0;
 
+    const uint32_t rootDeviceIndex;
+
     int8_t lastSentCoherencyRequest = -1;
     int8_t lastMediaSamplerConfig = -1;
 
@@ -262,5 +266,5 @@ class CommandStreamReceiver {
     bool localMemoryEnabled = false;
 };
 
-typedef CommandStreamReceiver *(*CommandStreamReceiverCreateFunc)(bool withAubDump, ExecutionEnvironment &executionEnvironment);
+typedef CommandStreamReceiver *(*CommandStreamReceiverCreateFunc)(bool withAubDump, ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex);
 } // namespace NEO

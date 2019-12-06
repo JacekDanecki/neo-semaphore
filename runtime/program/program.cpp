@@ -7,17 +7,19 @@
 
 #include "program.h"
 
+#include "core/compiler_interface/compiler_interface.h"
 #include "core/elf/writer.h"
 #include "core/helpers/debug_helpers.h"
+#include "core/helpers/hw_helper.h"
 #include "core/helpers/string.h"
 #include "core/memory_manager/unified_memory_manager.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
-#include "runtime/helpers/hw_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/os_interface/os_context.h"
+#include "runtime/program/block_kernel_manager.h"
+#include "runtime/program/kernel_info.h"
 
 #include <sstream>
 
@@ -53,8 +55,6 @@ Program::Program(ExecutionEnvironment &executionEnvironment, Context *context, b
     constantSurface = nullptr;
     globalSurface = nullptr;
     globalVarTotalSize = 0;
-    programScopePatchListSize = 0;
-    programScopePatchList = nullptr;
     programOptionVersion = 12u;
     allowNonUniform = false;
     char paramValue[32] = {};
@@ -79,6 +79,15 @@ Program::Program(ExecutionEnvironment &executionEnvironment, Context *context, b
             DebugManager.flags.DisableStatelessToStatefulOptimization.get()) {
             internalOptions += "-cl-intel-greater-than-4GB-buffer-required ";
         }
+
+        if (DebugManager.flags.UseBindlessBuffers.get()) {
+            internalOptions += "-cl-intel-use-bindless-buffers ";
+        }
+
+        if (DebugManager.flags.UseBindlessImages.get()) {
+            internalOptions += "-cl-intel-use-bindless-images ";
+        }
+
         kernelDebugEnabled = pDevice->isSourceLevelDebuggerActive();
 
         auto enableStatelessToStatefullWithOffset = pDevice->getHardwareCapabilities().isStatelesToStatefullWithOffsetSupported;
@@ -188,11 +197,18 @@ cl_int Program::rebuildProgramFromIr() {
     inputArgs.apiOptions = ArrayRef<const char>(options);
     inputArgs.internalOptions = ArrayRef<const char>(internalOptions);
 
-    TranslationOutput output = {};
-    auto err = pCompilerInterface->link(*this->pDevice, inputArgs, output);
+    TranslationOutput compilerOuput = {};
+    auto err = pCompilerInterface->link(*this->pDevice, inputArgs, compilerOuput);
+    this->updateBuildLog(this->pDevice, compilerOuput.frontendCompilerLog.c_str(), compilerOuput.frontendCompilerLog.size());
+    this->updateBuildLog(this->pDevice, compilerOuput.backendCompilerLog.c_str(), compilerOuput.backendCompilerLog.size());
     if (TranslationOutput::ErrorCode::Success != err) {
         return asClError(err);
     }
+
+    this->genBinary = std::move(compilerOuput.deviceBinary.mem);
+    this->genBinarySize = compilerOuput.deviceBinary.size;
+    this->debugData = std::move(compilerOuput.debugData.mem);
+    this->debugDataSize = compilerOuput.debugData.size;
 
     auto retVal = processGenBinary();
     if (retVal != CL_SUCCESS) {
@@ -245,14 +261,6 @@ cl_int Program::updateSpecializationConstant(cl_uint specId, size_t specSize, co
         }
     }
     return CL_INVALID_SPEC_ID;
-}
-
-void Program::getProgramCompilerVersion(
-    SProgramBinaryHeader *pSectionData,
-    uint32_t &binaryVersion) const {
-    if (pSectionData != nullptr) {
-        binaryVersion = pSectionData->Version;
-    }
 }
 
 bool Program::isValidLlvmBinary(
@@ -354,7 +362,7 @@ void Program::separateBlockKernels() {
     allKernelInfos.clear();
 }
 
-void Program::allocateBlockPrivateSurfaces() {
+void Program::allocateBlockPrivateSurfaces(uint32_t rootDeviceIndex) {
     size_t blockCount = blockKernelManager->getCount();
 
     for (uint32_t i = 0; i < blockCount; i++) {
@@ -365,7 +373,7 @@ void Program::allocateBlockPrivateSurfaces() {
 
             if (privateSize > 0 && blockKernelManager->getPrivateSurface(i) == nullptr) {
                 privateSize *= getDevice(0).getDeviceInfo().computeUnitsUsedForScratch * info->getMaxSimdSize();
-                auto *privateSurface = this->executionEnvironment.memoryManager->allocateGraphicsMemoryWithProperties({privateSize, GraphicsAllocation::AllocationType::PRIVATE_SURFACE});
+                auto *privateSurface = this->executionEnvironment.memoryManager->allocateGraphicsMemoryWithProperties({rootDeviceIndex, privateSize, GraphicsAllocation::AllocationType::PRIVATE_SURFACE});
                 blockKernelManager->pushPrivateSurface(privateSurface, i);
             }
         }

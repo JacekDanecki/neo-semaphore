@@ -8,8 +8,10 @@
 #include "unit_tests/program/program_tests.h"
 
 #include "core/elf/reader.h"
+#include "core/gmm_helper/gmm_helper.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/hash.h"
+#include "core/helpers/hw_helper.h"
 #include "core/helpers/ptr_math.h"
 #include "core/helpers/string.h"
 #include "core/memory_manager/graphics_allocation.h"
@@ -17,10 +19,8 @@
 #include "core/unit_tests/utilities/base_object_utils.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/compiler_interface/compiler_options.h"
-#include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/compiler_interface/patchtokens_decoder.h"
 #include "runtime/helpers/hardware_commands_helper.h"
-#include "runtime/helpers/hw_helper.h"
-#include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/memory_manager/allocations_list.h"
 #include "runtime/memory_manager/surface.h"
@@ -645,7 +645,8 @@ TEST_P(ProgramFromBinaryTest, givenProgramWhenItIsBeingBuildThenItContainsGraphi
     auto kernelIsa = graphicsAllocation->getUnderlyingBuffer();
     EXPECT_NE(kernelInfo->heapInfo.pKernelHeap, kernelIsa);
     EXPECT_EQ(0, memcmp(kernelIsa, kernelInfo->heapInfo.pKernelHeap, kernelInfo->heapInfo.pKernelHeader->KernelHeapSize));
-    EXPECT_EQ(GmmHelper::decanonize(graphicsAllocation->getGpuBaseAddress()), pProgram->getDevice(0).getMemoryManager()->getInternalHeapBaseAddress());
+    auto rootDeviceIndex = graphicsAllocation->getRootDeviceIndex();
+    EXPECT_EQ(GmmHelper::decanonize(graphicsAllocation->getGpuBaseAddress()), pProgram->getDevice(0).getMemoryManager()->getInternalHeapBaseAddress(rootDeviceIndex));
 }
 
 TEST_P(ProgramFromBinaryTest, givenProgramWhenCleanKernelInfoIsCalledThenKernelAllocationIsFreed) {
@@ -1367,7 +1368,7 @@ HWTEST_F(PatchTokenTests, givenKernelRequiringConstantAllocationWhenMakeResident
     ASSERT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, pKernel);
 
-    auto pCommandStreamReceiver = new CommandStreamReceiverMock<FamilyType>(*pDevice->executionEnvironment);
+    auto pCommandStreamReceiver = new CommandStreamReceiverMock<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex());
     ASSERT_NE(nullptr, pCommandStreamReceiver);
 
     pDevice->resetCommandStreamReceiver(pCommandStreamReceiver);
@@ -1563,7 +1564,6 @@ TEST_F(ProgramPatchTokenTests, DISABLED_ConstantMemorySurface) {
         false);
 
     EXPECT_EQ(CL_SUCCESS, retVal);
-    EXPECT_EQ(0u, pProgram->getProgramScopePatchListSize());
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1762,6 +1762,42 @@ TEST_F(ProgramTests, ProgramCtorSetsProperInternalOptionsWhenStatelessToStateful
     }
 }
 
+TEST_F(ProgramTests, WhenCreatingProgramThenBindlessIsEnabledOnlyIfDebugFlagIsEnabled) {
+    using namespace testing;
+    DebugManagerStateRestore restorer;
+
+    {
+        EXPECT_FALSE(DebugManager.flags.UseBindlessBuffers.get());
+        EXPECT_FALSE(DebugManager.flags.UseBindlessImages.get());
+        MockProgram programNoBindless(*pDevice->getExecutionEnvironment(), pContext, false);
+        EXPECT_THAT(programNoBindless.getInternalOptions(), Not(HasSubstr(std::string("-cl-intel-use-bindless-buffers"))));
+        EXPECT_THAT(programNoBindless.getInternalOptions(), Not(HasSubstr(std::string("-cl-intel-use-bindless-images"))));
+    }
+
+    {
+        DebugManager.flags.UseBindlessBuffers.set(true);
+        MockProgram programNoBindless(*pDevice->getExecutionEnvironment(), pContext, false);
+        EXPECT_THAT(programNoBindless.getInternalOptions(), HasSubstr(std::string("-cl-intel-use-bindless-buffers ")));
+        EXPECT_THAT(programNoBindless.getInternalOptions(), Not(HasSubstr(std::string("-cl-intel-use-bindless-images"))));
+    }
+
+    {
+        DebugManager.flags.UseBindlessBuffers.set(false);
+        DebugManager.flags.UseBindlessImages.set(true);
+        MockProgram programNoBindless(*pDevice->getExecutionEnvironment(), pContext, false);
+        EXPECT_THAT(programNoBindless.getInternalOptions(), Not(HasSubstr(std::string("-cl-intel-use-bindless-buffers"))));
+        EXPECT_THAT(programNoBindless.getInternalOptions(), HasSubstr(std::string("-cl-intel-use-bindless-images ")));
+    }
+
+    {
+        DebugManager.flags.UseBindlessBuffers.set(true);
+        DebugManager.flags.UseBindlessImages.set(true);
+        MockProgram programNoBindless(*pDevice->getExecutionEnvironment(), pContext, false);
+        EXPECT_THAT(programNoBindless.getInternalOptions(), HasSubstr(std::string("-cl-intel-use-bindless-buffers ")));
+        EXPECT_THAT(programNoBindless.getInternalOptions(), HasSubstr(std::string("-cl-intel-use-bindless-images ")));
+    }
+}
+
 TEST_F(ProgramTests, givenDeviceThatSupportsSharedSystemMemoryAllocationWhenProgramIsCompiledThenItForcesStatelessCompilation) {
     pDevice->deviceInfo.sharedSystemMemCapabilities = CL_UNIFIED_SHARED_MEMORY_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_ATOMIC_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ACCESS_INTEL | CL_UNIFIED_SHARED_MEMORY_CONCURRENT_ATOMIC_ACCESS_INTEL;
     MockProgram program(*pDevice->getExecutionEnvironment(), pContext, false);
@@ -1879,12 +1915,6 @@ TEST_F(ProgramTests, givenStatelessToStatefullOptimizationOffWHenProgramIsCreate
     size_t length = sizeof(programSource);
     std::unique_ptr<MockProgram> pProgram(Program::create<MockProgram>(pContext, 1u, programSources, &length, errorCode));
     EXPECT_THAT(pProgram->getInternalOptions(), Not(testing::HasSubstr(std::string("-cl-intel-has-buffer-offset-arg "))));
-}
-
-TEST_F(ProgramTests, ProgramCtorSetsProperProgramScopePatchListSize) {
-
-    MockProgram program(*pDevice->getExecutionEnvironment(), pContext, false);
-    EXPECT_EQ((size_t)0, program.getProgramScopePatchListSize());
 }
 
 TEST_F(ProgramTests, GivenContextWhenCreateProgramThenIncrementContextRefCount) {
@@ -2061,7 +2091,7 @@ TEST_F(ProgramTests, ProgramFromGenBinaryWithPATCH_TOKEN_GLOBAL_MEMORY_OBJECT_KE
         pKHdr->CheckSum = 0;
         pKHdr->ShaderHashCode = 0;
         pKHdr->KernelNameSize = 8;
-        pKHdr->PatchListSize = 24;
+        pKHdr->PatchListSize = sizeof(iOpenCL::SPatchGlobalMemoryObjectKernelArgument);
         pKHdr->KernelHeapSize = 0;
         pKHdr->GeneralStateHeapSize = 0;
         pKHdr->DynamicStateHeapSize = 0;
@@ -2081,7 +2111,11 @@ TEST_F(ProgramTests, ProgramFromGenBinaryWithPATCH_TOKEN_GLOBAL_MEMORY_OBJECT_KE
         pPatch->Offset = 0x40;
         pPatch->LocationIndex = iOpenCL::INVALID_INDEX;
         pPatch->LocationIndex2 = iOpenCL::INVALID_INDEX;
-        binSize += sizeof(SPatchGlobalMemoryObjectKernelArgument);
+        binSize += pPatch->Size;
+        pBin += pPatch->Size;
+
+        ArrayRef<const uint8_t> kernelBlob(reinterpret_cast<uint8_t *>(pKHdr), reinterpret_cast<uint8_t *>(pBin));
+        pKHdr->CheckSum = PatchTokenBinary::calcKernelChecksum(kernelBlob);
 
         // Decode prepared program binary
         pProgram->genBinary = makeCopy(&genBin[0], binSize);
@@ -2146,6 +2180,8 @@ TEST_F(ProgramTests, givenProgramFromGenBinaryWhenSLMSizeIsBiggerThenDeviceLimit
     pPatch->TotalInlineLocalMemorySize = static_cast<uint32_t>(pDevice->getDeviceInfo().localMemSize * 2);
 
     binSize += sizeof(SPatchAllocateLocalSurface);
+    pBin += sizeof(SPatchAllocateLocalSurface);
+    pKHdr->CheckSum = PatchTokenBinary::calcKernelChecksum(ArrayRef<const uint8_t>(reinterpret_cast<uint8_t *>(pKHdr), reinterpret_cast<uint8_t *>(pBin)));
 
     // Decode prepared program binary
     program->genBinary = makeCopy(&genBin[0], binSize);
@@ -2185,11 +2221,12 @@ TEST_F(ProgramTests, ProgramFromGenBinaryWithPATCH_TOKEN_GTPIN_FREE_GRF_INFO) {
         pBin += sizeof(SProgramBinaryHeader);
         binSize += sizeof(SProgramBinaryHeader);
 
+        uint32_t patchTokenSize = sizeof(iOpenCL::SPatchGtpinFreeGRFInfo) + GRF_INFO_SIZE;
         SKernelBinaryHeaderCommon *pKHdr = (SKernelBinaryHeaderCommon *)pBin;
         pKHdr->CheckSum = 0;
         pKHdr->ShaderHashCode = 0;
         pKHdr->KernelNameSize = 8;
-        pKHdr->PatchListSize = 24;
+        pKHdr->PatchListSize = patchTokenSize;
         pKHdr->KernelHeapSize = 0;
         pKHdr->GeneralStateHeapSize = 0;
         pKHdr->DynamicStateHeapSize = 0;
@@ -2204,9 +2241,12 @@ TEST_F(ProgramTests, ProgramFromGenBinaryWithPATCH_TOKEN_GTPIN_FREE_GRF_INFO) {
 
         SPatchGtpinFreeGRFInfo *pPatch = (SPatchGtpinFreeGRFInfo *)pBin;
         pPatch->Token = iOpenCL::PATCH_TOKEN_GTPIN_FREE_GRF_INFO;
-        pPatch->Size = sizeof(iOpenCL::SPatchGtpinFreeGRFInfo) + GRF_INFO_SIZE;
+        pPatch->Size = patchTokenSize;
         pPatch->BufferSize = GRF_INFO_SIZE;
+
         binSize += pPatch->Size;
+        pBin += pPatch->Size;
+        pKHdr->CheckSum = PatchTokenBinary::calcKernelChecksum(ArrayRef<const uint8_t>(reinterpret_cast<uint8_t *>(pKHdr), reinterpret_cast<uint8_t *>(pBin)));
 
         // Decode prepared program binary
         pProgram->genBinary = makeCopy(&genBin[0], binSize);
@@ -2422,32 +2462,6 @@ TEST_F(ProgramTests, RebuildBinaryWithProcessGenBinaryError) {
     EXPECT_EQ(CL_INVALID_BINARY, retVal);
 }
 
-TEST_F(ProgramTests, GetProgramCompilerVersion) {
-    auto program = std::make_unique<MockProgram>(*pDevice->getExecutionEnvironment());
-
-    // Create example header of OpenCL Program Binary
-    cl_device_id deviceId = pContext->getDevice(0);
-    Device *pDevice = castToObject<Device>(deviceId);
-    struct SProgramBinaryHeader prgHdr;
-    prgHdr.Magic = iOpenCL::MAGIC_CL;
-    prgHdr.Version = 12;
-    prgHdr.Device = pDevice->getHardwareInfo().platform.eRenderCoreFamily;
-    prgHdr.GPUPointerSizeInBytes = 8;
-    prgHdr.NumberOfKernels = 1;
-    prgHdr.SteppingId = 0;
-    prgHdr.PatchListSize = 0;
-
-    // Check whether Program Binary version is returned correctly
-    uint32_t binaryVersion = 0;
-    program->getProgramCompilerVersion(&prgHdr, binaryVersion);
-    EXPECT_EQ(binaryVersion, 12u);
-
-    // Check whether Program Binary version is left intact
-    binaryVersion = 1;
-    program->getProgramCompilerVersion(nullptr, binaryVersion);
-    EXPECT_EQ(binaryVersion, 1u);
-}
-
 TEST_F(ProgramTests, GivenZeroPrivateSizeInBlockWhenAllocateBlockProvateSurfacesCalledThenNoSurfaceIsCreated) {
     MockProgram *program = new MockProgram(*pDevice->getExecutionEnvironment(), pContext, false);
 
@@ -2464,9 +2478,9 @@ TEST_F(ProgramTests, GivenZeroPrivateSizeInBlockWhenAllocateBlockProvateSurfaces
     privateSurfaceBlock->PerThreadPrivateMemorySize = 0;
     infoBlock->patchInfo.pAllocateStatelessPrivateSurface = privateSurfaceBlock;
 
-    program->addBlockKernel(infoBlock);
+    program->blockKernelManager->addBlockKernelInfo(infoBlock);
 
-    program->allocateBlockPrivateSurfaces();
+    program->allocateBlockPrivateSurfaces(pDevice->getRootDeviceIndex());
 
     EXPECT_EQ(nullptr, program->getBlockKernelManager()->getPrivateSurface(0));
 
@@ -2490,9 +2504,9 @@ TEST_F(ProgramTests, GivenNonZeroPrivateSizeInBlockWhenAllocateBlockProvateSurfa
     privateSurfaceBlock->PerThreadPrivateMemorySize = 1000;
     infoBlock->patchInfo.pAllocateStatelessPrivateSurface = privateSurfaceBlock;
 
-    program->addBlockKernel(infoBlock);
+    program->blockKernelManager->addBlockKernelInfo(infoBlock);
 
-    program->allocateBlockPrivateSurfaces();
+    program->allocateBlockPrivateSurfaces(pDevice->getRootDeviceIndex());
 
     EXPECT_NE(nullptr, program->getBlockKernelManager()->getPrivateSurface(0));
 
@@ -2516,15 +2530,15 @@ TEST_F(ProgramTests, GivenNonZeroPrivateSizeInBlockWhenAllocateBlockProvateSurfa
     privateSurfaceBlock->PerThreadPrivateMemorySize = 1000;
     infoBlock->patchInfo.pAllocateStatelessPrivateSurface = privateSurfaceBlock;
 
-    program->addBlockKernel(infoBlock);
+    program->blockKernelManager->addBlockKernelInfo(infoBlock);
 
-    program->allocateBlockPrivateSurfaces();
+    program->allocateBlockPrivateSurfaces(pDevice->getRootDeviceIndex());
 
     GraphicsAllocation *privateSurface = program->getBlockKernelManager()->getPrivateSurface(0);
 
     EXPECT_NE(nullptr, privateSurface);
 
-    program->allocateBlockPrivateSurfaces();
+    program->allocateBlockPrivateSurfaces(pDevice->getRootDeviceIndex());
 
     GraphicsAllocation *privateSurface2 = program->getBlockKernelManager()->getPrivateSurface(0);
 
@@ -2550,7 +2564,7 @@ TEST_F(ProgramTests, givenProgramWithBlockKernelsWhenfreeBlockResourcesisCalledT
     privateSurfaceBlock->PerThreadPrivateMemorySize = 1000;
     infoBlock->patchInfo.pAllocateStatelessPrivateSurface = privateSurfaceBlock;
 
-    program->addBlockKernel(infoBlock);
+    program->blockKernelManager->addBlockKernelInfo(infoBlock);
 
     GraphicsAllocation *privateSurface = program->getDevice(0).getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     EXPECT_NE(nullptr, privateSurface);
@@ -2575,15 +2589,15 @@ class Program32BitTests : public ProgramTests {
     }
 };
 
-TEST_F(Program32BitTests, givenDeviceWithForce32BitAddressingOnWhenBultinIsCreatedThenNoFlagsArePassedAsInternalOptions) {
-    MockProgram pProgram(*pDevice->getExecutionEnvironment());
-    auto &internalOptions = pProgram.getInternalOptions();
+TEST_F(Program32BitTests, givenDeviceWithForce32BitAddressingOnWhenBuiltinIsCreatedThenNoFlagsArePassedAsInternalOptions) {
+    MockProgram program(*pDevice->getExecutionEnvironment());
+    auto &internalOptions = program.getInternalOptions();
     EXPECT_THAT(internalOptions, testing::HasSubstr(std::string("")));
 }
 
 TEST_F(Program32BitTests, givenDeviceWithForce32BitAddressingOnWhenProgramIsCreatedThen32bitFlagIsPassedAsInternalOption) {
-    MockProgram pProgram(*pDevice->getExecutionEnvironment(), pContext, false);
-    auto &internalOptions = pProgram.getInternalOptions();
+    MockProgram program(*pDevice->getExecutionEnvironment(), pContext, false);
+    auto &internalOptions = program.getInternalOptions();
     std::string s1 = internalOptions;
     size_t pos = s1.find("-m32");
     if (is64bit) {
@@ -2639,6 +2653,39 @@ TEST_F(ProgramTests, createFromILWhenCreateProgramFromBinaryIsSuccessfulThenRetu
     auto prog = Program::createFromIL<CreateProgramFromBinaryMock<expectedErrCode>>(pContext, reinterpret_cast<const void *>(spirv), sizeof(spirv), errCode);
     ASSERT_NE(nullptr, prog);
     EXPECT_EQ(expectedErrCode, errCode);
+    prog->release();
+}
+
+TEST_F(ProgramTests, givenProgramCreatedFromILWhenCompileIsCalledThenReuseTheILInsteadOfCallingCompilerInterface) {
+    const uint32_t spirv[16] = {0x03022307};
+    cl_int errCode = 0;
+    auto prog = Program::createFromIL<MockProgram>(pContext, reinterpret_cast<const void *>(spirv), sizeof(spirv), errCode);
+    ASSERT_NE(nullptr, prog);
+    cl_device_id deviceId = pDevice;
+    auto debugVars = NEO::getIgcDebugVars();
+    debugVars.forceBuildFailure = true;
+    gEnvironment->fclPushDebugVars(debugVars);
+    auto compilerErr = prog->compile(1, &deviceId, nullptr, 0, nullptr, nullptr, nullptr, nullptr);
+    EXPECT_EQ(CL_SUCCESS, compilerErr);
+    gEnvironment->fclPopDebugVars();
+    prog->release();
+}
+
+TEST_F(ProgramTests, givenProgramCreatedFromIntermediateBinaryRepresentationWhenCompileIsCalledThenReuseTheILInsteadOfCallingCompilerInterface) {
+    const uint32_t spirv[16] = {0x03022307};
+    cl_int errCode = 0;
+    cl_device_id deviceId = pDevice;
+    cl_context ctx = pContext;
+    size_t lengths = sizeof(spirv);
+    const unsigned char *binaries[1] = {reinterpret_cast<const unsigned char *>(spirv)};
+    auto prog = Program::create<MockProgram>(ctx, 1U, &deviceId, &lengths, binaries, nullptr, errCode);
+    ASSERT_NE(nullptr, prog);
+    auto debugVars = NEO::getIgcDebugVars();
+    debugVars.forceBuildFailure = true;
+    gEnvironment->fclPushDebugVars(debugVars);
+    auto compilerErr = prog->compile(1, &deviceId, nullptr, 0, nullptr, nullptr, nullptr, nullptr);
+    EXPECT_EQ(CL_SUCCESS, compilerErr);
+    gEnvironment->fclPopDebugVars();
     prog->release();
 }
 
@@ -2874,13 +2921,13 @@ TEST_F(ProgramTests, givenSeparateBlockKernelsWhenSubgroupKernelWithChildKernelT
 
 TEST(SimpleProgramTests, givenDefaultProgramWhenSetDeviceIsCalledThenDeviceIsSet) {
     ExecutionEnvironment executionEnvironment;
-    MockProgram pProgram(executionEnvironment);
-    EXPECT_EQ(nullptr, pProgram.getDevicePtr());
+    MockProgram program(executionEnvironment);
+    EXPECT_EQ(nullptr, program.getDevicePtr());
     auto dummyDevice = (Device *)0x1337;
-    pProgram.SetDevice(dummyDevice);
-    EXPECT_EQ(dummyDevice, pProgram.getDevicePtr());
-    pProgram.SetDevice(nullptr);
-    EXPECT_EQ(nullptr, pProgram.getDevicePtr());
+    program.SetDevice(dummyDevice);
+    EXPECT_EQ(dummyDevice, program.getDevicePtr());
+    program.SetDevice(nullptr);
+    EXPECT_EQ(nullptr, program.getDevicePtr());
 }
 
 TEST(ProgramDestructionTests, givenProgramUsingDeviceWhenItIsDestroyedAfterPlatfromCleanupThenItIsCleanedUpProperly) {
@@ -2941,28 +2988,99 @@ TEST_F(ProgramTests, givenProgramWithSpirvWhenRebuildProgramIsCalledThenSpirvPat
     EXPECT_EQ(0, memcmp(spirv, spvSectionData, spvSectionDataSize));
 }
 
-TEST_F(ProgramTests, givenProgramWhenInternalOptionsArePassedThenTheyAreRemovedFromBuildOptions) {
-    ExecutionEnvironment executionEnvironment;
-    MockProgram pProgram(executionEnvironment);
-    pProgram.getInternalOptions().erase();
-    EXPECT_EQ(nullptr, pProgram.getDevicePtr());
-    const char *internalOption = "-cl-intel-gtpin-rera";
-    std::string buildOptions(internalOption);
-    pProgram.extractInternalOptionsForward(buildOptions);
-    EXPECT_EQ(0u, buildOptions.length());
-    EXPECT_TRUE(pProgram.getInternalOptions() == std::string(internalOption) + " ");
+TEST_F(ProgramTests, whenRebuildingProgramThenStoreDeviceBinaryProperly) {
+    auto device = castToObject<Device>(pContext->getDevice(0));
+
+    auto compilerInterface = new MockCompilerInterface();
+    pDevice->getExecutionEnvironment()->compilerInterface.reset(compilerInterface);
+    auto compilerMain = new MockCIFMain();
+    compilerInterface->SetIgcMain(compilerMain);
+    compilerMain->setDefaultCreatorFunc<NEO::MockIgcOclDeviceCtx>(NEO::MockIgcOclDeviceCtx::Create);
+
+    MockCompilerDebugVars debugVars = {};
+    char binaryToReturn[] = "abcdfghijklmnop";
+    debugVars.binaryToReturn = binaryToReturn;
+    debugVars.binaryToReturnSize = sizeof(binaryToReturn);
+    gEnvironment->igcPushDebugVars(debugVars);
+    std::unique_ptr<void, void (*)(void *)> igcDebugVarsAutoPop{&gEnvironment, [](void *) { gEnvironment->igcPopDebugVars(); }};
+
+    auto program = clUniquePtr(new MockProgram(*pDevice->getExecutionEnvironment()));
+    program->setDevice(device);
+    uint32_t ir[16] = {0x03022307, 0x23471113, 0x17192329};
+    program->irBinary = makeCopy(ir, sizeof(ir));
+    program->irBinarySize = sizeof(ir);
+    EXPECT_EQ(nullptr, program->genBinary);
+    EXPECT_EQ(0U, program->genBinarySize);
+    program->rebuildProgramFromIr();
+    ASSERT_NE(nullptr, program->genBinary);
+    ASSERT_EQ(sizeof(binaryToReturn), program->genBinarySize);
+    EXPECT_EQ(0, memcmp(binaryToReturn, program->genBinary.get(), program->genBinarySize));
 }
 
-TEST_F(ProgramTests, givenProgramWhenUnknownInternalOptionsArePassedThenTheyAreNotRemovedFromBuildOptions) {
+TEST_F(ProgramTests, givenProgramWhenInternalOptionsArePassedThenTheyAreAddedToProgramInternalOptions) {
     ExecutionEnvironment executionEnvironment;
-    MockProgram pProgram(executionEnvironment);
-    pProgram.getInternalOptions().erase();
-    EXPECT_EQ(nullptr, pProgram.getDevicePtr());
+    MockProgram program(executionEnvironment);
+    program.getInternalOptions().erase();
+    EXPECT_EQ(nullptr, program.getDevicePtr());
+    const char *internalOption = "-cl-intel-gtpin-rera";
+    std::string buildOptions(internalOption);
+    program.extractInternalOptionsForward(buildOptions);
+    EXPECT_TRUE(program.getInternalOptions() == std::string(internalOption) + " ");
+}
+
+TEST_F(ProgramTests, givenProgramWhenUnknownInternalOptionsArePassedThenTheyAreNotAddedToProgramInternalOptions) {
+    ExecutionEnvironment executionEnvironment;
+    MockProgram program(executionEnvironment);
+    program.getInternalOptions().erase();
+    EXPECT_EQ(nullptr, program.getDevicePtr());
     const char *internalOption = "-unknown-internal-options-123";
     std::string buildOptions(internalOption);
-    pProgram.extractInternalOptionsForward(buildOptions);
-    EXPECT_EQ(0u, pProgram.getInternalOptions().length());
-    EXPECT_TRUE(buildOptions == internalOption);
+    program.extractInternalOptionsForward(buildOptions);
+    EXPECT_EQ(0u, program.getInternalOptions().length());
+}
+
+TEST_F(ProgramTests, givenProgramWhenAllInternalOptionsArePassedMixedWithUnknownInputThenTheyAreParsedCorrectly) {
+    ExecutionEnvironment executionEnvironment;
+    MockProgram program(executionEnvironment);
+    program.getInternalOptions().erase();
+    EXPECT_EQ(nullptr, program.getDevicePtr());
+    std::string buildOptions = "### -cl-intel-gtpin-rera ### -cl-intel-greater-than-4GB-buffer-required ###";
+    std::string expectedOutput = "-cl-intel-gtpin-rera -cl-intel-greater-than-4GB-buffer-required ";
+    program.extractInternalOptionsForward(buildOptions);
+    EXPECT_EQ(expectedOutput, program.getInternalOptions());
+}
+
+TEST_F(ProgramTests, givenProgramWhenInternalOptionsArePassedWithValidValuesThenTheyAreAddedToProgramInternalOptions) {
+    ExecutionEnvironment executionEnvironment;
+    MockProgram program(executionEnvironment);
+    program.getInternalOptions().erase();
+    EXPECT_EQ(nullptr, program.getDevicePtr());
+
+    program.isFlagOptionOverride = false;
+    program.isOptionValueValidOverride = true;
+    std::string buildOptions = "-cl-intel-gtpin-rera someValue";
+    std::string expectedOutput = "-cl-intel-gtpin-rera someValue ";
+    program.extractInternalOptionsForward(buildOptions);
+    EXPECT_EQ(expectedOutput, program.getInternalOptions());
+}
+
+TEST_F(ProgramTests, givenProgramWhenInternalOptionsArePassedWithInvalidValuesThenTheyAreNotAddedToProgramInternalOptions) {
+    ExecutionEnvironment executionEnvironment;
+    MockProgram program(executionEnvironment);
+    EXPECT_EQ(nullptr, program.getDevicePtr());
+
+    program.isFlagOptionOverride = false;
+    std::string buildOptions = "-cl-intel-gtpin-rera someValue";
+    std::string expectedOutput = "";
+    program.getInternalOptions().erase();
+    program.extractInternalOptionsForward(buildOptions);
+    EXPECT_EQ(expectedOutput, program.getInternalOptions());
+
+    program.isOptionValueValidOverride = true;
+    buildOptions = "-cl-intel-gtpin-rera ";
+    program.getInternalOptions().erase();
+    program.extractInternalOptionsForward(buildOptions);
+    EXPECT_EQ(expectedOutput, program.getInternalOptions());
 }
 
 TEST_F(ProgramTests, givenProgramWhenGetSymbolsIsCalledThenMapWithExportedSymbolsIsReturned) {

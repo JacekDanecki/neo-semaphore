@@ -6,7 +6,7 @@
  */
 
 #pragma once
-#include "runtime/indirect_heap/indirect_heap.h"
+#include "core/indirect_heap/indirect_heap.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +27,7 @@ constexpr size_t scratchSpaceOffsetFor64Bit = 4096u;
 
 class ScratchSpaceController {
   public:
-    ScratchSpaceController(ExecutionEnvironment &environment, InternalAllocationStorage &allocationStorage);
+    ScratchSpaceController(uint32_t rootDeviceIndex, ExecutionEnvironment &environment, InternalAllocationStorage &allocationStorage);
     virtual ~ScratchSpaceController();
 
     GraphicsAllocation *getScratchSpaceAllocation() {
@@ -51,6 +51,7 @@ class ScratchSpaceController {
   protected:
     MemoryManager *getMemoryManager() const;
 
+    const uint32_t rootDeviceIndex;
     ExecutionEnvironment &executionEnvironment;
     GraphicsAllocation *scratchAllocation = nullptr;
     GraphicsAllocation *privateScratchAllocation = nullptr;

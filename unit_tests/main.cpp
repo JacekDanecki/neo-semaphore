@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/gmm_helper/gmm_helper.h"
 #include "core/unit_tests/helpers/memory_leak_listener.h"
 #include "core/utilities/debug_settings_reader.h"
 #include "runtime/gmm_helper/resource_info.h"
@@ -23,7 +24,6 @@
 #include "global_environment.h"
 #include "gmock/gmock.h"
 #include "helpers/test_files.h"
-#include "hw_cmds.h"
 #include "mock_gmm_client_context.h"
 
 #include <algorithm>
@@ -52,7 +52,8 @@ std::thread::id tempThreadID;
 } // namespace NEO
 namespace Os {
 extern const char *gmmDllName;
-extern const char *gmmEntryName;
+extern const char *gmmInitFuncName;
+extern const char *gmmDestroyFuncName;
 } // namespace Os
 
 using namespace NEO;
@@ -309,6 +310,15 @@ int main(int argc, char **argv) {
     }
 
     HardwareInfo hwInfo = *hardwareInfo;
+
+    if (hwInfoConfig == "default") {
+        hwInfoConfig = *defaultHardwareInfoConfigTable[productFamily];
+    }
+
+    if (!setHwInfoValuesFromConfigString(hwInfoConfig, hwInfo)) {
+        return -1;
+    }
+
     // set Gt and FeatureTable to initial state
     hardwareInfoSetup[productFamily](&hwInfo, setupFeatureTableAndWorkaroundTable, hwInfoConfig);
     FeatureTable featureTable = hwInfo.featureTable;
@@ -446,7 +456,8 @@ int main(int argc, char **argv) {
 #endif
     if (!useMockGmm) {
         Os::gmmDllName = GMM_UMD_DLL;
-        Os::gmmEntryName = GMM_ENTRY_NAME;
+        Os::gmmInitFuncName = GMM_INIT_NAME;
+        Os::gmmDestroyFuncName = GMM_DESTROY_NAME;
     } else {
         GmmHelper::createGmmContextWrapperFunc = GmmClientContextBase::create<MockGmmClientContext>;
     }

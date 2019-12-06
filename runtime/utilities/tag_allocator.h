@@ -32,8 +32,16 @@ struct TagNode : public IDNode<TagNode<TagType>> {
 
     void incRefCount() { refCount++; }
 
-    void returnTag() {
+    MOCKABLE_VIRTUAL void returnTag() {
         allocator->returnTag(this);
+    }
+
+    bool canBeReleased() const {
+        return !doNotReleaseNodes && tagForCpuAccess->isCompleted();
+    }
+
+    void setDoNotReleaseNodes(bool doNotRelease) {
+        doNotReleaseNodes = doNotRelease;
     }
 
   protected:
@@ -41,6 +49,7 @@ struct TagNode : public IDNode<TagNode<TagType>> {
     GraphicsAllocation *gfxAllocation = nullptr;
     uint64_t gpuAddress = 0;
     std::atomic<uint32_t> refCount{0};
+    bool doNotReleaseNodes = false;
 
     template <typename TagType2>
     friend class TagAllocator;
@@ -51,9 +60,12 @@ class TagAllocator {
   public:
     using NodeType = TagNode<TagType>;
 
-    TagAllocator(MemoryManager *memMngr, size_t tagCount, size_t tagAlignment, size_t tagSize = sizeof(TagType)) : memoryManager(memMngr),
-                                                                                                                   tagCount(tagCount),
-                                                                                                                   tagAlignment(tagAlignment) {
+    TagAllocator(uint32_t rootDeviceIndex, MemoryManager *memMngr, size_t tagCount,
+                 size_t tagAlignment, size_t tagSize, bool doNotReleaseNodes) : rootDeviceIndex(rootDeviceIndex),
+                                                                                memoryManager(memMngr),
+                                                                                tagCount(tagCount),
+                                                                                tagAlignment(tagAlignment),
+                                                                                doNotReleaseNodes(doNotReleaseNodes) {
 
         this->tagSize = alignUp(tagSize, tagAlignment);
         populateFreeTags();
@@ -93,7 +105,7 @@ class TagAllocator {
 
     MOCKABLE_VIRTUAL void returnTag(NodeType *node) {
         if (node->refCount.fetch_sub(1) == 1) {
-            if (node->tagForCpuAccess->canBeReleased()) {
+            if (node->canBeReleased()) {
                 returnTagToFreePool(node);
             } else {
                 returnTagToDeferredPool(node);
@@ -108,17 +120,19 @@ class TagAllocator {
     std::vector<GraphicsAllocation *> gfxAllocations;
     std::vector<NodeType *> tagPoolMemory;
 
+    const uint32_t rootDeviceIndex;
     MemoryManager *memoryManager;
     size_t tagCount;
     size_t tagAlignment;
     size_t tagSize;
+    bool doNotReleaseNodes = false;
 
     std::mutex allocatorMutex;
 
     MOCKABLE_VIRTUAL void returnTagToFreePool(NodeType *node) {
         NodeType *usedNode = usedTags.removeOne(*node).release();
         DEBUG_BREAK_IF(usedNode == nullptr);
-        ((void)(usedNode));
+        UNUSED_VARIABLE(usedNode);
         freeTags.pushFrontOne(*node);
     }
 
@@ -132,27 +146,27 @@ class TagAllocator {
         size_t allocationSizeRequired = tagCount * tagSize;
 
         auto allocationType = TagType::getAllocationType();
-        GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties({allocationSizeRequired, allocationType});
+        GraphicsAllocation *graphicsAllocation = memoryManager->allocateGraphicsMemoryWithProperties({rootDeviceIndex, allocationSizeRequired, allocationType});
         gfxAllocations.push_back(graphicsAllocation);
 
         uint64_t gpuBaseAddress = graphicsAllocation->getGpuAddress();
         uintptr_t Size = graphicsAllocation->getUnderlyingBufferSize();
         uintptr_t Start = reinterpret_cast<uintptr_t>(graphicsAllocation->getUnderlyingBuffer());
         uintptr_t End = Start + Size;
-        size_t nodeCount = Size / tagSize;
 
-        NodeType *nodesMemory = new NodeType[nodeCount];
+        NodeType *nodesMemory = new NodeType[tagCount];
 
-        for (size_t i = 0; i < nodeCount; ++i) {
+        for (size_t i = 0; i < tagCount; ++i) {
             nodesMemory[i].allocator = this;
             nodesMemory[i].gfxAllocation = graphicsAllocation;
             nodesMemory[i].tagForCpuAccess = reinterpret_cast<TagType *>(Start);
             nodesMemory[i].gpuAddress = gpuBaseAddress + (i * tagSize);
+            nodesMemory[i].setDoNotReleaseNodes(doNotReleaseNodes);
             freeTags.pushTailOne(nodesMemory[i]);
             Start += tagSize;
         }
         DEBUG_BREAK_IF(Start > End);
-        ((void)(End));
+        UNUSED_VARIABLE(End);
         tagPoolMemory.push_back(nodesMemory);
     }
 
@@ -163,7 +177,7 @@ class TagAllocator {
 
         while (currentNode != nullptr) {
             auto nextNode = currentNode->next;
-            if (currentNode->tagForCpuAccess->canBeReleased()) {
+            if (currentNode->canBeReleased()) {
                 pendingFreeTags.pushFrontOne(*currentNode);
             } else {
                 pendingDeferredTags.pushFrontOne(*currentNode);

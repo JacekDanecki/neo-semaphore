@@ -6,6 +6,7 @@
  */
 
 #pragma once
+#include "public/cl_ext_private.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/helpers/base_object.h"
 #include "runtime/helpers/mipmap.h"
@@ -13,7 +14,6 @@
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/sharings/sharing.h"
 
-#include "mem_obj_types.h"
 #include "memory_properties_flags.h"
 
 #include <atomic>
@@ -66,7 +66,7 @@ class MemObj : public BaseObject<_cl_mem> {
     bool addMappedPtr(void *ptr, size_t ptrLength, cl_map_flags &mapFlags, MemObjSizeArray &size, MemObjOffsetArray &offset, uint32_t mipLevel);
     bool findMappedPtr(void *mappedPtr, MapInfo &outMapInfo) { return mapOperationsHandler.find(mappedPtr, outMapInfo); }
     void removeMappedPtr(void *mappedPtr) { mapOperationsHandler.remove(mappedPtr); }
-    void *getBasePtrForMap();
+    void *getBasePtrForMap(uint32_t rootDeviceIndex);
 
     MOCKABLE_VIRTUAL void setAllocatedMapPtr(void *allocatedMapPtr);
     void *getAllocatedMapPtr() const { return allocatedMapPtr; }
@@ -124,6 +124,7 @@ class MemObj : public BaseObject<_cl_mem> {
     }
 
     const cl_mem_flags &getMemoryPropertiesFlags() const { return flags; }
+    const cl_mem_flags &getMemoryPropertiesFlagsIntel() const { return flagsIntel; }
 
   protected:
     void getOsSpecificMemObjectInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam);

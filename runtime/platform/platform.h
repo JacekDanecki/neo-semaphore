@@ -18,9 +18,12 @@
 namespace NEO {
 
 class CompilerInterface;
+class RootDevice;
 class Device;
 class AsyncEventsHandler;
 class ExecutionEnvironment;
+class GmmHelper;
+class GmmClientContext;
 struct HardwareInfo;
 
 template <>
@@ -55,7 +58,9 @@ class Platform : public BaseObject<_cl_platform_id> {
     const PlatformInfo &getPlatformInfo() const;
     AsyncEventsHandler *getAsyncEventsHandler();
     std::unique_ptr<AsyncEventsHandler> setAsyncEventsHandler(std::unique_ptr<AsyncEventsHandler> handler);
-    ExecutionEnvironment *peekExecutionEnvironment() { return executionEnvironment; }
+    ExecutionEnvironment *peekExecutionEnvironment() const { return executionEnvironment; }
+    GmmHelper *peekGmmHelper() const;
+    GmmClientContext *peekGmmClientContext() const;
 
   protected:
     enum {
@@ -66,6 +71,7 @@ class Platform : public BaseObject<_cl_platform_id> {
     cl_uint state = StateNone;
     void fillGlobalDispatchTable();
     MOCKABLE_VIRTUAL void initializationLoopHelper(){};
+    MOCKABLE_VIRTUAL RootDevice *createRootDevice(uint32_t rootDeviceIndex) const;
     std::unique_ptr<PlatformInfo> platformInfo;
     DeviceVector devices;
     std::string compilerExtensions;

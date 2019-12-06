@@ -1,5 +1,5 @@
 #!groovy
-dependenciesRevision='3fca422c0e381f607f9c8c02dca161010c30dac8-1319'
+dependenciesRevision='8430df09c44f1b2739eee6ce13122f8e20d05776-1351'
 strategy='EQUAL'
-allowedCD=260
+allowedCD=258
 allowedF=7

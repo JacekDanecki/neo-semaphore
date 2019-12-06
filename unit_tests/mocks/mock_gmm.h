@@ -7,7 +7,6 @@
 
 #pragma once
 #include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/helpers/options.h"
 #include "runtime/helpers/surface_formats.h"
 #include "unit_tests/mocks/mock_device.h"
@@ -49,7 +48,7 @@ class MockGmm : public Gmm {
         imgDesc.image_width = 5;
         imgDesc.image_height = 5;
         auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
-        return memoryManager.allocateGraphicsMemoryWithProperties({true, imgInfo, GraphicsAllocation::AllocationType::IMAGE});
+        return memoryManager.allocateGraphicsMemoryWithProperties({0, true, imgInfo, GraphicsAllocation::AllocationType::IMAGE});
     }
 };
 } // namespace NEO

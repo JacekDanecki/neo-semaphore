@@ -5,6 +5,7 @@
  *
  */
 
+#include "core/gmm_helper/gmm_helper.h"
 #include "core/helpers/file_io.h"
 #include "core/helpers/hash.h"
 #include "core/helpers/string.h"
@@ -55,6 +56,7 @@ class BuiltInTests
     }
 
     void SetUp() override {
+        DebugManager.flags.ForceAuxTranslationMode.set(static_cast<int32_t>(AuxTranslationMode::Builtin));
         DeviceFixture::SetUp();
         cl_device_id device = pDevice;
         ContextFixture::SetUp(1, &device);
@@ -89,8 +91,8 @@ class BuiltInTests
         allBuiltIns.append(src, start, size);
     }
 
-    bool compareBultinOpParams(const BuiltinOpParams &left,
-                               const BuiltinOpParams &right) {
+    bool compareBuiltinOpParams(const BuiltinOpParams &left,
+                                const BuiltinOpParams &right) {
         return left.srcPtr == right.srcPtr &&
                left.dstPtr == right.dstPtr &&
                left.size == right.size &&
@@ -100,6 +102,7 @@ class BuiltInTests
                left.srcMemObj == right.srcMemObj;
     }
 
+    DebugManagerStateRestore restore;
     std::string allBuiltIns;
 };
 
@@ -249,7 +252,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBuffer) {
         }
         i++;
     }
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     delete srcPtr;
     delete dstPtr;
 }
@@ -260,6 +263,7 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTrans
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     std::vector<Kernel *> builtinKernels;
     MockBuffer mockBuffer[3];
     mockBuffer[0].getGraphicsAllocation()->setSize(0x1000);
@@ -267,7 +271,6 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTrans
     mockBuffer[2].getGraphicsAllocation()->setSize(0x30000);
 
     BuiltinOpParams builtinOpsParams;
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
 
     for (auto &buffer : mockBuffer) {
@@ -293,7 +296,7 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingNonAuxDispatchInfoForAuxTrans
         Vec3<size_t> gws = {xGws, 1, 1};
         EXPECT_EQ(gws, dispatchInfo.getGWS());
     }
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     // always pick different kernel
     EXPECT_EQ(3u, builtinKernels.size());
     EXPECT_NE(builtinKernels[0], builtinKernels[1]);
@@ -307,6 +310,7 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslat
 
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     std::vector<Kernel *> builtinKernels;
     MockBuffer mockBuffer[3];
     mockBuffer[0].getGraphicsAllocation()->setSize(0x1000);
@@ -314,7 +318,6 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslat
     mockBuffer[2].getGraphicsAllocation()->setSize(0x30000);
 
     BuiltinOpParams builtinOpsParams;
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
 
     for (auto &buffer : mockBuffer) {
@@ -340,7 +343,7 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxDispatchInfoForAuxTranslat
         Vec3<size_t> gws = {xGws, 1, 1};
         EXPECT_EQ(gws, dispatchInfo.getGWS());
     }
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     // always pick different kernel
     EXPECT_EQ(3u, builtinKernels.size());
     EXPECT_NE(builtinKernels[0], builtinKernels[1]);
@@ -357,8 +360,8 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxTranslationDispatchThenPic
     std::vector<Kernel *> builtinKernels;
 
     MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     BuiltinOpParams builtinOpsParams;
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
 
     for (auto &buffer : mockBuffer) {
         memObjsForAuxTranslation.insert(&buffer);
@@ -375,7 +378,7 @@ HWTEST_F(BuiltInTests, givenInputBufferWhenBuildingAuxTranslationDispatchThenPic
     for (auto &dispatchInfo : multiDispatchInfo) {
         builtinKernels.push_back(dispatchInfo.getKernel());
     }
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     // nonAux vs Aux instance
     EXPECT_EQ(6u, builtinKernels.size());
     EXPECT_NE(builtinKernels[0], builtinKernels[3]);
@@ -391,8 +394,8 @@ HWTEST_F(BuiltInTests, givenInvalidAuxTranslationDirectionWhenBuildingDispatchIn
     MockBuffer mockBuffer;
 
     MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     BuiltinOpParams builtinOpsParams;
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
 
     memObjsForAuxTranslation.insert(&mockBuffer);
 
@@ -427,9 +430,9 @@ HWTEST_F(BuiltInTests, givenMoreBuffersForAuxTranslationThanKernelInstancesWhenD
     MemObjsForAuxTranslation memObjsForAuxTranslation;
     BuiltinOpParams builtinOpsParams;
     MultiDispatchInfo multiDispatchInfo;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
     MockBuffer mockBuffer[7];
 
-    builtinOpsParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpsParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
 
     for (auto &buffer : mockBuffer) {
@@ -500,13 +503,12 @@ HWTEST_F(BuiltInTests, givenAuxTranslationKernelWhenSettingKernelArgsThenSetVali
     MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     MultiDispatchInfo multiDispatchInfo;
     MemObjsForAuxTranslation memObjsForAuxTranslation;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
 
     BuiltinOpParams builtinOpParamsToAux;
-    builtinOpParamsToAux.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpParamsToAux.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
 
     BuiltinOpParams builtinOpParamsToNonAux;
-    builtinOpParamsToNonAux.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpParamsToNonAux.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
 
     cl_int retVal = CL_SUCCESS;
@@ -558,9 +560,9 @@ HWTEST_F(BuiltInTests, givenAuxToNonAuxTranslationWhenSettingSurfaceStateThenSet
     MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     MultiDispatchInfo multiDispatchInfo;
     MemObjsForAuxTranslation memObjsForAuxTranslation;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
 
     BuiltinOpParams builtinOpParams;
-    builtinOpParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpParams.auxTranslationDirection = AuxTranslationDirection::AuxToNonAux;
 
     cl_int retVal = CL_SUCCESS;
@@ -604,9 +606,9 @@ HWTEST_F(BuiltInTests, givenNonAuxToAuxTranslationWhenSettingSurfaceStateThenSet
     MockAuxBuilInOp mockAuxBuiltInOp(*pBuiltIns, *pContext, *pDevice);
     MultiDispatchInfo multiDispatchInfo;
     MemObjsForAuxTranslation memObjsForAuxTranslation;
+    multiDispatchInfo.setMemObjsForAuxTranslation(memObjsForAuxTranslation);
 
     BuiltinOpParams builtinOpParams;
-    builtinOpParams.memObjsForAuxTranslation = &memObjsForAuxTranslation;
     builtinOpParams.auxTranslationDirection = AuxTranslationDirection::NonAuxToAux;
 
     cl_int retVal = CL_SUCCESS;
@@ -669,7 +671,171 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferAligned) {
     size_t middleSize = dst.getSize() / middleElSize;
     EXPECT_EQ(Vec3<size_t>(middleSize, 1, 1), dispatchInfo->getGWS());
 
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+}
+
+TEST_F(BuiltInTests, givenBigOffsetAndSizeWhenBuilderCopyBufferToBufferStatelessIsUsedThenParamsAreCorrect) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+
+    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBufferStateless, *pContext, *pDevice);
+
+    uint64_t bigSize = 10ull * MemoryConstants::gigaByte;
+    uint64_t bigOffset = 4ull * MemoryConstants::gigaByte;
+    uint64_t size = 4ull * MemoryConstants::gigaByte;
+
+    MockBuffer srcBuffer;
+    srcBuffer.size = static_cast<size_t>(bigSize);
+    MockBuffer dstBuffer;
+    dstBuffer.size = static_cast<size_t>(bigSize);
+
+    MultiDispatchInfo multiDispatchInfo;
+    BuiltinOpParams builtinOpsParams;
+
+    builtinOpsParams.srcMemObj = &srcBuffer;
+    builtinOpsParams.srcOffset = {static_cast<size_t>(bigOffset), 0, 0};
+    builtinOpsParams.dstMemObj = &dstBuffer;
+    builtinOpsParams.dstOffset = {0, 0, 0};
+    builtinOpsParams.size = {static_cast<size_t>(size), 0, 0};
+
+    ASSERT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, builtinOpsParams));
+    EXPECT_EQ(1u, multiDispatchInfo.size());
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+}
+
+TEST_F(BuiltInTests, givenBigOffsetAndSizeWhenBuilderCopyBufferToBufferRectStatelessIsUsedThenParamsAreCorrect) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+
+    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferRectStateless, *pContext, *pDevice);
+
+    uint64_t bigSize = 10ull * MemoryConstants::gigaByte;
+    uint64_t bigOffset = 4ull * MemoryConstants::gigaByte;
+    uint64_t size = 4ull * MemoryConstants::gigaByte;
+
+    MockBuffer srcBuffer;
+    srcBuffer.size = static_cast<size_t>(bigSize);
+    MockBuffer dstBuffer;
+    dstBuffer.size = static_cast<size_t>(bigSize);
+
+    BuiltinOpParams dc;
+    dc.srcMemObj = &srcBuffer;
+    dc.dstMemObj = &dstBuffer;
+    dc.srcOffset = {static_cast<size_t>(bigOffset), 0, 0};
+    dc.dstOffset = {0, 0, 0};
+    dc.size = {static_cast<size_t>(size), 1, 1};
+    dc.srcRowPitch = static_cast<size_t>(size);
+    dc.srcSlicePitch = 0;
+    dc.dstRowPitch = static_cast<size_t>(size);
+    dc.dstSlicePitch = 0;
+
+    MultiDispatchInfo multiDispatchInfo;
+    ASSERT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, dc));
+    EXPECT_EQ(1u, multiDispatchInfo.size());
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), dc));
+}
+
+TEST_F(BuiltInTests, givenBigOffsetAndSizeWhenBuilderFillBufferStatelessIsUsedThenParamsAreCorrect) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+
+    BuiltinDispatchInfoBuilder &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::FillBufferStateless, *pContext, *pDevice);
+
+    uint64_t bigSize = 10ull * MemoryConstants::gigaByte;
+    uint64_t bigOffset = 4ull * MemoryConstants::gigaByte;
+    uint64_t size = 4ull * MemoryConstants::gigaByte;
+
+    MockBuffer srcBuffer;
+    srcBuffer.size = static_cast<size_t>(bigSize);
+    MockBuffer dstBuffer;
+    dstBuffer.size = static_cast<size_t>(bigSize);
+
+    BuiltinOpParams dc;
+    dc.srcMemObj = &srcBuffer;
+    dc.dstMemObj = &dstBuffer;
+    dc.dstOffset = {static_cast<size_t>(bigOffset), 0, 0};
+    dc.size = {static_cast<size_t>(size), 0, 0};
+
+    MultiDispatchInfo multiDispatchInfo;
+    ASSERT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, dc));
+    EXPECT_EQ(1u, multiDispatchInfo.size());
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), dc));
+}
+
+TEST_F(BuiltInTests, givenBigOffsetAndSizeWhenBuilderCopyBufferToImageStatelessIsUsedThenParamsAreCorrect) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+
+    uint64_t bigSize = 10ull * MemoryConstants::gigaByte;
+    uint64_t bigOffset = 4ull * MemoryConstants::gigaByte;
+
+    MockBuffer srcBuffer;
+    srcBuffer.size = static_cast<size_t>(bigSize);
+    std ::unique_ptr<Image> pDstImage(Image2dHelper<>::create(pContext));
+    ASSERT_NE(nullptr, pDstImage.get());
+
+    auto &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToImage3dStateless, *pContext, *pDevice);
+
+    BuiltinOpParams dc;
+    dc.srcPtr = &srcBuffer;
+    dc.dstMemObj = pDstImage.get();
+    dc.srcOffset = {static_cast<size_t>(bigOffset), 0, 0};
+    dc.dstOffset = {0, 0, 0};
+    dc.size = {1, 1, 1};
+    dc.dstRowPitch = 0;
+    dc.dstSlicePitch = 0;
+
+    MultiDispatchInfo multiDispatchInfo;
+    ASSERT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, dc));
+    EXPECT_EQ(1u, multiDispatchInfo.size());
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), dc));
+
+    auto kernel = multiDispatchInfo.begin()->getKernel();
+    ASSERT_NE(nullptr, kernel);
+    EXPECT_TRUE(kernel->getKernelInfo().patchInfo.executionEnvironment->CompiledForGreaterThan4GBBuffers);
+    EXPECT_FALSE(kernel->getKernelInfo().kernelArgInfo[0].pureStatefulBufferAccess);
+}
+
+TEST_F(BuiltInTests, givenBigOffsetAndSizeWhenBuilderCopyImageToBufferStatelessIsUsedThenParamsAreCorrect) {
+
+    if (is32bit) {
+        GTEST_SKIP();
+    }
+
+    uint64_t bigSize = 10ull * MemoryConstants::gigaByte;
+    uint64_t bigOffset = 4ull * MemoryConstants::gigaByte;
+
+    MockBuffer dstBuffer;
+    dstBuffer.size = static_cast<size_t>(bigSize);
+    std ::unique_ptr<Image> pSrcImage(Image2dHelper<>::create(pContext));
+    ASSERT_NE(nullptr, pSrcImage.get());
+
+    auto &builder = pBuiltIns->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyImage3dToBufferStateless, *pContext, *pDevice);
+
+    BuiltinOpParams dc;
+    dc.srcMemObj = pSrcImage.get();
+    dc.dstMemObj = &dstBuffer;
+    dc.srcOffset = {0, 0, 0};
+    dc.dstOffset = {static_cast<size_t>(bigOffset), 0, 0};
+    dc.size = {1, 1, 1};
+
+    MultiDispatchInfo multiDispatchInfo;
+    ASSERT_TRUE(builder.buildDispatchInfos(multiDispatchInfo, dc));
+    EXPECT_EQ(1u, multiDispatchInfo.size());
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), dc));
+
+    auto kernel = multiDispatchInfo.begin()->getKernel();
+    ASSERT_NE(nullptr, kernel);
+    EXPECT_TRUE(kernel->getKernelInfo().patchInfo.executionEnvironment->CompiledForGreaterThan4GBBuffers);
+    EXPECT_FALSE(kernel->getKernelInfo().kernelArgInfo[0].pureStatefulBufferAccess);
 }
 
 TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferWithSourceOffsetUnalignedToFour) {
@@ -694,7 +860,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderCopyBufferToBufferWithSourceOffse
 
     EXPECT_EQ(dispatchInfo->getKernel()->getKernelInfo().name, "CopyBufferToBufferLeftLeftover");
 
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
 }
 
 TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReadBufferAligned) {
@@ -728,7 +894,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderReadBufferAligned) {
     size_t middleElSize = sizeof(uint32_t) * 4;
     size_t middleSize = size / middleElSize;
     EXPECT_EQ(Vec3<size_t>(middleSize, 1, 1), dispatchInfo->getGWS());
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     alignedFree(dstPtr);
 }
 
@@ -763,7 +929,7 @@ TEST_F(BuiltInTests, BuiltinDispatchInfoBuilderWriteBufferAligned) {
     size_t middleElSize = sizeof(uint32_t) * 4;
     size_t middleSize = size / middleElSize;
     EXPECT_EQ(Vec3<size_t>(middleSize, 1, 1), dispatchInfo->getGWS());
-    EXPECT_TRUE(compareBultinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
+    EXPECT_TRUE(compareBuiltinOpParams(multiDispatchInfo.peekBuiltinOpParams(), builtinOpsParams));
     alignedFree(srcPtr);
 }
 
@@ -1911,7 +2077,6 @@ TEST_F(BuiltInTests, givenSipKernelWhenItIsCreatedThenItHasGraphicsAllocationFor
 }
 
 TEST_F(BuiltInTests, givenDebugFlagForceUseSourceWhenArgIsBinaryThenReturnBuiltinCodeBinary) {
-    DebugManagerStateRestore dbgRestore;
     DebugManager.flags.RebuildPrecompiledKernels.set(true);
     auto builtinsLib = std::unique_ptr<BuiltinsLib>(new BuiltinsLib());
     BuiltinCode code = builtinsLib->getBuiltinCode(EBuiltInOps::CopyBufferToBuffer, BuiltinCode::ECodeType::Binary, *pDevice);
@@ -1921,7 +2086,6 @@ TEST_F(BuiltInTests, givenDebugFlagForceUseSourceWhenArgIsBinaryThenReturnBuilti
 }
 
 TEST_F(BuiltInTests, givenDebugFlagForceUseSourceWhenArgIsAnyThenReturnBuiltinCodeSource) {
-    DebugManagerStateRestore dbgRestore;
     DebugManager.flags.RebuildPrecompiledKernels.set(true);
     auto builtinsLib = std::unique_ptr<BuiltinsLib>(new BuiltinsLib());
     BuiltinCode code = builtinsLib->getBuiltinCode(EBuiltInOps::CopyBufferToBuffer, BuiltinCode::ECodeType::Any, *pDevice);

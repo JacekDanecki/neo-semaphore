@@ -22,6 +22,7 @@ ${CMAKE_CURRENT_SOURCE_DIR}/mock/mock_offline_compiler.h
 
 set(CLOC_SRCS_UTILITIES
   ${NEO_SOURCE_DIR}/offline_compiler/utilities/safety_caller.h
+  ${NEO_SOURCE_DIR}/offline_compiler/utilities//get_current_dir.h
 )
 
 if(WIN32)
@@ -30,11 +31,13 @@ if(WIN32)
     ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/safety_guard_windows.h
     ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/seh_exception.cpp
     ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/seh_exception.h
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/windows/get_current_dir_windows.cpp
   )
 else()
   list(APPEND CLOC_SRCS_UTILITIES
     ${NEO_SOURCE_DIR}/offline_compiler/utilities/linux/safety_caller_linux.cpp
     ${NEO_SOURCE_DIR}/offline_compiler/utilities/linux/safety_guard_linux.h
+    ${NEO_SOURCE_DIR}/offline_compiler/utilities/linux/get_current_dir_linux.cpp
   )
 endif()
 
@@ -103,7 +106,7 @@ macro(macro_for_each_platform)
     foreach(PLATFORM_TYPE ${PLATFORM_TYPES})
       if(${PLATFORM_IT}_IS_${PLATFORM_TYPE})
         get_family_name_with_type(${GEN_TYPE} ${PLATFORM_TYPE})
-        add_dependencies(run_ocloc_tests test_kernels_${family_name_with_type})
+        add_dependencies(run_ocloc_tests prepare_test_kernels_${family_name_with_type})
         neo_copy_test_files(copy_test_files_${family_name_with_type} ${family_name_with_type})	
         add_dependencies(run_ocloc_tests copy_test_files_${family_name_with_type})
         set(run_tests_cmd ocloc_tests --device ${CLOC_DEFAULT_DEVICE} --family_type ${family_name_with_type})

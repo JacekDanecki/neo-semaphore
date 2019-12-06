@@ -39,11 +39,12 @@ struct AUBWriteImage
     using AUBCommandStreamFixture::SetUp;
 
     void SetUp() override {
-        CommandDeviceFixture::SetUp(cl_command_queue_properties(0));
-        CommandStreamFixture::SetUp(pCmdQ);
-        if (!pDevice->getDeviceInfo().imageSupport) {
+        if (!(platformDevices[0]->capabilityTable.supportsImages)) {
             GTEST_SKIP();
         }
+        CommandDeviceFixture::SetUp(cl_command_queue_properties(0));
+        CommandStreamFixture::SetUp(pCmdQ);
+
         context = std::make_unique<MockContext>(pDevice);
     }
 
@@ -137,7 +138,9 @@ HWTEST_P(AUBWriteImage, simpleUnalignedMemory) {
     auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
     dstImage.reset(Image::create(
         context.get(),
+        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0),
         flags,
+        0,
         surfaceFormat,
         &imageDesc,
         nullptr,

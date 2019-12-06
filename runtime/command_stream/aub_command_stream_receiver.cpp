@@ -8,8 +8,8 @@
 #include "runtime/command_stream/aub_command_stream_receiver.h"
 
 #include "core/helpers/debug_helpers.h"
+#include "core/helpers/hw_info.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/os_interface/os_inc_base.h"
@@ -43,7 +43,7 @@ std::string AUBCommandStreamReceiver::createFullFilePath(const HardwareInfo &hwI
     return filePath;
 }
 
-CommandStreamReceiver *AUBCommandStreamReceiver::create(const std::string &baseName, bool standalone, ExecutionEnvironment &executionEnvironment) {
+CommandStreamReceiver *AUBCommandStreamReceiver::create(const std::string &baseName, bool standalone, ExecutionEnvironment &executionEnvironment, uint32_t rootDeviceIndex) {
     auto hwInfo = executionEnvironment.getHardwareInfo();
     std::string filePath = AUBCommandStreamReceiver::createFullFilePath(*hwInfo, baseName);
     if (DebugManager.flags.AUBDumpCaptureFileName.get() != "unk") {
@@ -56,7 +56,7 @@ CommandStreamReceiver *AUBCommandStreamReceiver::create(const std::string &baseN
     }
 
     auto pCreate = aubCommandStreamReceiverFactory[hwInfo->platform.eRenderCoreFamily];
-    return pCreate ? pCreate(filePath, standalone, executionEnvironment) : nullptr;
+    return pCreate ? pCreate(filePath, standalone, executionEnvironment, rootDeviceIndex) : nullptr;
 }
 } // namespace NEO
 

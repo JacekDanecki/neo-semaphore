@@ -11,6 +11,7 @@
 #include <iostream>
 
 int (*c_open)(const char *pathname, int flags, ...) = nullptr;
+int (*openFull)(const char *pathname, int flags, ...) = nullptr;
 int (*c_ioctl)(int fd, unsigned long int request, ...) = nullptr;
 
 int fakeFd = 1023;
@@ -21,6 +22,8 @@ int havePreemption = I915_SCHEDULER_CAP_ENABLED |
                      I915_SCHEDULER_CAP_PRIORITY |
                      I915_SCHEDULER_CAP_PREEMPTION;
 int failOnDeviceId = 0;
+int failOnEuTotal = 0;
+int failOnSubsliceTotal = 0;
 int failOnRevisionId = 0;
 int failOnSoftPin = 0;
 int failOnParamBoost = 0;
@@ -36,6 +39,9 @@ int ioctlSeq[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 size_t ioctlCnt = 0;
 
 int open(const char *pathname, int flags, ...) {
+    if (openFull != nullptr) {
+        return openFull(pathname, flags);
+    }
     if (c_open == nullptr) {
         c_open = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open");
     }
@@ -59,6 +65,14 @@ int drmGetParam(drm_i915_getparam_t *param) {
     case I915_PARAM_CHIPSET_ID:
         *param->value = deviceId;
         ret = failOnDeviceId;
+        break;
+    case I915_PARAM_EU_TOTAL:
+        *param->value = 0;
+        ret = failOnEuTotal;
+        break;
+    case I915_PARAM_SUBSLICE_TOTAL:
+        *param->value = 0;
+        ret = failOnSubsliceTotal;
         break;
     case I915_PARAM_REVISION:
         *param->value = 0x0;
@@ -179,6 +193,9 @@ int ioctl(int fd, unsigned long int request, ...) throw() {
                 break;
             case DRM_IOCTL_VERSION:
                 res = drmVersion(va_arg(vl, drm_version_t *));
+                break;
+            default:
+                res = drmOtherRequests(request, vl);
                 break;
             }
         }

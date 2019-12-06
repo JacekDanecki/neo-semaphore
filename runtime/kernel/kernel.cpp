@@ -7,9 +7,12 @@
 
 #include "runtime/kernel/kernel.h"
 
+#include "core/gmm_helper/gmm_helper.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/debug_helpers.h"
+#include "core/helpers/hw_helper.h"
+#include "core/helpers/kernel_helpers.h"
 #include "core/helpers/ptr_math.h"
 #include "core/memory_manager/unified_memory_manager.h"
 #include "runtime/accelerators/intel_accelerator.h"
@@ -21,10 +24,8 @@
 #include "runtime/context/context.h"
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/execution_model/device_enqueue.h"
-#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/get_info.h"
-#include "runtime/helpers/hw_helper.h"
 #include "runtime/helpers/per_thread_data.h"
 #include "runtime/helpers/sampler_helpers.h"
 #include "runtime/helpers/surface_formats.h"
@@ -37,6 +38,7 @@
 #include "runtime/memory_manager/surface.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/platform/platform.h"
+#include "runtime/program/block_kernel_manager.h"
 #include "runtime/program/kernel_info.h"
 #include "runtime/sampler/sampler.h"
 
@@ -267,7 +269,7 @@ cl_int Kernel::initialize() {
                 retVal = CL_OUT_OF_RESOURCES;
                 break;
             }
-            privateSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({static_cast<size_t>(privateSurfaceSize), GraphicsAllocation::AllocationType::PRIVATE_SURFACE});
+            privateSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({device.getRootDeviceIndex(), static_cast<size_t>(privateSurfaceSize), GraphicsAllocation::AllocationType::PRIVATE_SURFACE});
             if (privateSurface == nullptr) {
                 retVal = CL_OUT_OF_RESOURCES;
                 break;
@@ -345,7 +347,7 @@ cl_int Kernel::initialize() {
                 kernelArgHandlers[i] = &Kernel::setArgSampler;
                 kernelArguments[i].type = SAMPLER_OBJ;
                 DEBUG_BREAK_IF(!(*argInfo.typeStr.c_str() == '\0' || argInfo.typeStr.find("sampler") != std::string::npos));
-            } else if ((argInfo.typeStr.find("*") != std::string::npos) || argInfo.isBuffer) {
+            } else if (argInfo.isBuffer) {
                 kernelArgHandlers[i] = &Kernel::setArgBuffer;
                 kernelArguments[i].type = BUFFER_OBJ;
                 usingBuffers = true;
@@ -371,7 +373,7 @@ cl_int Kernel::initialize() {
         }
 
         if (isParentKernel) {
-            program->allocateBlockPrivateSurfaces();
+            program->allocateBlockPrivateSurfaces(device.getRootDeviceIndex());
         }
 
         retVal = CL_SUCCESS;
@@ -738,7 +740,7 @@ void Kernel::substituteKernelHeap(void *newKernelHeap, size_t newKernelHeapSize)
     } else {
         memoryManager->checkGpuUsageAndDestroyGraphicsAllocations(pKernelInfo->kernelAllocation);
         pKernelInfo->kernelAllocation = nullptr;
-        status = pKernelInfo->createKernelAllocation(memoryManager);
+        status = pKernelInfo->createKernelAllocation(device.getRootDeviceIndex(), memoryManager);
     }
     UNRECOVERABLE_IF(!status);
 }
@@ -832,6 +834,10 @@ cl_int Kernel::setArg(uint32_t argIndex, size_t argSize, const void *argVal) {
 }
 
 cl_int Kernel::setArg(uint32_t argIndex, uint32_t argVal) {
+    return setArg(argIndex, sizeof(argVal), &argVal);
+}
+
+cl_int Kernel::setArg(uint32_t argIndex, uint64_t argVal) {
     return setArg(argIndex, sizeof(argVal), &argVal);
 }
 
@@ -972,6 +978,31 @@ void Kernel::setUnifiedMemoryExecInfo(GraphicsAllocation *unifiedMemoryAllocatio
 
 void Kernel::clearUnifiedMemoryExecInfo() {
     kernelUnifiedMemoryGfxAllocations.clear();
+}
+
+uint32_t Kernel::getMaxWorkGroupCount(const cl_uint workDim, const size_t *localWorkSize) const {
+    auto &hardwareInfo = getDevice().getHardwareInfo();
+    auto executionEnvironment = kernelInfo.patchInfo.executionEnvironment;
+    auto dssCount = hardwareInfo.gtSystemInfo.DualSubSliceCount;
+    if (dssCount == 0) {
+        dssCount = hardwareInfo.gtSystemInfo.SubSliceCount;
+    }
+    auto &hwHelper = HwHelper::get(hardwareInfo.platform.eRenderCoreFamily);
+    auto availableThreadCount = hwHelper.calculateAvailableThreadCount(
+        hardwareInfo.platform.eProductFamily,
+        ((executionEnvironment != nullptr) ? executionEnvironment->NumGRFRequired : GrfConfig::DefaultGrfNumber),
+        hardwareInfo.gtSystemInfo.EUCount, hardwareInfo.gtSystemInfo.ThreadCount / hardwareInfo.gtSystemInfo.EUCount);
+
+    auto hasBarriers = ((executionEnvironment != nullptr) ? executionEnvironment->HasBarriers : 0u);
+    return KernelHelper::getMaxWorkGroupCount(kernelInfo.getMaxSimdSize(),
+                                              availableThreadCount,
+                                              dssCount,
+                                              dssCount * KB * hardwareInfo.capabilityTable.slmSize,
+                                              hwHelper.alignSlmSize(slmTotalSize),
+                                              static_cast<uint32_t>(hwHelper.getMaxBarrierRegisterPerSlice()),
+                                              hwHelper.getBarriersCountFromHasBarriers(hasBarriers),
+                                              workDim,
+                                              localWorkSize);
 }
 
 inline void Kernel::makeArgsResident(CommandStreamReceiver &commandStreamReceiver) {
@@ -1385,7 +1416,7 @@ cl_int Kernel::setArgImmediate(uint32_t argIndex,
             auto pSrc = ptrOffset(argVal, kernelArgPatchInfo.sourceOffset);
 
             DEBUG_BREAK_IF(!(ptrOffset(pDst, kernelArgPatchInfo.size) <= crossThreadDataEnd));
-            ((void)(crossThreadDataEnd));
+            UNUSED_VARIABLE(crossThreadDataEnd);
 
             if (kernelArgPatchInfo.sourceOffset < argSize) {
                 size_t maxBytesToCopy = argSize - kernelArgPatchInfo.sourceOffset;
@@ -1591,7 +1622,7 @@ void Kernel::createReflectionSurface() {
         kernelReflectionSize += blockCount * alignUp(maxConstantBufferSize, sizeof(void *));
         kernelReflectionSize += parentImageCount * sizeof(IGIL_ImageParamters);
         kernelReflectionSize += parentSamplerCount * sizeof(IGIL_ParentSamplerParams);
-        kernelReflectionSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({kernelReflectionSize, GraphicsAllocation::AllocationType::DEVICE_QUEUE_BUFFER});
+        kernelReflectionSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({device.getRootDeviceIndex(), kernelReflectionSize, GraphicsAllocation::AllocationType::DEVICE_QUEUE_BUFFER});
 
         for (uint32_t i = 0; i < blockCount; i++) {
             const KernelInfo *pBlockInfo = blockManager->getBlockKernelInfo(i);
@@ -1665,7 +1696,7 @@ void Kernel::createReflectionSurface() {
 
     if (DebugManager.flags.ForceDispatchScheduler.get()) {
         if (this->isSchedulerKernel && kernelReflectionSurface == nullptr) {
-            kernelReflectionSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({MemoryConstants::pageSize, GraphicsAllocation::AllocationType::DEVICE_QUEUE_BUFFER});
+            kernelReflectionSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({device.getRootDeviceIndex(), MemoryConstants::pageSize, GraphicsAllocation::AllocationType::DEVICE_QUEUE_BUFFER});
         }
     }
 }
@@ -1793,7 +1824,7 @@ void Kernel::ReflectionSurfaceHelper::getCurbeParams(std::vector<IGIL_KernelCurb
 
             if (kernelInfo.patchInfo.bindingTableState) {
                 auto &hwHelper = HwHelper::get(hwInfo.platform.eRenderCoreFamily);
-                void *ssh = static_cast<char *>(kernelInfo.heapInfo.pSsh) + kernelInfo.patchInfo.bindingTableState->Offset;
+                const void *ssh = static_cast<const char *>(kernelInfo.heapInfo.pSsh) + kernelInfo.patchInfo.bindingTableState->Offset;
 
                 for (uint32_t i = 0; i < kernelInfo.patchInfo.bindingTableState->Count; i++) {
 
@@ -1839,11 +1870,9 @@ void Kernel::ReflectionSurfaceHelper::getCurbeParams(std::vector<IGIL_KernelCurb
         }
     }
 
-    for (auto param : kernelInfo.patchInfo.dataParameterBuffers) {
-        if (param->Type == DATA_PARAMETER_KERNEL_ARGUMENT) {
-            curbeParamsOut.emplace_back(IGIL_KernelCurbeParams{DATA_PARAMETER_KERNEL_ARGUMENT, param->DataSize, param->Offset, param->ArgumentNumber});
-            tokenMask |= ((uint64_t)1 << DATA_PARAMETER_KERNEL_ARGUMENT);
-        }
+    for (auto param : kernelInfo.patchInfo.dataParameterBuffersKernelArgs) {
+        curbeParamsOut.emplace_back(IGIL_KernelCurbeParams{DATA_PARAMETER_KERNEL_ARGUMENT, param->DataSize, param->Offset, param->ArgumentNumber});
+        tokenMask |= ((uint64_t)1 << DATA_PARAMETER_KERNEL_ARGUMENT);
     }
 
     for (uint32_t i = 0; i < 3; i++) {
@@ -2176,6 +2205,25 @@ void Kernel::patchBlocksSimdSize() {
     }
 }
 
+bool Kernel::usesSyncBuffer() {
+    return (kernelInfo.patchInfo.pAllocateSyncBuffer != nullptr);
+}
+
+void Kernel::patchSyncBuffer(Device &device, GraphicsAllocation *gfxAllocation, size_t bufferOffset) {
+    auto &patchInfo = kernelInfo.patchInfo;
+    auto bufferPatchAddress = ptrOffset(getCrossThreadData(), patchInfo.pAllocateSyncBuffer->DataParamOffset);
+    patchWithRequiredSize(bufferPatchAddress, patchInfo.pAllocateSyncBuffer->DataParamSize,
+                          ptrOffset(gfxAllocation->getGpuAddressToPatch(), bufferOffset));
+
+    if (requiresSshForBuffers()) {
+        auto surfaceState = ptrOffset(reinterpret_cast<uintptr_t *>(getSurfaceStateHeap()),
+                                      patchInfo.pAllocateSyncBuffer->SurfaceStateHeapOffset);
+        auto addressToPatch = gfxAllocation->getUnderlyingBuffer();
+        auto sizeToPatch = gfxAllocation->getUnderlyingBufferSize();
+        Buffer::setSurfaceState(&device, surfaceState, sizeToPatch, addressToPatch, gfxAllocation);
+    }
+}
+
 template void Kernel::patchReflectionSurface<false>(DeviceQueue *, PrintfHandler *);
 
 bool Kernel::isPatched() const {
@@ -2225,7 +2273,8 @@ void Kernel::resolveArgs() {
 }
 
 bool Kernel::canTransformImages() const {
-    return device.getHardwareInfo().platform.eRenderCoreFamily >= IGFX_GEN9_CORE;
+    return device.getHardwareInfo().platform.eRenderCoreFamily >= IGFX_GEN9_CORE &&
+           device.getHardwareInfo().platform.eRenderCoreFamily <= IGFX_GEN11LP_CORE;
 }
 
 void Kernel::fillWithBuffersForAuxTranslation(MemObjsForAuxTranslation &memObjsForAuxTranslation) {
@@ -2286,6 +2335,15 @@ void Kernel::addAllocationToCacheFlushVector(uint32_t argIndex, GraphicsAllocati
             kernelArgRequiresCacheFlush[argIndex] = nullptr;
         }
     }
+}
+
+void Kernel::setReflectionSurfaceBlockBtOffset(uint32_t blockID, uint32_t offset) {
+    DEBUG_BREAK_IF(blockID >= program->getBlockKernelManager()->getCount());
+    ReflectionSurfaceHelper::setKernelAddressDataBtOffset(getKernelReflectionSurface()->getUnderlyingBuffer(), blockID, offset);
+}
+
+bool Kernel::checkIfIsParentKernelAndBlocksUsesPrintf() {
+    return isParentKernel && getProgram()->getBlockKernelManager()->getIfBlockUsesPrintf();
 }
 
 } // namespace NEO

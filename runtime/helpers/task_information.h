@@ -7,13 +7,13 @@
 
 #pragma once
 #include "core/command_stream/linear_stream.h"
+#include "core/helpers/completion_stamp.h"
+#include "core/helpers/hw_info.h"
+#include "core/indirect_heap/indirect_heap.h"
 #include "core/utilities/iflist.h"
 #include "runtime/helpers/blit_commands_helper.h"
-#include "runtime/helpers/completion_stamp.h"
-#include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/properties_helper.h"
 #include "runtime/helpers/timestamp_packet.h"
-#include "runtime/indirect_heap/indirect_heap.h"
 
 #include <memory>
 #include <vector>
@@ -75,7 +75,7 @@ struct KernelOperation {
     IndirectHeapUniquePtrT ioh{nullptr, resourceCleaner};
     IndirectHeapUniquePtrT ssh{nullptr, resourceCleaner};
 
-    BlitProperties blitProperties;
+    BlitPropertiesContainer blitPropertiesContainer;
     bool blitEnqueue = false;
     size_t surfaceStateHeapSizeEM = 0;
 };
@@ -94,7 +94,7 @@ class Command : public IFNode<Command> {
     virtual LinearStream *getCommandStream() {
         return nullptr;
     }
-    void setTimestampPacketNode(TimestampPacketContainer &current, TimestampPacketContainer &previous, TimestampPacketContainer &barrier);
+    void setTimestampPacketNode(TimestampPacketContainer &current, TimestampPacketDependencies &&dependencies);
     void setEventsRequest(EventsRequest &eventsRequest);
     void makeTimestampPacketsResident(CommandStreamReceiver &commandStreamReceiver);
 
@@ -105,8 +105,7 @@ class Command : public IFNode<Command> {
     CommandQueue &commandQueue;
     std::unique_ptr<KernelOperation> kernelOperation;
     std::unique_ptr<TimestampPacketContainer> currentTimestampPacketNodes;
-    std::unique_ptr<TimestampPacketContainer> previousTimestampPacketNodes;
-    std::unique_ptr<TimestampPacketContainer> barrierTimestampPacketNodes;
+    std::unique_ptr<TimestampPacketDependencies> timestampPacketDependencies;
     EventsRequest eventsRequest = {0, nullptr, nullptr};
     std::vector<cl_event> eventsWaitlist;
 };

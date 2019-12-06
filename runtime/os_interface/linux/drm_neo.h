@@ -75,14 +75,16 @@ class Drm {
     bool setQueueSliceCount(uint64_t sliceCount);
     void checkQueueSliceSupport();
     uint64_t getSliceMask(uint64_t sliceCount);
-    void queryEngineInfo();
-    void queryMemoryInfo();
-    int setEngines();
-    int setMemoryRegions();
+    bool queryEngineInfo();
+    bool queryMemoryInfo();
+    int setupHardwareInfo(DeviceDescriptor *, bool);
 
     MemoryInfo *getMemoryInfo() const {
         return memoryInfo.get();
     }
+    static bool (*pIsi915Version)(int fd);
+    static bool isi915Version(int fd);
+    static int (*pClose)(int fd);
 
   protected:
     int getQueueSliceCount(drm_i915_gem_context_param_sseu *sseu);
@@ -97,7 +99,6 @@ class Drm {
     std::unique_ptr<EngineInfo> engineInfo;
     std::unique_ptr<MemoryInfo> memoryInfo;
 
-    static bool isi915Version(int fd);
     static int getDeviceFd(const int devType);
     static int openDevice();
     static Drm *create(int32_t deviceOrdinal);
@@ -105,9 +106,6 @@ class Drm {
 
     std::string getSysFsPciPath(int deviceID);
     void *query(uint32_t queryId);
-
-    static inline uint16_t getMemoryTypeFromRegion(uint32_t region) { return Math::log2(region >> 16); };
-    static inline uint16_t getInstanceFromRegion(uint32_t region) { return Math::log2(region & 0xFFFF); };
 
 #pragma pack(1)
     struct PCIConfig {

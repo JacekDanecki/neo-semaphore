@@ -6,10 +6,10 @@
  */
 
 #pragma once
+#include "core/helpers/hw_info.h"
 #include "core/helpers/pipeline_select_args.h"
 #include "core/memory_manager/memory_constants.h"
 #include "runtime/helpers/csr_deps.h"
-#include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/properties_helper.h"
 #include "runtime/kernel/grf_config.h"
 
@@ -44,7 +44,7 @@ constexpr uint32_t l3AndL1On = 2u;
 
 struct DispatchFlags {
     DispatchFlags() = delete;
-    DispatchFlags(CsrDependencies csrDependencies, const TimestampPacketContainer *barrierTimestampPacketNodes, PipelineSelectArgs pipelineSelectArgs,
+    DispatchFlags(CsrDependencies csrDependencies, TimestampPacketContainer *barrierTimestampPacketNodes, PipelineSelectArgs pipelineSelectArgs,
                   FlushStampTrackingObj *flushStampReference, QueueThrottle throttle, PreemptionMode preemptionMode, uint32_t numGrfRequired,
                   uint32_t l3CacheSettings, uint64_t sliceCount, bool blocking, bool dcFlush,
                   bool useSLM, bool guardCommandBufferWithPipeControl, bool gsba32BitRequired,
@@ -70,7 +70,7 @@ struct DispatchFlags {
                                                                                                    multiEngineQueue(multiEngineQueue),
                                                                                                    epilogueRequired(epilogueRequired){};
     CsrDependencies csrDependencies;
-    const TimestampPacketContainer *barrierTimestampPacketNodes = nullptr;
+    TimestampPacketContainer *barrierTimestampPacketNodes = nullptr;
     PipelineSelectArgs pipelineSelectArgs;
     FlushStampTrackingObj *flushStampReference = nullptr;
     QueueThrottle throttle = QueueThrottle::MEDIUM;

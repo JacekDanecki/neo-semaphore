@@ -6,12 +6,12 @@
  */
 
 #include "core/command_stream/linear_stream.h"
+#include "core/helpers/hw_helper.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/aub_command_stream_receiver_hw.h"
 #include "runtime/command_stream/command_stream_receiver_with_aub_dump.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/gmm_callbacks.h"
-#include "runtime/helpers/hw_helper.h"
 #include "runtime/os_interface/windows/wddm_device_command_stream.h"
 #include "runtime/platform/platform.h"
 #include "test.h"
@@ -33,7 +33,7 @@ GEN12LPTEST_F(Gen12LpGmmCallbacksTests, givenCsrWithoutAubDumpWhenNotifyAubCaptu
     HardwareInfo *hwInfo = nullptr;
     ExecutionEnvironment *executionEnvironment = getExecutionEnvironmentImpl(hwInfo);
     executionEnvironment->initializeMemoryManager();
-    auto csr = std::make_unique<WddmCommandStreamReceiver<FamilyType>>(*executionEnvironment);
+    auto csr = std::make_unique<WddmCommandStreamReceiver<FamilyType>>(*executionEnvironment, 0);
     uint64_t address = 0xFEDCBA9876543210;
     size_t size = 1024;
 
@@ -46,7 +46,7 @@ GEN12LPTEST_F(Gen12LpGmmCallbacksTests, givenWddmCsrWhenWriteL3CalledThenWriteTw
     typedef typename FamilyType::MI_LOAD_REGISTER_IMM MI_LOAD_REGISTER_IMM;
     ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
     executionEnvironment->initializeMemoryManager();
-    UltCommandStreamReceiver<FamilyType> csr(*executionEnvironment);
+    UltCommandStreamReceiver<FamilyType> csr(*executionEnvironment, 0);
     uint8_t buffer[128] = {};
     csr.commandStream.replaceBuffer(buffer, 128);
 
@@ -79,7 +79,7 @@ GEN12LPTEST_F(Gen12LpGmmCallbacksTests, givenCcsEnabledhenWriteL3CalledThenSetRe
     ExecutionEnvironment executionEnvironment;
     executionEnvironment.setHwInfo(&localHwInfo);
     executionEnvironment.initializeMemoryManager();
-    UltCommandStreamReceiver<FamilyType> csr(executionEnvironment);
+    UltCommandStreamReceiver<FamilyType> csr(executionEnvironment, 0);
     uint8_t buffer[128] = {};
     csr.commandStream.replaceBuffer(buffer, 128);
 
@@ -106,7 +106,7 @@ GEN12LPTEST_F(Gen12LpGmmCallbacksTests, givenCcsDisabledhenWriteL3CalledThenSetR
     ExecutionEnvironment executionEnvironment;
     executionEnvironment.setHwInfo(&localHwInfo);
     executionEnvironment.initializeMemoryManager();
-    UltCommandStreamReceiver<FamilyType> csr(executionEnvironment);
+    UltCommandStreamReceiver<FamilyType> csr(executionEnvironment, 0);
     uint8_t buffer[128] = {};
     csr.commandStream.replaceBuffer(buffer, 128);
 

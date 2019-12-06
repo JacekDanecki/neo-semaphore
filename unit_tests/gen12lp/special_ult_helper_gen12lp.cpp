@@ -7,9 +7,13 @@
 
 #include "unit_tests/gen12lp/special_ult_helper_gen12lp.h"
 
-#include "runtime/helpers/hw_info.h"
+#include "core/helpers/hw_info.h"
 
 namespace NEO {
+
+bool SpecialUltHelperGen12lp::shouldCompressionBeEnabledAfterConfigureHardwareCustom(const HardwareInfo &hwInfo) {
+    return hwInfo.featureTable.ftrE2ECompression;
+}
 
 bool SpecialUltHelperGen12lp::shouldEnableHdcFlush(PRODUCT_FAMILY productFamily) {
     return true;

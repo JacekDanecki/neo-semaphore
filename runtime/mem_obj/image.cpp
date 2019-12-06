@@ -10,17 +10,17 @@
 #include "common/compiler_support.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
+#include "core/helpers/hw_helper.h"
+#include "core/helpers/hw_info.h"
 #include "core/helpers/ptr_math.h"
 #include "core/helpers/string.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/gmm_helper.h"
+#include "runtime/gmm_helper/gmm_types_converter.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/get_info.h"
-#include "runtime/helpers/hw_helper.h"
-#include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/helpers/mipmap.h"
 #include "runtime/helpers/surface_formats.h"
@@ -111,7 +111,9 @@ void Image::transferData(void *dest, size_t destRowPitch, size_t destSlicePitch,
 Image::~Image() = default;
 
 Image *Image::create(Context *context,
-                     const MemoryProperties &properties,
+                     const MemoryPropertiesFlags &memoryProperties,
+                     cl_mem_flags flags,
+                     cl_mem_flags_intel flagsIntel,
                      const SurfaceFormatInfo *surfaceFormat,
                      const cl_image_desc *imageDesc,
                      const void *hostPtr,
@@ -124,6 +126,7 @@ Image *Image::create(Context *context,
     Buffer *parentBuffer = castToObject<Buffer>(imageDesc->mem_object);
     Image *parentImage = castToObject<Image>(imageDesc->mem_object);
     auto &hwHelper = HwHelper::get(context->getDevice(0)->getHardwareInfo().platform.eRenderCoreFamily);
+    auto rootDeviceIndex = context->getDevice(0)->getRootDeviceIndex();
 
     do {
         size_t imageWidth = imageDesc->image_width;
@@ -136,7 +139,7 @@ Image *Image::create(Context *context,
         ImageInfo imgInfo = {0};
         void *hostPtrToSet = nullptr;
 
-        if (isValueSet(properties.flags, CL_MEM_USE_HOST_PTR)) {
+        if (memoryProperties.flags.useHostPtr) {
             hostPtrToSet = const_cast<void *>(hostPtr);
         }
 
@@ -185,8 +188,8 @@ Image *Image::create(Context *context,
 
         auto hostPtrRowPitch = imageDesc->image_row_pitch ? imageDesc->image_row_pitch : imageWidth * surfaceFormat->ImageElementSizeInBytes;
         auto hostPtrSlicePitch = imageDesc->image_slice_pitch ? imageDesc->image_slice_pitch : hostPtrRowPitch * imageHeight;
-        MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
-        imgInfo.linearStorage = !hwHelper.tilingAllowed(context->isSharedContext, *imageDesc, memoryProperties.flags.forceLinearStorage);
+        imgInfo.linearStorage = !hwHelper.tilingAllowed(context->isSharedContext, Image::isImage1d(*imageDesc),
+                                                        memoryProperties.flags.forceLinearStorage);
         imgInfo.preferRenderCompression = MemObjHelper::isSuitableForRenderCompression(!imgInfo.linearStorage, memoryProperties,
                                                                                        *context, true);
 
@@ -225,9 +228,8 @@ Image *Image::create(Context *context,
         bool transferNeeded = false;
         if (((imageDesc->image_type == CL_MEM_OBJECT_IMAGE1D_BUFFER) || (imageDesc->image_type == CL_MEM_OBJECT_IMAGE2D)) && (parentBuffer != nullptr)) {
 
-            hwHelper.checkResourceCompatibility(parentBuffer, errcodeRet);
-
-            if (errcodeRet != CL_SUCCESS) {
+            if (!hwHelper.checkResourceCompatibility(*parentBuffer->getGraphicsAllocation())) {
+                errcodeRet = CL_INVALID_MEM_OBJECT;
                 return nullptr;
             }
 
@@ -238,7 +240,7 @@ Image *Image::create(Context *context,
             hostPtr = parentBuffer->getHostPtr();
             hostPtrToSet = const_cast<void *>(hostPtr);
             parentBuffer->incRefInternal();
-            GmmHelper::queryImgFromBufferParams(imgInfo, memory);
+            GmmTypesConverter::queryImgFromBufferParams(imgInfo, memory);
 
             UNRECOVERABLE_IF(imgInfo.offset != 0);
             imgInfo.offset = parentBuffer->getOffset();
@@ -257,11 +259,10 @@ Image *Image::create(Context *context,
             memory->getDefaultGmm()->queryImageParams(imgInfo);
         } else {
             errcodeRet = CL_OUT_OF_HOST_MEMORY;
-            if (isValueSet(properties.flags, CL_MEM_USE_HOST_PTR)) {
+            if (memoryProperties.flags.useHostPtr) {
 
                 if (!context->isSharedContext) {
-                    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
-                    AllocationProperties allocProperties = MemObjHelper::getAllocationPropertiesWithImageInfo(imgInfo, false, memoryProperties);
+                    AllocationProperties allocProperties = MemObjHelper::getAllocationPropertiesWithImageInfo(rootDeviceIndex, imgInfo, false, memoryProperties);
 
                     memory = memoryManager->allocateGraphicsMemoryWithProperties(allocProperties, hostPtr);
 
@@ -275,18 +276,17 @@ Image *Image::create(Context *context,
                     }
                 } else {
                     gmm = new Gmm(imgInfo, StorageInfo{});
-                    memory = memoryManager->allocateGraphicsMemoryWithProperties({false, imgInfo.size, GraphicsAllocation::AllocationType::SHARED_CONTEXT_IMAGE, false}, hostPtr);
+                    memory = memoryManager->allocateGraphicsMemoryWithProperties({rootDeviceIndex, false, imgInfo.size, GraphicsAllocation::AllocationType::SHARED_CONTEXT_IMAGE, false}, hostPtr);
                     memory->setDefaultGmm(gmm);
                     zeroCopy = true;
                 }
                 if (memory) {
-                    AllocationProperties properties{false, hostPtrMinSize, GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR, false};
+                    AllocationProperties properties{rootDeviceIndex, false, hostPtrMinSize, GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR, false};
                     properties.flags.flushL3RequiredForRead = properties.flags.flushL3RequiredForWrite = true;
                     mapAllocation = memoryManager->allocateGraphicsMemoryWithProperties(properties, hostPtr);
                 }
             } else {
-                MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
-                AllocationProperties allocProperties = MemObjHelper::getAllocationPropertiesWithImageInfo(imgInfo, true, memoryProperties);
+                AllocationProperties allocProperties = MemObjHelper::getAllocationPropertiesWithImageInfo(rootDeviceIndex, imgInfo, true, memoryProperties);
                 memory = memoryManager->allocateGraphicsMemoryWithProperties(allocProperties);
 
                 if (memory && MemoryPool::isSystemMemoryPool(memory->getMemoryPool())) {
@@ -294,7 +294,7 @@ Image *Image::create(Context *context,
                 }
             }
         }
-        transferNeeded |= isValueSet(properties.flags, static_cast<cl_bitfield>(CL_MEM_COPY_HOST_PTR));
+        transferNeeded |= memoryProperties.flags.copyHostPtr;
 
         if (!memory) {
             break;
@@ -304,9 +304,9 @@ Image *Image::create(Context *context,
             memory->setAllocationType(GraphicsAllocation::AllocationType::IMAGE);
         }
 
-        memory->setMemObjectsAllocationWithWritableFlags(!isValueSet(properties.flags, CL_MEM_READ_ONLY) &&
-                                                         !isValueSet(properties.flags, CL_MEM_HOST_READ_ONLY) &&
-                                                         !isValueSet(properties.flags, CL_MEM_HOST_NO_ACCESS));
+        memory->setMemObjectsAllocationWithWritableFlags(!memoryProperties.flags.readOnly &&
+                                                         !memoryProperties.flags.hostReadOnly &&
+                                                         !memoryProperties.flags.hostNoAccess);
 
         DBG_LOG(LogMemoryObject, __FUNCTION__, "hostPtr:", hostPtr, "size:", memory->getUnderlyingBufferSize(), "memoryStorage:", memory->getUnderlyingBuffer(), "GPU address:", std::hex, memory->getGpuAddress());
 
@@ -322,7 +322,7 @@ Image *Image::create(Context *context,
             parentImage->incRefInternal();
         }
 
-        image = createImageHw(context, properties, imgInfo.size, hostPtrToSet, surfaceFormat->OCLImageFormat,
+        image = createImageHw(context, memoryProperties, flags, flagsIntel, imgInfo.size, hostPtrToSet, surfaceFormat->OCLImageFormat,
                               imageDescriptor, zeroCopy, memory, false, 0, 0, surfaceFormat);
 
         if (context->isProvidingPerformanceHints() && HwHelper::renderCompressedImagesSupported(context->getDevice(0)->getHardwareInfo())) {
@@ -402,7 +402,7 @@ Image *Image::create(Context *context,
     return image;
 }
 
-Image *Image::createImageHw(Context *context, const MemoryProperties &properties, size_t size, void *hostPtr,
+Image *Image::createImageHw(Context *context, const MemoryPropertiesFlags &memoryProperties, cl_mem_flags flags, cl_mem_flags_intel flagsIntel, size_t size, void *hostPtr,
                             const cl_image_format &imageFormat, const cl_image_desc &imageDesc,
                             bool zeroCopy, GraphicsAllocation *graphicsAllocation,
                             bool isObjectRedescribed, uint32_t baseMipLevel, uint32_t mipCount,
@@ -412,8 +412,7 @@ Image *Image::createImageHw(Context *context, const MemoryProperties &properties
 
     auto funcCreate = imageFactory[hwInfo.platform.eRenderCoreFamily].createImageFunction;
     DEBUG_BREAK_IF(nullptr == funcCreate);
-    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
-    auto image = funcCreate(context, memoryProperties, properties.flags, properties.flagsIntel, size, hostPtr, imageFormat, imageDesc,
+    auto image = funcCreate(context, memoryProperties, flags, flagsIntel, size, hostPtr, imageFormat, imageDesc,
                             zeroCopy, graphicsAllocation, isObjectRedescribed, baseMipLevel, mipCount, surfaceFormatInfo, nullptr);
     DEBUG_BREAK_IF(nullptr == image);
     image->createFunction = funcCreate;
@@ -423,7 +422,7 @@ Image *Image::createImageHw(Context *context, const MemoryProperties &properties
 Image *Image::createSharedImage(Context *context, SharingHandler *sharingHandler, McsSurfaceInfo &mcsSurfaceInfo,
                                 GraphicsAllocation *graphicsAllocation, GraphicsAllocation *mcsAllocation,
                                 cl_mem_flags flags, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount) {
-    auto sharedImage = createImageHw(context, flags, graphicsAllocation->getUnderlyingBufferSize(),
+    auto sharedImage = createImageHw(context, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0), flags, 0, graphicsAllocation->getUnderlyingBufferSize(),
                                      nullptr, imgInfo.surfaceFormat->OCLImageFormat, *imgInfo.imgDesc, false, graphicsAllocation, false, baseMipLevel, mipCount, imgInfo.surfaceFormat);
     sharedImage->setSharingHandler(sharingHandler);
     sharedImage->setMcsAllocation(mcsAllocation);
@@ -861,7 +860,7 @@ Image *Image::redescribeFillImage() {
     imageFormatNew.image_channel_data_type = surfaceFormat->OCLImageFormat.image_channel_data_type;
 
     DEBUG_BREAK_IF(nullptr == createFunction);
-    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags({flags | CL_MEM_USE_HOST_PTR});
+    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags | CL_MEM_USE_HOST_PTR, flagsIntel);
     auto image = createFunction(context,
                                 memoryProperties,
                                 flags | CL_MEM_USE_HOST_PTR,
@@ -911,7 +910,7 @@ Image *Image::redescribe() {
     imageFormatNew.image_channel_data_type = surfaceFormat->OCLImageFormat.image_channel_data_type;
 
     DEBUG_BREAK_IF(nullptr == createFunction);
-    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags({flags | CL_MEM_USE_HOST_PTR});
+    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags | CL_MEM_USE_HOST_PTR, flagsIntel);
     auto image = createFunction(context,
                                 memoryProperties,
                                 flags | CL_MEM_USE_HOST_PTR,
@@ -973,7 +972,9 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     // Create NV12 UV Plane image
     std::unique_ptr<Image> imageYPlane(Image::create(
         context,
+        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0),
         flags,
+        0,
         surfaceFormat,
         &imageDesc,
         nullptr,
@@ -995,7 +996,9 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     // Create NV12 UV Plane image
     std::unique_ptr<Image> imageUVPlane(Image::create(
         context,
+        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0),
         flags,
+        0,
         surfaceFormat,
         &imageDesc,
         nullptr,
@@ -1024,6 +1027,14 @@ const SurfaceFormatInfo *Image::getSurfaceFormatFromTable(cl_mem_flags flags, co
     return nullptr;
 }
 
+bool Image::isImage1d(const cl_image_desc &imageDesc) {
+    auto imageType = imageDesc.image_type;
+    auto buffer = castToObject<Buffer>(imageDesc.buffer);
+
+    return (imageType == CL_MEM_OBJECT_IMAGE1D || imageType == CL_MEM_OBJECT_IMAGE1D_ARRAY ||
+            imageType == CL_MEM_OBJECT_IMAGE1D_BUFFER || buffer);
+}
+
 bool Image::isImage2d(cl_mem_object_type imageType) {
     return imageType == CL_MEM_OBJECT_IMAGE2D;
 }
@@ -1037,7 +1048,7 @@ bool Image::isDepthFormat(const cl_image_format &imageFormat) {
 }
 
 Image *Image::validateAndCreateImage(Context *context,
-                                     const MemoryProperties &properties,
+                                     const MemoryPropertiesFlags &memoryProperties,
                                      cl_mem_flags flags,
                                      cl_mem_flags_intel flagsIntel,
                                      const cl_image_format *imageFormat,
@@ -1045,13 +1056,13 @@ Image *Image::validateAndCreateImage(Context *context,
                                      const void *hostPtr,
                                      cl_int &errcodeRet) {
 
-    if (!MemObjHelper::validateMemoryPropertiesForImage(MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties), flags, flagsIntel, imageDesc->mem_object)) {
+    if (!MemObjHelper::validateMemoryPropertiesForImage(memoryProperties, flags, flagsIntel, imageDesc->mem_object)) {
         errcodeRet = CL_INVALID_VALUE;
         return nullptr;
     }
 
     bool isHostPtrUsed = (hostPtr != nullptr);
-    bool areHostPtrFlagsUsed = isValueSet(properties.flags, CL_MEM_COPY_HOST_PTR) || isValueSet(properties.flags, CL_MEM_USE_HOST_PTR);
+    bool areHostPtrFlagsUsed = memoryProperties.flags.copyHostPtr || memoryProperties.flags.useHostPtr;
     if (isHostPtrUsed != areHostPtrFlagsUsed) {
         errcodeRet = CL_INVALID_HOST_PTR;
         return nullptr;
@@ -1062,15 +1073,14 @@ Image *Image::validateAndCreateImage(Context *context,
         return nullptr;
     }
 
-    const auto surfaceFormat = Image::getSurfaceFormatFromTable(properties.flags, imageFormat);
+    const auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, imageFormat);
 
-    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(properties);
     errcodeRet = Image::validate(context, memoryProperties, surfaceFormat, imageDesc, hostPtr);
     if (errcodeRet != CL_SUCCESS) {
         return nullptr;
     }
 
-    return Image::create(context, properties, surfaceFormat, imageDesc, hostPtr, errcodeRet);
+    return Image::create(context, memoryProperties, flags, flagsIntel, surfaceFormat, imageDesc, hostPtr, errcodeRet);
 }
 
 bool Image::isValidSingleChannelFormat(const cl_image_format *imageFormat) {

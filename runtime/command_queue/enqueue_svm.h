@@ -318,12 +318,25 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemcpy(cl_bool blockingCopy,
         pageFaultManager->moveAllocationToGpuDomain(reinterpret_cast<void *>(srcSvmData->gpuAllocation->getGpuAddress()));
     }
 
-    MultiDispatchInfo dispatchInfo;
-    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::CopyBufferToBuffer,
-                                                                                                        this->getContext(), this->getDevice());
-    BuiltInOwnershipWrapper builtInLock(builder, this->context);
-    BuiltinOpParams operationParams;
+    auto isStatelessRequired = false;
+    if (srcSvmData != nullptr) {
+        isStatelessRequired = forceStateless(srcSvmData->size);
+    }
+    if (dstSvmData != nullptr) {
+        isStatelessRequired |= forceStateless(dstSvmData->size);
+    }
 
+    auto builtInType = EBuiltInOps::CopyBufferToBuffer;
+    if (isStatelessRequired) {
+        builtInType = EBuiltInOps::CopyBufferToBufferStateless;
+    }
+
+    auto &builder = getDevice().getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(builtInType,
+                                                                                                        this->getContext(),
+                                                                                                        this->getDevice());
+    BuiltInOwnershipWrapper builtInLock(builder, this->context);
+    MultiDispatchInfo dispatchInfo;
+    BuiltinOpParams operationParams;
     Surface *surfaces[2];
 
     void *alignedSrcPtr = alignDown(const_cast<void *>(srcPtr), 4);
@@ -448,7 +461,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueSVMMemFill(void *svmPtr,
     commandStreamReceieverOwnership.unlock();
 
     if (!patternAllocation) {
-        patternAllocation = memoryManager->allocateGraphicsMemoryWithProperties({patternSize, allocationType});
+        patternAllocation = memoryManager->allocateGraphicsMemoryWithProperties({getDevice().getRootDeviceIndex(), patternSize, allocationType});
     }
 
     if (patternSize == 1) {

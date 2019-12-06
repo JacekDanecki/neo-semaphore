@@ -38,6 +38,15 @@ static RegisterEmbeddedResource registerCopyBufferRectSrc(
 #include "runtime/built_ins/kernels/copy_buffer_rect.igdrcl_built_in"
         ));
 
+static RegisterEmbeddedResource registerCopyBufferRectStatelessSrc(
+    createBuiltinResourceName(
+        EBuiltInOps::CopyBufferRectStateless,
+        BuiltinCode::getExtension(BuiltinCode::ECodeType::Source))
+        .c_str(),
+    std::string(
+#include "runtime/built_ins/kernels/copy_buffer_rect_stateless.igdrcl_built_in"
+        ));
+
 static RegisterEmbeddedResource registerFillBufferSrc(
     createBuiltinResourceName(
         EBuiltInOps::FillBuffer,
@@ -45,6 +54,15 @@ static RegisterEmbeddedResource registerFillBufferSrc(
         .c_str(),
     std::string(
 #include "runtime/built_ins/kernels/fill_buffer.igdrcl_built_in"
+        ));
+
+static RegisterEmbeddedResource registerFillBufferStatelessSrc(
+    createBuiltinResourceName(
+        EBuiltInOps::FillBufferStateless,
+        BuiltinCode::getExtension(BuiltinCode::ECodeType::Source))
+        .c_str(),
+    std::string(
+#include "runtime/built_ins/kernels/fill_buffer_stateless.igdrcl_built_in"
         ));
 
 static RegisterEmbeddedResource registerCopyBufferToImage3dSrc(
@@ -56,6 +74,15 @@ static RegisterEmbeddedResource registerCopyBufferToImage3dSrc(
 #include "runtime/built_ins/kernels/copy_buffer_to_image3d.igdrcl_built_in"
         ));
 
+static RegisterEmbeddedResource registerCopyBufferToImage3dStatelessSrc(
+    createBuiltinResourceName(
+        EBuiltInOps::CopyBufferToImage3dStateless,
+        BuiltinCode::getExtension(BuiltinCode::ECodeType::Source))
+        .c_str(),
+    std::string(
+#include "runtime/built_ins/kernels/copy_buffer_to_image3d_stateless.igdrcl_built_in"
+        ));
+
 static RegisterEmbeddedResource registerCopyImage3dToBufferSrc(
     createBuiltinResourceName(
         EBuiltInOps::CopyImage3dToBuffer,
@@ -63,6 +90,15 @@ static RegisterEmbeddedResource registerCopyImage3dToBufferSrc(
         .c_str(),
     std::string(
 #include "runtime/built_ins/kernels/copy_image3d_to_buffer.igdrcl_built_in"
+        ));
+
+static RegisterEmbeddedResource registerCopyImage3dToBufferStatelessSrc(
+    createBuiltinResourceName(
+        EBuiltInOps::CopyImage3dToBufferStateless,
+        BuiltinCode::getExtension(BuiltinCode::ECodeType::Source))
+        .c_str(),
+    std::string(
+#include "runtime/built_ins/kernels/copy_image3d_to_buffer_stateless.igdrcl_built_in"
         ));
 
 static RegisterEmbeddedResource registerCopyImageToImage1dSrc(

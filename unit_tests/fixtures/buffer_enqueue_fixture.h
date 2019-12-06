@@ -6,7 +6,7 @@
  */
 
 #pragma once
-#include "runtime/helpers/hw_info.h"
+#include "core/helpers/hw_info.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
 #include "test.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
@@ -35,10 +35,8 @@ struct BufferEnqueueFixture : public HardwareParse,
 
     template <typename FamilyType>
     void initializeFixture() {
-        auto mockCsr = new MockCsrHw2<FamilyType>(*executionEnvironment);
-
-        executionEnvironment->commandStreamReceivers.resize(1);
-        executionEnvironment->commandStreamReceivers[0].push_back(std::unique_ptr<CommandStreamReceiver>(mockCsr));
+        EnvironmentWithCsrWrapper environment;
+        environment.setCsrType<MockCsrHw2<FamilyType>>();
 
         memoryManager = new MockMemoryManager(*executionEnvironment);
         executionEnvironment->memoryManager.reset(memoryManager);

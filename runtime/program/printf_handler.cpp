@@ -9,12 +9,12 @@
 
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/ptr_math.h"
+#include "core/program/print_formatter.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/program/print_formatter.h"
 
 namespace NEO {
 
@@ -25,8 +25,12 @@ PrintfHandler::~PrintfHandler() {
 }
 
 PrintfHandler *PrintfHandler::create(const MultiDispatchInfo &multiDispatchInfo, Device &device) {
-    if (multiDispatchInfo.usesStatelessPrintfSurface() ||
-        (multiDispatchInfo.peekMainKernel()->checkIfIsParentKernelAndBlocksUsesPrintf())) {
+    if (multiDispatchInfo.usesStatelessPrintfSurface()) {
+        return new PrintfHandler(device);
+    }
+    auto mainKernel = multiDispatchInfo.peekMainKernel();
+    if ((mainKernel != nullptr) &&
+        mainKernel->checkIfIsParentKernelAndBlocksUsesPrintf()) {
         return new PrintfHandler(device);
     }
     return nullptr;
@@ -38,7 +42,7 @@ void PrintfHandler::prepareDispatch(const MultiDispatchInfo &multiDispatchInfo) 
         return;
     }
     kernel = multiDispatchInfo.peekMainKernel();
-    printfSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({printfSurfaceSize, GraphicsAllocation::AllocationType::PRINTF_SURFACE});
+    printfSurface = device.getMemoryManager()->allocateGraphicsMemoryWithProperties({device.getRootDeviceIndex(), printfSurfaceSize, GraphicsAllocation::AllocationType::PRINTF_SURFACE});
     *reinterpret_cast<uint32_t *>(printfSurface->getUnderlyingBuffer()) = printfSurfaceInitialDataSize;
 
     auto printfPatchAddress = ptrOffset(reinterpret_cast<uintptr_t *>(kernel->getCrossThreadData()),

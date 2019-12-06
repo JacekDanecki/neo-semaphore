@@ -7,6 +7,7 @@
 
 #include "runtime/event/event_builder.h"
 #include "runtime/event/user_event.h"
+#include "runtime/helpers/enqueue_properties.h"
 #include "runtime/helpers/timestamp_packet.h"
 #include "runtime/memory_manager/surface.h"
 #include "runtime/os_interface/os_context.h"
@@ -43,12 +44,11 @@ HWTEST_F(EnqueueHandlerTest, GivenCommandStreamWithoutKernelWhenCommandEnqueuedT
     EventBuilder eventBuilder;
     Surface *surfaces[] = {surface.get()};
     auto blocking = true;
-    TimestampPacketContainer previousTimestampPacketNodes;
-    TimestampPacketContainer barrierTimestampPacketNodes;
+    TimestampPacketDependencies timestampPacketDependencies;
     EnqueueProperties enqueueProperties(false, false, false, true, nullptr);
 
-    mockCmdQ->enqueueCommandWithoutKernel(surfaces, 1, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, &previousTimestampPacketNodes,
-                                          barrierTimestampPacketNodes, eventsRequest, eventBuilder, 0);
+    mockCmdQ->enqueueCommandWithoutKernel(surfaces, 1, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, timestampPacketDependencies,
+                                          eventsRequest, eventBuilder, 0);
     EXPECT_EQ(allocation->getTaskCount(mockCmdQ->getGpgpuCommandStreamReceiver().getOsContext().getContextId()), 1u);
 }
 
@@ -61,8 +61,7 @@ HWTEST_F(EnqueueHandlerTest, givenNonBlitPropertyWhenEnqueueIsBlockedThenDontReg
 
     auto blockedCommandsDataForDependencyFlush = new KernelOperation(commandStream, *csr.getInternalAllocationStorage());
 
-    TimestampPacketContainer previousTimestampPacketNodes;
-    TimestampPacketContainer barrierTimestampPacketNodes;
+    TimestampPacketDependencies timestampPacketDependencies;
     MultiDispatchInfo multiDispatchInfo;
     EventsRequest eventsRequest(0, nullptr, nullptr);
     EventBuilder eventBuilder;
@@ -71,8 +70,8 @@ HWTEST_F(EnqueueHandlerTest, givenNonBlitPropertyWhenEnqueueIsBlockedThenDontReg
 
     auto blockedCommandsData = std::unique_ptr<KernelOperation>(blockedCommandsDataForDependencyFlush);
     Surface *surfaces[] = {nullptr};
-    mockCmdQ->enqueueBlocked(CL_COMMAND_MARKER, surfaces, size_t(0), multiDispatchInfo, &previousTimestampPacketNodes,
-                             barrierTimestampPacketNodes, blockedCommandsData, enqueuePropertiesForDependencyFlush, eventsRequest,
+    mockCmdQ->enqueueBlocked(CL_COMMAND_MARKER, surfaces, size_t(0), multiDispatchInfo, timestampPacketDependencies,
+                             blockedCommandsData, enqueuePropertiesForDependencyFlush, eventsRequest,
                              eventBuilder, std::unique_ptr<PrintfHandler>(nullptr));
     EXPECT_FALSE(blockedCommandsDataForDependencyFlush->blitEnqueue);
 }
@@ -86,8 +85,7 @@ HWTEST_F(EnqueueHandlerTest, givenBlitPropertyWhenEnqueueIsBlockedThenRegisterBl
 
     auto blockedCommandsDataForBlitEnqueue = new KernelOperation(commandStream, *csr.getInternalAllocationStorage());
 
-    TimestampPacketContainer previousTimestampPacketNodes;
-    TimestampPacketContainer barrierTimestampPacketNodes;
+    TimestampPacketDependencies timestampPacketDependencies;
     MultiDispatchInfo multiDispatchInfo;
     EventsRequest eventsRequest(0, nullptr, nullptr);
     EventBuilder eventBuilder;
@@ -95,16 +93,18 @@ HWTEST_F(EnqueueHandlerTest, givenBlitPropertyWhenEnqueueIsBlockedThenRegisterBl
     BlitProperties blitProperties;
     blitProperties.srcAllocation = reinterpret_cast<GraphicsAllocation *>(0x12345);
     blitProperties.dstAllocation = reinterpret_cast<GraphicsAllocation *>(0x56789);
-    const EnqueueProperties enqueuePropertiesForBlitEnqueue(true, false, false, false, &blitProperties);
+    BlitPropertiesContainer blitPropertiesContainer;
+    blitPropertiesContainer.push_back(blitProperties);
+    const EnqueueProperties enqueuePropertiesForBlitEnqueue(true, false, false, false, &blitPropertiesContainer);
 
     auto blockedCommandsData = std::unique_ptr<KernelOperation>(blockedCommandsDataForBlitEnqueue);
     Surface *surfaces[] = {nullptr};
-    mockCmdQ->enqueueBlocked(CL_COMMAND_READ_BUFFER, surfaces, size_t(0), multiDispatchInfo, &previousTimestampPacketNodes,
-                             barrierTimestampPacketNodes, blockedCommandsData, enqueuePropertiesForBlitEnqueue, eventsRequest,
+    mockCmdQ->enqueueBlocked(CL_COMMAND_READ_BUFFER, surfaces, size_t(0), multiDispatchInfo, timestampPacketDependencies,
+                             blockedCommandsData, enqueuePropertiesForBlitEnqueue, eventsRequest,
                              eventBuilder, std::unique_ptr<PrintfHandler>(nullptr));
     EXPECT_TRUE(blockedCommandsDataForBlitEnqueue->blitEnqueue);
-    EXPECT_EQ(blitProperties.srcAllocation, blockedCommandsDataForBlitEnqueue->blitProperties.srcAllocation);
-    EXPECT_EQ(blitProperties.dstAllocation, blockedCommandsDataForBlitEnqueue->blitProperties.dstAllocation);
+    EXPECT_EQ(blitProperties.srcAllocation, blockedCommandsDataForBlitEnqueue->blitPropertiesContainer.begin()->srcAllocation);
+    EXPECT_EQ(blitProperties.dstAllocation, blockedCommandsDataForBlitEnqueue->blitPropertiesContainer.begin()->dstAllocation);
 }
 
 HWTEST_F(DispatchFlagsTests, whenEnqueueCommandWithoutKernelThenPassCorrectDispatchFlags) {
@@ -115,14 +115,13 @@ HWTEST_F(DispatchFlagsTests, whenEnqueueCommandWithoutKernelThenPassCorrectDispa
     auto mockCsr = static_cast<CsrType *>(&mockCmdQ->getGpgpuCommandStreamReceiver());
 
     auto blocking = true;
-    TimestampPacketContainer previousTimestampPacketNodes;
-    TimestampPacketContainer barrierTimestampPacketNodes;
+    TimestampPacketDependencies timestampPacketDependencies;
     EventsRequest eventsRequest(0, nullptr, nullptr);
     EventBuilder eventBuilder;
 
     EnqueueProperties enqueueProperties(false, false, false, true, nullptr);
-    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, &previousTimestampPacketNodes,
-                                          barrierTimestampPacketNodes, eventsRequest, eventBuilder, 0);
+    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, timestampPacketDependencies,
+                                          eventsRequest, eventBuilder, 0);
 
     EXPECT_EQ(blocking, mockCsr->passedDispatchFlags.blocking);
     EXPECT_FALSE(mockCsr->passedDispatchFlags.implicitFlush);
@@ -145,8 +144,7 @@ HWTEST_F(DispatchFlagsTests, givenBlitEnqueueWhenDispatchingCommandsWithoutKerne
     auto buffer = std::unique_ptr<Buffer>(Buffer::create(context.get(), 0, 1, nullptr, retVal));
 
     auto blocking = true;
-    TimestampPacketContainer previousTimestampPacketNodes;
-    TimestampPacketContainer barrierTimestampPacketNodes;
+    TimestampPacketDependencies timestampPacketDependencies;
     EventsRequest eventsRequest(0, nullptr, nullptr);
     EventBuilder eventBuilder;
     BuiltinOpParams builtinOpParams;
@@ -155,13 +153,16 @@ HWTEST_F(DispatchFlagsTests, givenBlitEnqueueWhenDispatchingCommandsWithoutKerne
     MultiDispatchInfo multiDispatchInfo;
     multiDispatchInfo.setBuiltinOpParams(builtinOpParams);
 
-    mockCmdQ->obtainNewTimestampPacketNodes(1, previousTimestampPacketNodes, true);
-    BlitProperties blitProperties = mockCmdQ->processDispatchForBlitEnqueue(multiDispatchInfo, previousTimestampPacketNodes, barrierTimestampPacketNodes,
-                                                                            eventsRequest, mockCmdQ->getCS(0), 0, false);
+    mockCmdQ->obtainNewTimestampPacketNodes(1, timestampPacketDependencies.previousEnqueueNodes, true);
+    BlitProperties blitProperties = mockCmdQ->processDispatchForBlitEnqueue(multiDispatchInfo, timestampPacketDependencies,
+                                                                            eventsRequest, mockCmdQ->getCS(0), CL_COMMAND_READ_BUFFER, false);
 
-    EnqueueProperties enqueueProperties(true, false, false, false, &blitProperties);
-    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, &previousTimestampPacketNodes,
-                                          barrierTimestampPacketNodes, eventsRequest, eventBuilder, 0);
+    BlitPropertiesContainer blitPropertiesContainer;
+    blitPropertiesContainer.push_back(blitProperties);
+
+    EnqueueProperties enqueueProperties(true, false, false, false, &blitPropertiesContainer);
+    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, timestampPacketDependencies,
+                                          eventsRequest, eventBuilder, 0);
 
     EXPECT_TRUE(mockCsr->passedDispatchFlags.implicitFlush);
     EXPECT_TRUE(mockCsr->passedDispatchFlags.guardCommandBufferWithPipeControl);
@@ -180,8 +181,7 @@ HWTEST_F(DispatchFlagsTests, givenN1EnabledWhenDispatchingWithoutKernelTheAllowO
     cl_int retVal = CL_SUCCESS;
     auto buffer = std::unique_ptr<Buffer>(Buffer::create(context.get(), 0, 1, nullptr, retVal));
 
-    TimestampPacketContainer previousTimestampPacketNodes;
-    TimestampPacketContainer barrierTimestampPacketNodes;
+    TimestampPacketDependencies timestampPacketDependencies;
     EventsRequest eventsRequest(0, nullptr, nullptr);
     EventBuilder eventBuilder;
 
@@ -192,20 +192,21 @@ HWTEST_F(DispatchFlagsTests, givenN1EnabledWhenDispatchingWithoutKernelTheAllowO
     MultiDispatchInfo multiDispatchInfo;
     multiDispatchInfo.setBuiltinOpParams(builtinOpParams);
 
-    mockCmdQ->obtainNewTimestampPacketNodes(1, previousTimestampPacketNodes, true);
-    BlitProperties blitProperties = mockCmdQ->processDispatchForBlitEnqueue(multiDispatchInfo, previousTimestampPacketNodes, barrierTimestampPacketNodes,
-                                                                            eventsRequest, mockCmdQ->getCS(0), 0, false);
-    EnqueueProperties enqueueProperties(true, false, false, false, &blitProperties);
-    enqueueProperties.blitProperties = &blitProperties;
+    mockCmdQ->obtainNewTimestampPacketNodes(1, timestampPacketDependencies.previousEnqueueNodes, true);
+    BlitProperties blitProperties = mockCmdQ->processDispatchForBlitEnqueue(multiDispatchInfo, timestampPacketDependencies,
+                                                                            eventsRequest, mockCmdQ->getCS(0), CL_COMMAND_READ_BUFFER, false);
+    BlitPropertiesContainer blitPropertiesContainer;
+    blitPropertiesContainer.push_back(blitProperties);
+    EnqueueProperties enqueueProperties(true, false, false, false, &blitPropertiesContainer);
 
     mockCsr->nTo1SubmissionModelEnabled = false;
-    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocked, enqueueProperties, &previousTimestampPacketNodes,
-                                          barrierTimestampPacketNodes, eventsRequest, eventBuilder, 0);
+    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocked, enqueueProperties, timestampPacketDependencies,
+                                          eventsRequest, eventBuilder, 0);
     EXPECT_FALSE(mockCsr->passedDispatchFlags.outOfOrderExecutionAllowed);
 
     mockCsr->nTo1SubmissionModelEnabled = true;
-    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocked, enqueueProperties, &previousTimestampPacketNodes,
-                                          barrierTimestampPacketNodes, eventsRequest, eventBuilder, 0);
+    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocked, enqueueProperties, timestampPacketDependencies,
+                                          eventsRequest, eventBuilder, 0);
     EXPECT_TRUE(mockCsr->passedDispatchFlags.outOfOrderExecutionAllowed);
 }
 
@@ -213,25 +214,28 @@ HWTEST_F(EnqueueHandlerTest, GivenCommandStreamWithoutKernelAndZeroSurfacesWhenE
     std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pDevice, 0));
 
     mockCmdQ->commandRequireCacheFlush = true;
-    mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr, 0, false, nullptr, 0, nullptr, nullptr);
+    MultiDispatchInfo multiDispatch;
+    mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr, 0, false, multiDispatch, 0, nullptr, nullptr);
 
     auto requiredCmdStreamSize = alignUp(PipeControlHelper<FamilyType>::getSizeForPipeControlWithPostSyncOperation(pDevice->getHardwareInfo()),
                                          MemoryConstants::cacheLineSize);
 
     EXPECT_EQ(mockCmdQ->getCS(0).getUsed(), requiredCmdStreamSize);
 }
+
 HWTEST_F(EnqueueHandlerTest, givenTimestampPacketWriteEnabledAndCommandWithCacheFlushWhenEnqueueingHandlerThenObtainNewStamp) {
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.timestampPacketWriteEnabled = true;
 
-    auto mockTagAllocator = new MockTagAllocator<>(pDevice->getMemoryManager());
+    auto mockTagAllocator = new MockTagAllocator<>(csr.rootDeviceIndex, pDevice->getMemoryManager());
     csr.timestampPacketAllocator.reset(mockTagAllocator);
     std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pDevice, 0));
     mockCmdQ->commandRequireCacheFlush = true;
 
     cl_event event;
 
-    mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr, 0, false, nullptr, 0, nullptr, &event);
+    MultiDispatchInfo multiDispatch;
+    mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr, 0, false, multiDispatch, 0, nullptr, &event);
     auto node1 = mockCmdQ->timestampPacketContainer->peekNodes().at(0);
     EXPECT_NE(nullptr, node1);
     clReleaseEvent(event);
@@ -240,14 +244,15 @@ HWTEST_F(EnqueueHandlerTest, givenTimestampPacketWriteDisabledAndCommandWithCach
     auto &csr = pDevice->getUltCommandStreamReceiver<FamilyType>();
     csr.timestampPacketWriteEnabled = false;
 
-    auto mockTagAllocator = new MockTagAllocator<>(pDevice->getMemoryManager());
+    auto mockTagAllocator = new MockTagAllocator<>(pDevice->getRootDeviceIndex(), pDevice->getMemoryManager());
     csr.timestampPacketAllocator.reset(mockTagAllocator);
     std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pDevice, 0));
     mockCmdQ->commandRequireCacheFlush = true;
 
     cl_event event;
 
-    mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr, 0, false, nullptr, 0, nullptr, &event);
+    MultiDispatchInfo multiDispatch;
+    mockCmdQ->template enqueueHandler<CL_COMMAND_MARKER>(nullptr, 0, false, multiDispatch, 0, nullptr, &event);
     auto container = mockCmdQ->timestampPacketContainer.get();
     EXPECT_EQ(nullptr, container);
     clReleaseEvent(event);

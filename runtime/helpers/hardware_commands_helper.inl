@@ -5,18 +5,19 @@
  *
  */
 
+#include "core/command_stream/preemption.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/ptr_math.h"
 #include "core/helpers/string.h"
+#include "core/indirect_heap/indirect_heap.h"
 #include "runtime/command_queue/local_id_gen.h"
 #include "runtime/command_stream/csr_definitions.h"
-#include "runtime/command_stream/preemption.h"
 #include "runtime/helpers/address_patch.h"
 #include "runtime/helpers/dispatch_info.h"
-#include "runtime/indirect_heap/indirect_heap.h"
 #include "runtime/kernel/kernel.h"
 #include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/program/block_kernel_manager.h"
 
 #include <cstring>
 
@@ -31,13 +32,24 @@ bool HardwareCommandsHelper<GfxFamily>::isPipeControlPriorToPipelineSelectWArequ
 }
 
 template <typename GfxFamily>
-uint32_t HardwareCommandsHelper<GfxFamily>::computeSlmValues(uint32_t valueIn) {
-    auto value = std::max(valueIn, 1024u);
+uint32_t HardwareCommandsHelper<GfxFamily>::alignSlmSize(uint32_t slmSize) {
+    if (slmSize == 0u) {
+        return 0u;
+    }
+    slmSize = std::max(slmSize, 1024u);
+    slmSize = Math::nextPowerOfTwo(slmSize);
+    UNRECOVERABLE_IF(slmSize > 64u * KB);
+    return slmSize;
+}
+
+template <typename GfxFamily>
+uint32_t HardwareCommandsHelper<GfxFamily>::computeSlmValues(uint32_t slmSize) {
+    auto value = std::max(slmSize, 1024u);
     value = Math::nextPowerOfTwo(value);
     value = Math::getMinLsbSet(value);
     value = value - 9;
     DEBUG_BREAK_IF(value > 7);
-    return value * !!valueIn;
+    return value * !!slmSize;
 }
 
 template <typename GfxFamily>
@@ -121,6 +133,43 @@ size_t HardwareCommandsHelper<GfxFamily>::getTotalSizeRequiredSSH(
 }
 
 template <typename GfxFamily>
+size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredForExecutionModel(IndirectHeap::Type heapType, const Kernel &kernel) {
+    typedef typename GfxFamily::BINDING_TABLE_STATE BINDING_TABLE_STATE;
+
+    size_t totalSize = 0;
+    BlockKernelManager *blockManager = kernel.getProgram()->getBlockKernelManager();
+    uint32_t blockCount = static_cast<uint32_t>(blockManager->getCount());
+    uint32_t maxBindingTableCount = 0;
+
+    if (heapType == IndirectHeap::SURFACE_STATE) {
+        totalSize = BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE - 1;
+
+        for (uint32_t i = 0; i < blockCount; i++) {
+            const KernelInfo *pBlockInfo = blockManager->getBlockKernelInfo(i);
+            totalSize += pBlockInfo->heapInfo.pKernelHeader->SurfaceStateHeapSize;
+            totalSize = alignUp(totalSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
+
+            maxBindingTableCount = std::max(maxBindingTableCount, pBlockInfo->patchInfo.bindingTableState->Count);
+        }
+    }
+
+    if (heapType == IndirectHeap::INDIRECT_OBJECT || heapType == IndirectHeap::SURFACE_STATE) {
+        BuiltIns &builtIns = *kernel.getDevice().getExecutionEnvironment()->getBuiltIns();
+        SchedulerKernel &scheduler = builtIns.getSchedulerKernel(kernel.getContext());
+
+        if (heapType == IndirectHeap::INDIRECT_OBJECT) {
+            totalSize += getSizeRequiredIOH(scheduler);
+        } else {
+            totalSize += getSizeRequiredSSH(scheduler);
+
+            totalSize += maxBindingTableCount * sizeof(BINDING_TABLE_STATE) * DeviceQueue::interfaceDescriptorEntries;
+            totalSize = alignUp(totalSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
+        }
+    }
+    return totalSize;
+}
+
+template <typename GfxFamily>
 size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
     const IndirectHeap &indirectHeap,
     uint64_t offsetInterfaceDescriptor,
@@ -167,6 +216,7 @@ size_t HardwareCommandsHelper<GfxFamily>::sendInterfaceDescriptorData(
                          kernel.getDevice().getHardwareInfo());
 
     PreemptionHelper::programInterfaceDescriptorDataPreemption<GfxFamily>(pInterfaceDescriptor, preemptionMode);
+    HardwareCommandsHelper<GfxFamily>::adjustInterfaceDescriptorData(pInterfaceDescriptor, kernel.getDevice().getHardwareInfo());
 
     pInterfaceDescriptor->setBindingTableEntryCount(bindingTablePrefetchSize);
 
@@ -244,7 +294,7 @@ size_t HardwareCommandsHelper<GfxFamily>::sendIndirectState(
 
     using SAMPLER_STATE = typename GfxFamily::SAMPLER_STATE;
 
-    DEBUG_BREAK_IF(simd != 8 && simd != 16 && simd != 32);
+    DEBUG_BREAK_IF(simd != 1 && simd != 8 && simd != 16 && simd != 32);
     auto kernelUsesLocalIds = HardwareCommandsHelper<GfxFamily>::kernelUsesLocalIds(kernel);
     auto inlineDataProgrammingRequired = HardwareCommandsHelper<GfxFamily>::inlineDataProgrammingRequired(kernel);
 

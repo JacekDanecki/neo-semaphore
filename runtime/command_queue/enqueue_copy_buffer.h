@@ -14,8 +14,6 @@
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/surface.h"
 
-#include "hw_cmds.h"
-
 #include <new>
 
 namespace NEO {
@@ -34,7 +32,7 @@ cl_int CommandQueueHw<GfxFamily>::enqueueCopyBuffer(
     MultiDispatchInfo dispatchInfo;
     auto eBuiltInOpsType = EBuiltInOps::CopyBufferToBuffer;
 
-    if (forceStateless(size)) {
+    if (forceStateless(std::max(srcBuffer->getSize(), dstBuffer->getSize()))) {
         eBuiltInOpsType = EBuiltInOps::CopyBufferToBufferStateless;
     }
 

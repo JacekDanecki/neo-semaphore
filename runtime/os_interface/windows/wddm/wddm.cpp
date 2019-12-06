@@ -7,13 +7,14 @@
 
 #include "runtime/os_interface/windows/wddm/wddm.h"
 
+#include "core/command_stream/preemption.h"
+#include "core/gmm_helper/gmm_helper.h"
 #include "core/helpers/interlocked_max.h"
 #include "core/os_interface/windows/debug_registry_reader.h"
+#include "core/sku_info/operations/windows/sku_info_receiver.h"
 #include "core/utilities/stackvec.h"
-#include "runtime/command_stream/preemption.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/gmm_helper.h"
 #include "runtime/gmm_helper/page_table_mngr.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -27,7 +28,6 @@
 #include "runtime/os_interface/windows/wddm_engine_mapper.h"
 #include "runtime/os_interface/windows/wddm_residency_allocations_container.h"
 #include "runtime/platform/platform.h"
-#include "runtime/sku_info/operations/sku_info_receiver.h"
 
 #include "gmm_memory.h"
 
@@ -77,10 +77,12 @@ Wddm::Wddm() {
 }
 
 Wddm::~Wddm() {
+    temporaryResources.reset();
     resetPageTableManager(nullptr);
     destroyPagingQueue();
     destroyDevice();
     closeAdapter();
+    UNRECOVERABLE_IF(temporaryResources.get())
 }
 
 bool Wddm::init(HardwareInfo &outHardwareInfo) {
@@ -160,6 +162,7 @@ bool Wddm::queryAdapterInfo() {
         SkuInfoReceiver::receiveWaTableFromAdapterInfo(workaroundTable.get(), &adapterInfo);
 
         memcpy_s(&gfxPartition, sizeof(gfxPartition), &adapterInfo.GfxPartition, sizeof(GMM_GFX_PARTITIONING));
+        memcpy_s(&adapterBDF, sizeof(adapterBDF), &adapterInfo.stAdapterBDF, sizeof(ADAPTER_BDF));
 
         deviceRegistryPath = adapterInfo.DeviceRegistryPath;
 
@@ -359,7 +362,7 @@ bool Wddm::makeResident(const D3DKMT_HANDLE *handles, uint32_t count, bool cantT
 bool Wddm::mapGpuVirtualAddress(AllocationStorageData *allocationStorageData) {
     return mapGpuVirtualAddress(allocationStorageData->osHandleStorage->gmm,
                                 allocationStorageData->osHandleStorage->handle,
-                                0u, MemoryConstants::maxSvmAddress, reinterpret_cast<D3DGPU_VIRTUAL_ADDRESS>(allocationStorageData->cpuPtr),
+                                0u, MemoryConstants::maxSvmAddress, castToUint64(allocationStorageData->cpuPtr),
                                 allocationStorageData->osHandleStorage->gpuPtr);
 }
 
@@ -729,7 +732,7 @@ bool Wddm::createContext(OsContextWin &osContext) {
     CreateContext.PrivateDriverDataSize = sizeof(PrivateData);
     CreateContext.NodeOrdinal = WddmEngineMapper::engineNodeMap(osContext.getEngineType());
     CreateContext.pPrivateDriverData = &PrivateData;
-    CreateContext.ClientHint = D3DKMT_CLIENTHINT_OPENGL;
+    CreateContext.ClientHint = D3DKMT_CLIENTHINT_OPENCL;
     CreateContext.hDevice = device;
 
     status = gdi->createContext(&CreateContext);
@@ -762,7 +765,6 @@ bool Wddm::submit(uint64_t commandBuffer, size_t size, void *commandHeader, OsCo
         osContext.getResidencyController().getMonitoredFence().currentFenceValue++;
     }
     getDeviceState();
-    UNRECOVERABLE_IF(!status);
 
     return status;
 }
@@ -959,7 +961,7 @@ bool Wddm::configureDeviceAddressSpaceImpl() {
     if (!hardwareInfoTable[productFamily]) {
         return false;
     }
-    auto svmSize = hardwareInfoTable[productFamily]->capabilityTable.gpuAddressSpace == MemoryConstants::max48BitAddress
+    auto svmSize = hardwareInfoTable[productFamily]->capabilityTable.gpuAddressSpace >= MemoryConstants::max64BitAppAddress
                        ? maximumApplicationAddress + 1u
                        : 0u;
 
@@ -969,6 +971,10 @@ bool Wddm::configureDeviceAddressSpaceImpl() {
 void Wddm::waitOnPagingFenceFromCpu() {
     while (currentPagingFenceValue > *getPagingFenceAddress())
         ;
+}
+
+void Wddm::setGmmInputArg(void *args) {
+    reinterpret_cast<GMM_INIT_IN_ARGS *>(args)->stAdapterBDF = this->adapterBDF;
 }
 
 void Wddm::updatePagingFenceValue(uint64_t newPagingFenceValue) {

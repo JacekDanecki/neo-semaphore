@@ -7,6 +7,7 @@
 
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
+#include "runtime/helpers/string_helpers.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/program/program.h"
 
@@ -158,7 +159,6 @@ T *Program::createFromIL(Context *ctx,
 
     T *program = new T(*ctx->getDevice(0)->getExecutionEnvironment(), ctx, false);
     errcodeRet = program->createProgramFromBinary(il, length);
-
     program->createdFrom = CreatedFrom::IL;
 
     if (errcodeRet != CL_SUCCESS) {

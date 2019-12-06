@@ -5,10 +5,10 @@
  *
  */
 
+#include "core/helpers/hw_helper_bdw_plus.inl"
 #include "runtime/aub/aub_helper_bdw_plus.inl"
 #include "runtime/gen12lp/helpers_gen12lp.h"
 #include "runtime/helpers/flat_batch_buffer_helper_hw.inl"
-#include "runtime/helpers/hw_helper_bdw_plus.inl"
 
 #include "engine_node.h"
 
@@ -17,7 +17,7 @@ typedef TGLLPFamily Family;
 
 template <>
 void HwHelperHw<Family>::adjustDefaultEngineType(HardwareInfo *pHwInfo) {
-    if (!pHwInfo->featureTable.ftrCCSNode) {
+    if (!pHwInfo->featureTable.ftrCCSNode || pHwInfo->workaroundTable.waForceDefaultRCSEngine) {
         pHwInfo->capabilityTable.defaultEngineType = aub_stream::ENGINE_RCS;
     }
 }
@@ -51,10 +51,11 @@ bool HwHelperHw<Family>::obtainRenderBufferCompressionPreference(const HardwareI
 }
 
 template <>
-void HwHelperHw<Family>::checkResourceCompatibility(Buffer *buffer, cl_int &errorCode) {
-    if (buffer->getGraphicsAllocation()->getAllocationType() == GraphicsAllocation::AllocationType::BUFFER_COMPRESSED) {
-        errorCode = CL_INVALID_MEM_OBJECT;
+bool HwHelperHw<Family>::checkResourceCompatibility(GraphicsAllocation &graphicsAllocation) {
+    if (graphicsAllocation.getAllocationType() == GraphicsAllocation::AllocationType::BUFFER_COMPRESSED) {
+        return false;
     }
+    return true;
 }
 
 template <>
@@ -78,6 +79,11 @@ uint32_t HwHelperHw<Family>::getPitchAlignmentForImage(const HardwareInfo *hwInf
         return 4u;
     }
     return 4u;
+}
+
+template <>
+uint32_t HwHelperHw<Family>::getMetricsLibraryGenId() const {
+    return static_cast<uint32_t>(MetricsLibraryApi::ClientGen::Gen12);
 }
 
 template <>

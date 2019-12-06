@@ -68,6 +68,9 @@ using cl_unified_shared_memory_capabilities_intel = cl_bitfield;
 //Used with createBuffer
 #define CL_MEM_ALLOW_UNRESTRICTED_SIZE_INTEL (1 << 23)
 
+typedef cl_uint cl_execution_info_intel;
+#define CL_EXECUTION_INFO_MAX_WORKGROUP_COUNT_INTEL 0x10100
+
 /******************************
 *        UNIFIED MEMORY       *
 *******************************/
@@ -96,6 +99,7 @@ using cl_unified_shared_memory_capabilities_intel = cl_bitfield;
 #define CL_MEM_ALLOC_TYPE_INTEL 0x419A
 #define CL_MEM_ALLOC_BASE_PTR_INTEL 0x419B
 #define CL_MEM_ALLOC_SIZE_INTEL 0x419C
+#define CL_MEM_ALLOC_DEVICE_INTEL 0x419D
 
 /* cl_unified_shared_memory_type_intel */
 #define CL_MEM_TYPE_UNKNOWN_INTEL 0x4196
@@ -111,6 +115,7 @@ using cl_unified_shared_memory_capabilities_intel = cl_bitfield;
 
 /* cl_command_type */
 #define CL_COMMAND_MEMSET_INTEL 0x4204
+#define CL_COMMAND_MEMFILL_INTEL 0x4204
 #define CL_COMMAND_MEMCPY_INTEL 0x4205
 #define CL_COMMAND_MIGRATEMEM_INTEL 0x4206
 #define CL_COMMAND_MEMADVISE_INTEL 0x4207

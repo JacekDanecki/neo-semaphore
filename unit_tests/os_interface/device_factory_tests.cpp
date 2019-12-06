@@ -5,15 +5,16 @@
  *
  */
 
+#include "core/helpers/hw_info.h"
 #include "core/memory_manager/memory_constants.h"
+#include "core/os_interface/os_library.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/hw_info.h"
 #include "runtime/helpers/options.h"
 #include "runtime/os_interface/device_factory.h"
 #include "runtime/os_interface/os_interface.h"
-#include "runtime/os_interface/os_library.h"
 #include "runtime/platform/platform.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
 
 #include "gtest/gtest.h"
 
@@ -148,6 +149,7 @@ TEST_F(DeviceFactoryTest, givenCreateMultipleRootDevicesDebugFlagWhenGetDevicesI
 
     ASSERT_TRUE(success);
     EXPECT_EQ(requiredDeviceCount, numDevices);
+    EXPECT_EQ(requiredDeviceCount, executionEnvironment->rootDeviceEnvironments.size());
 }
 
 TEST_F(DeviceFactoryTest, givenCreateMultipleRootDevicesDebugFlagWhenGetDevicesForProductFamilyOverrideIsCalledThenNumberOfReturnedDevicesIsEqualToDebugVariable) {
@@ -161,6 +163,58 @@ TEST_F(DeviceFactoryTest, givenCreateMultipleRootDevicesDebugFlagWhenGetDevicesF
 
     ASSERT_TRUE(success);
     EXPECT_EQ(requiredDeviceCount, numDevices);
+}
+
+TEST_F(DeviceFactoryTest, givenSetCommandStreamReceiverInAubModeForTgllpProductFamilyWhenGetDevicesForProductFamilyOverrideIsCalledThenAubCenterIsInitializedCorrectly) {
+    DeviceFactoryCleaner cleaner;
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.SetCommandStreamReceiver.set(1);
+    DebugManager.flags.ProductFamilyOverride.set("tgllp");
+
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+
+    size_t numDevices = 0;
+    bool success = DeviceFactory::getDevicesForProductFamilyOverride(numDevices, executionEnvironment);
+    ASSERT_TRUE(success);
+
+    auto rootDeviceEnvironment = static_cast<MockRootDeviceEnvironment *>(executionEnvironment.rootDeviceEnvironments[0].get());
+
+    EXPECT_TRUE(rootDeviceEnvironment->initAubCenterCalled);
+    EXPECT_FALSE(rootDeviceEnvironment->localMemoryEnabledReceived);
+}
+
+TEST_F(DeviceFactoryTest, givenSetCommandStreamReceiverInAubModeWhenGetDevicesForProductFamilyOverrideIsCalledThenAllAubCentersAreInitializedCorrectly) {
+    DeviceFactoryCleaner cleaner;
+    DebugManagerStateRestore stateRestore;
+    auto requiredDeviceCount = 2u;
+    DebugManager.flags.CreateMultipleRootDevices.set(requiredDeviceCount);
+    DebugManager.flags.SetCommandStreamReceiver.set(1);
+    DebugManager.flags.ProductFamilyOverride.set("tgllp");
+
+    MockExecutionEnvironment executionEnvironment(*platformDevices, true, requiredDeviceCount);
+
+    size_t numDevices = 0;
+    bool success = DeviceFactory::getDevicesForProductFamilyOverride(numDevices, executionEnvironment);
+    ASSERT_TRUE(success);
+    EXPECT_EQ(requiredDeviceCount, numDevices);
+
+    for (auto rootDeviceIndex = 0u; rootDeviceIndex < requiredDeviceCount; rootDeviceIndex++) {
+        auto rootDeviceEnvironment = static_cast<MockRootDeviceEnvironment *>(executionEnvironment.rootDeviceEnvironments[rootDeviceIndex].get());
+        EXPECT_TRUE(rootDeviceEnvironment->initAubCenterCalled);
+        EXPECT_FALSE(rootDeviceEnvironment->localMemoryEnabledReceived);
+    }
+}
+
+TEST_F(DeviceFactoryTest, givenInvalidHwConfigStringGetDevicesForProductFamilyOverrideReturnsFalse) {
+    DeviceFactoryCleaner cleaner;
+    DebugManagerStateRestore stateRestore;
+    DebugManager.flags.HardwareInfoOverride.set("1x3");
+
+    MockExecutionEnvironment executionEnvironment(*platformDevices);
+
+    size_t numDevices = 0;
+    bool success = DeviceFactory::getDevicesForProductFamilyOverride(numDevices, executionEnvironment);
+    EXPECT_FALSE(success);
 }
 
 TEST_F(DeviceFactoryTest, givenGetDevicesCallWhenItIsDoneThenOsInterfaceIsAllocated) {

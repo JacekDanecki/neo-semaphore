@@ -7,13 +7,13 @@
 
 #include "runtime/built_ins/built_ins.h"
 
+#include "core/compiler_interface/compiler_interface.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/debug_helpers.h"
 #include "runtime/built_ins/aux_translation_builtin.h"
 #include "runtime/built_ins/built_ins.inl"
 #include "runtime/built_ins/sip.h"
 #include "runtime/built_ins/vme_dispatch_builder.h"
-#include "runtime/compiler_interface/compiler_interface.h"
 #include "runtime/helpers/built_ins_helper.h"
 #include "runtime/helpers/convert_color.h"
 #include "runtime/helpers/dispatch_info_builder.h"
@@ -208,8 +208,8 @@ class BuiltInOp<EBuiltInOps::CopyBufferToBuffer> : public BuiltinDispatchInfoBui
                  "CopyBufferToBufferMiddle", kernMiddle,
                  "CopyBufferToBufferRightLeftover", kernRightLeftover);
     }
-
-    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+    template <typename OffsetType>
+    bool buildDispatchInfosTyped(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const {
         DispatchInfoBuilder<SplitDispatch::Dim::d1D, SplitDispatch::SplitMode::KernelSplit> kernelSplit1DBuilder;
         multiDispatchInfo.setBuiltinOpParams(operationParams);
         uintptr_t start = reinterpret_cast<uintptr_t>(operationParams.dstPtr) + operationParams.dstOffset.x;
@@ -258,14 +258,14 @@ class BuiltInOp<EBuiltInOps::CopyBufferToBuffer> : public BuiltinDispatchInfoBui
         kernelSplit1DBuilder.setUnifiedMemorySyncRequirement(operationParams.unifiedMemoryArgsRequireMemSync);
 
         // Set-up srcOffset
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 2, static_cast<uint32_t>(operationParams.srcOffset.x));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 2, static_cast<uint32_t>(operationParams.srcOffset.x + leftSize));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 2, static_cast<uint32_t>(operationParams.srcOffset.x + leftSize + middleSizeBytes));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 2, static_cast<OffsetType>(operationParams.srcOffset.x));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 2, static_cast<OffsetType>(operationParams.srcOffset.x + leftSize));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 2, static_cast<OffsetType>(operationParams.srcOffset.x + leftSize + middleSizeBytes));
 
         // Set-up dstOffset
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 3, static_cast<uint32_t>(operationParams.dstOffset.x));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 3, static_cast<uint32_t>(operationParams.dstOffset.x + leftSize));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 3, static_cast<uint32_t>(operationParams.dstOffset.x + leftSize + middleSizeBytes));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 3, static_cast<OffsetType>(operationParams.dstOffset.x));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 3, static_cast<OffsetType>(operationParams.dstOffset.x + leftSize));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 3, static_cast<OffsetType>(operationParams.dstOffset.x + leftSize + middleSizeBytes));
 
         // Set-up work sizes
         // Note for split walker, it would be just builder.SetDipatchGeometry(GWS, ELWS, OFFSET)
@@ -275,6 +275,10 @@ class BuiltInOp<EBuiltInOps::CopyBufferToBuffer> : public BuiltinDispatchInfoBui
         kernelSplit1DBuilder.bake(multiDispatchInfo);
 
         return true;
+    }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint32_t>(multiDispatchInfo, operationParams);
     }
 
   protected:
@@ -298,6 +302,10 @@ class BuiltInOp<EBuiltInOps::CopyBufferToBufferStateless> : public BuiltInOp<EBu
                  "CopyBufferToBufferMiddle", kernMiddle,
                  "CopyBufferToBufferRightLeftover", kernRightLeftover);
     }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo, operationParams);
+    }
 };
 
 template <>
@@ -313,7 +321,8 @@ class BuiltInOp<EBuiltInOps::CopyBufferRect> : public BuiltinDispatchInfoBuilder
                  "CopyBufferRectBytes3d", kernelBytes[2]);
     }
 
-    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+    template <typename OffsetType>
+    bool buildDispatchInfosTyped(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const {
         DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::NoSplit> kernelNoSplit3DBuilder;
         multiDispatchInfo.setBuiltinOpParams(operationParams);
         size_t hostPtrSize = 0;
@@ -372,20 +381,20 @@ class BuiltInOp<EBuiltInOps::CopyBufferRect> : public BuiltinDispatchInfoBuilder
         }
 
         // arg2 = srcOrigin
-        uint32_t kSrcOrigin[4] = {static_cast<uint32_t>(operationParams.srcOffset.x + srcOffsetFromAlignedPtr), (uint32_t)operationParams.srcOffset.y, (uint32_t)operationParams.srcOffset.z, 0};
-        kernelNoSplit3DBuilder.setArg(2, sizeof(uint32_t) * 4, kSrcOrigin);
+        OffsetType kSrcOrigin[4] = {static_cast<OffsetType>(operationParams.srcOffset.x + srcOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.srcOffset.y), static_cast<OffsetType>(operationParams.srcOffset.z), 0};
+        kernelNoSplit3DBuilder.setArg(2, sizeof(OffsetType) * 4, kSrcOrigin);
 
         // arg3 = dstOrigin
-        uint32_t kDstOrigin[4] = {static_cast<uint32_t>(operationParams.dstOffset.x + dstOffsetFromAlignedPtr), (uint32_t)operationParams.dstOffset.y, (uint32_t)operationParams.dstOffset.z, 0};
-        kernelNoSplit3DBuilder.setArg(3, sizeof(uint32_t) * 4, kDstOrigin);
+        OffsetType kDstOrigin[4] = {static_cast<OffsetType>(operationParams.dstOffset.x + dstOffsetFromAlignedPtr), static_cast<OffsetType>(operationParams.dstOffset.y), static_cast<OffsetType>(operationParams.dstOffset.z), 0};
+        kernelNoSplit3DBuilder.setArg(3, sizeof(OffsetType) * 4, kDstOrigin);
 
         // arg4 = srcPitch
-        uint32_t kSrcPitch[2] = {(uint32_t)operationParams.srcRowPitch, (uint32_t)operationParams.srcSlicePitch};
-        kernelNoSplit3DBuilder.setArg(4, sizeof(uint32_t) * 2, kSrcPitch);
+        OffsetType kSrcPitch[2] = {static_cast<OffsetType>(operationParams.srcRowPitch), static_cast<OffsetType>(operationParams.srcSlicePitch)};
+        kernelNoSplit3DBuilder.setArg(4, sizeof(OffsetType) * 2, kSrcPitch);
 
         // arg5 = dstPitch
-        uint32_t kDstPitch[2] = {(uint32_t)operationParams.dstRowPitch, (uint32_t)operationParams.dstSlicePitch};
-        kernelNoSplit3DBuilder.setArg(5, sizeof(uint32_t) * 2, kDstPitch);
+        OffsetType kDstPitch[2] = {static_cast<OffsetType>(operationParams.dstRowPitch), static_cast<OffsetType>(operationParams.dstSlicePitch)};
+        kernelNoSplit3DBuilder.setArg(5, sizeof(OffsetType) * 2, kDstPitch);
 
         // Set-up work sizes
         kernelNoSplit3DBuilder.setDispatchGeometry(operationParams.size, Vec3<size_t>{0, 0, 0}, Vec3<size_t>{0, 0, 0});
@@ -394,15 +403,37 @@ class BuiltInOp<EBuiltInOps::CopyBufferRect> : public BuiltinDispatchInfoBuilder
         return true;
     }
 
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint32_t>(multiDispatchInfo, operationParams);
+    }
+
   protected:
     Kernel *kernelBytes[3];
+    BuiltInOp(BuiltIns &kernelsLib) : BuiltinDispatchInfoBuilder(kernelsLib), kernelBytes{nullptr} {};
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::CopyBufferRectStateless> : public BuiltInOp<EBuiltInOps::CopyBufferRect> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device)
+        : BuiltInOp<EBuiltInOps::CopyBufferRect>(kernelsLib) {
+        populate(context, device,
+                 EBuiltInOps::CopyBufferRectStateless,
+                 "-cl-intel-greater-than-4GB-buffer-required",
+                 "CopyBufferRectBytes2d", kernelBytes[0],
+                 "CopyBufferRectBytes2d", kernelBytes[1],
+                 "CopyBufferRectBytes3d", kernelBytes[2]);
+    }
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo, operationParams);
+    }
 };
 
 template <>
 class BuiltInOp<EBuiltInOps::FillBuffer> : public BuiltinDispatchInfoBuilder {
   public:
     BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device)
-        : BuiltinDispatchInfoBuilder(kernelsLib), kernLeftLeftover(nullptr), kernMiddle(nullptr), kernRightLeftover(nullptr) {
+        : BuiltinDispatchInfoBuilder(kernelsLib) {
         populate(context, device,
                  EBuiltInOps::FillBuffer,
                  "",
@@ -411,7 +442,8 @@ class BuiltInOp<EBuiltInOps::FillBuffer> : public BuiltinDispatchInfoBuilder {
                  "FillBufferRightLeftover", kernRightLeftover);
     }
 
-    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+    template <typename OffsetType>
+    bool buildDispatchInfosTyped(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const {
         DispatchInfoBuilder<SplitDispatch::Dim::d1D, SplitDispatch::SplitMode::KernelSplit> kernelSplit1DBuilder;
         multiDispatchInfo.setBuiltinOpParams(operationParams);
         uintptr_t start = reinterpret_cast<uintptr_t>(operationParams.dstPtr) + operationParams.dstOffset.x;
@@ -446,17 +478,17 @@ class BuiltInOp<EBuiltInOps::FillBuffer> : public BuiltinDispatchInfoBuilder {
         }
 
         // Set-up dstOffset
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 1, static_cast<uint32_t>(operationParams.dstOffset.x));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 1, static_cast<uint32_t>(operationParams.dstOffset.x + leftSize));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 1, static_cast<uint32_t>(operationParams.dstOffset.x + leftSize + middleSizeBytes));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 1, static_cast<OffsetType>(operationParams.dstOffset.x));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 1, static_cast<OffsetType>(operationParams.dstOffset.x + leftSize));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 1, static_cast<OffsetType>(operationParams.dstOffset.x + leftSize + middleSizeBytes));
 
         // Set-up srcMemObj with pattern
         kernelSplit1DBuilder.setArgSvm(2, operationParams.srcMemObj->getSize(), operationParams.srcMemObj->getGraphicsAllocation()->getUnderlyingBuffer(), operationParams.srcMemObj->getGraphicsAllocation(), CL_MEM_READ_ONLY);
 
         // Set-up patternSizeInEls
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 3, static_cast<uint32_t>(operationParams.srcMemObj->getSize()));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 3, static_cast<uint32_t>(operationParams.srcMemObj->getSize() / middleElSize));
-        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 3, static_cast<uint32_t>(operationParams.srcMemObj->getSize()));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Left, 3, static_cast<OffsetType>(operationParams.srcMemObj->getSize()));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Middle, 3, static_cast<OffsetType>(operationParams.srcMemObj->getSize() / middleElSize));
+        kernelSplit1DBuilder.setArg(SplitDispatch::RegionCoordX::Right, 3, static_cast<OffsetType>(operationParams.srcMemObj->getSize()));
 
         // Set-up work sizes
         // Note for split walker, it would be just builder.SetDipatchGeomtry(GWS, ELWS, OFFSET)
@@ -468,17 +500,39 @@ class BuiltInOp<EBuiltInOps::FillBuffer> : public BuiltinDispatchInfoBuilder {
         return true;
     }
 
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint32_t>(multiDispatchInfo, operationParams);
+    }
+
   protected:
-    Kernel *kernLeftLeftover;
-    Kernel *kernMiddle;
-    Kernel *kernRightLeftover;
+    Kernel *kernLeftLeftover = nullptr;
+    Kernel *kernMiddle = nullptr;
+    Kernel *kernRightLeftover = nullptr;
+
+    BuiltInOp(BuiltIns &kernelsLib) : BuiltinDispatchInfoBuilder(kernelsLib) {}
+};
+
+template <>
+class BuiltInOp<EBuiltInOps::FillBufferStateless> : public BuiltInOp<EBuiltInOps::FillBuffer> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device) : BuiltInOp<EBuiltInOps::FillBuffer>(kernelsLib) {
+        populate(context, device,
+                 EBuiltInOps::FillBufferStateless,
+                 "-cl-intel-greater-than-4GB-buffer-required",
+                 "FillBufferLeftLeftover", kernLeftLeftover,
+                 "FillBufferMiddle", kernMiddle,
+                 "FillBufferRightLeftover", kernRightLeftover);
+    }
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo, operationParams);
+    }
 };
 
 template <>
 class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBuilder {
   public:
     BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device)
-        : BuiltinDispatchInfoBuilder(kernelsLib), kernelBytes{nullptr} {
+        : BuiltinDispatchInfoBuilder(kernelsLib) {
         populate(context, device,
                  EBuiltInOps::CopyBufferToImage3d,
                  "",
@@ -490,6 +544,15 @@ class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBu
     }
 
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint32_t>(multiDispatchInfo, operationParams);
+    }
+
+  protected:
+    Kernel *kernelBytes[5] = {nullptr};
+    BuiltInOp(BuiltIns &kernelsLib) : BuiltinDispatchInfoBuilder(kernelsLib){};
+
+    template <typename OffsetType>
+    bool buildDispatchInfosTyped(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const {
         DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::NoSplit> kernelNoSplit3DBuilder;
         multiDispatchInfo.setBuiltinOpParams(operationParams);
         DEBUG_BREAK_IF(!(((operationParams.srcPtr != nullptr) || (operationParams.srcMemObj != nullptr)) && (operationParams.dstPtr == nullptr)));
@@ -505,10 +568,10 @@ class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBu
 
         size_t region[] = {operationParams.size.x, operationParams.size.y, operationParams.size.z};
 
-        auto srcRowPitch = static_cast<uint32_t>(operationParams.dstRowPitch ? operationParams.dstRowPitch : region[0] * bytesPerPixel);
+        auto srcRowPitch = operationParams.dstRowPitch ? operationParams.dstRowPitch : region[0] * bytesPerPixel;
 
-        auto srcSlicePitch = static_cast<uint32_t>(
-            operationParams.dstSlicePitch ? operationParams.dstSlicePitch : ((dstImage->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY ? 1 : region[1]) * srcRowPitch));
+        auto srcSlicePitch =
+            operationParams.dstSlicePitch ? operationParams.dstSlicePitch : ((dstImage->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY ? 1 : region[1]) * srcRowPitch);
 
         // Determine size of host ptr surface for residency purposes
         size_t hostPtrSize = operationParams.srcPtr ? Image::calculateHostPtrSize(region, srcRowPitch, srcSlicePitch, bytesPerPixel, dstImage->getImageDesc().image_type) : 0;
@@ -530,7 +593,7 @@ class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBu
         kernelNoSplit3DBuilder.setArg(1, dstImageRedescribed, operationParams.dstMipLevel);
 
         // Set-up srcOffset
-        kernelNoSplit3DBuilder.setArg(2, static_cast<uint32_t>(operationParams.srcOffset.x));
+        kernelNoSplit3DBuilder.setArg(2, static_cast<OffsetType>(operationParams.srcOffset.x));
 
         // Set-up dstOrigin
         {
@@ -544,9 +607,9 @@ class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBu
 
         // Set-up srcRowPitch
         {
-            uint32_t pitch[] = {
-                static_cast<uint32_t>(srcRowPitch),
-                static_cast<uint32_t>(srcSlicePitch)};
+            OffsetType pitch[] = {
+                static_cast<OffsetType>(srcRowPitch),
+                static_cast<OffsetType>(srcSlicePitch)};
             kernelNoSplit3DBuilder.setArg(4, sizeof(pitch), pitch);
         }
 
@@ -556,16 +619,33 @@ class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBu
 
         return true;
     }
+};
 
-  protected:
-    Kernel *kernelBytes[5];
+template <>
+class BuiltInOp<EBuiltInOps::CopyBufferToImage3dStateless> : public BuiltInOp<EBuiltInOps::CopyBufferToImage3d> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device)
+        : BuiltInOp<EBuiltInOps::CopyBufferToImage3d>(kernelsLib) {
+        populate(context, device,
+                 EBuiltInOps::CopyBufferToImage3dStateless,
+                 "-cl-intel-greater-than-4GB-buffer-required",
+                 "CopyBufferToImage3dBytes", kernelBytes[0],
+                 "CopyBufferToImage3d2Bytes", kernelBytes[1],
+                 "CopyBufferToImage3d4Bytes", kernelBytes[2],
+                 "CopyBufferToImage3d8Bytes", kernelBytes[3],
+                 "CopyBufferToImage3d16Bytes", kernelBytes[4]);
+    }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo, operationParams);
+    }
 };
 
 template <>
 class BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> : public BuiltinDispatchInfoBuilder {
   public:
     BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device)
-        : BuiltinDispatchInfoBuilder(kernelsLib), kernelBytes{nullptr} {
+        : BuiltinDispatchInfoBuilder(kernelsLib) {
         populate(context, device,
                  EBuiltInOps::CopyImage3dToBuffer,
                  "",
@@ -577,6 +657,16 @@ class BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> : public BuiltinDispatchInfoBu
     }
 
     bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint32_t>(multiDispatchInfo, operationParams);
+    }
+
+  protected:
+    Kernel *kernelBytes[5] = {nullptr};
+
+    BuiltInOp(BuiltIns &kernelsLib) : BuiltinDispatchInfoBuilder(kernelsLib) {}
+
+    template <typename OffsetType>
+    bool buildDispatchInfosTyped(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const {
         DispatchInfoBuilder<SplitDispatch::Dim::d3D, SplitDispatch::SplitMode::NoSplit> kernelNoSplit3DBuilder;
         multiDispatchInfo.setBuiltinOpParams(operationParams);
         DEBUG_BREAK_IF(!((operationParams.srcPtr == nullptr) && ((operationParams.dstPtr != nullptr) || (operationParams.dstMemObj != nullptr))));
@@ -592,10 +682,10 @@ class BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> : public BuiltinDispatchInfoBu
 
         size_t region[] = {operationParams.size.x, operationParams.size.y, operationParams.size.z};
 
-        auto dstRowPitch = static_cast<uint32_t>(operationParams.srcRowPitch ? operationParams.srcRowPitch : region[0] * bytesPerPixel);
+        auto dstRowPitch = operationParams.srcRowPitch ? operationParams.srcRowPitch : region[0] * bytesPerPixel;
 
-        auto dstSlicePitch = static_cast<uint32_t>(
-            operationParams.srcSlicePitch ? operationParams.srcSlicePitch : ((srcImage->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY ? 1 : region[1]) * dstRowPitch));
+        auto dstSlicePitch =
+            operationParams.srcSlicePitch ? operationParams.srcSlicePitch : ((srcImage->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY ? 1 : region[1]) * dstRowPitch);
 
         // Determine size of host ptr surface for residency purposes
         size_t hostPtrSize = operationParams.dstPtr ? Image::calculateHostPtrSize(region, dstRowPitch, dstSlicePitch, bytesPerPixel, srcImage->getImageDesc().image_type) : 0;
@@ -627,13 +717,13 @@ class BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> : public BuiltinDispatchInfoBu
         }
 
         // Set-up dstOffset
-        kernelNoSplit3DBuilder.setArg(3, static_cast<uint32_t>(operationParams.dstOffset.x));
+        kernelNoSplit3DBuilder.setArg(3, static_cast<OffsetType>(operationParams.dstOffset.x));
 
         // Set-up dstRowPitch
         {
-            uint32_t pitch[] = {
-                static_cast<uint32_t>(dstRowPitch),
-                static_cast<uint32_t>(dstSlicePitch)};
+            OffsetType pitch[] = {
+                static_cast<OffsetType>(dstRowPitch),
+                static_cast<OffsetType>(dstSlicePitch)};
             kernelNoSplit3DBuilder.setArg(4, sizeof(pitch), pitch);
         }
 
@@ -643,9 +733,26 @@ class BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> : public BuiltinDispatchInfoBu
 
         return true;
     }
+};
 
-  protected:
-    Kernel *kernelBytes[5];
+template <>
+class BuiltInOp<EBuiltInOps::CopyImage3dToBufferStateless> : public BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> {
+  public:
+    BuiltInOp(BuiltIns &kernelsLib, Context &context, Device &device)
+        : BuiltInOp<EBuiltInOps::CopyImage3dToBuffer>(kernelsLib) {
+        populate(context, device,
+                 EBuiltInOps::CopyImage3dToBufferStateless,
+                 "-cl-intel-greater-than-4GB-buffer-required",
+                 "CopyImage3dToBufferBytes", kernelBytes[0],
+                 "CopyImage3dToBuffer2Bytes", kernelBytes[1],
+                 "CopyImage3dToBuffer4Bytes", kernelBytes[2],
+                 "CopyImage3dToBuffer8Bytes", kernelBytes[3],
+                 "CopyImage3dToBuffer16Bytes", kernelBytes[4]);
+    }
+
+    bool buildDispatchInfos(MultiDispatchInfo &multiDispatchInfo, const BuiltinOpParams &operationParams) const override {
+        return buildDispatchInfosTyped<uint64_t>(multiDispatchInfo, operationParams);
+    }
 };
 
 template <>
@@ -786,14 +893,26 @@ BuiltinDispatchInfoBuilder &BuiltIns::getBuiltinDispatchInfoBuilder(EBuiltInOps:
     case EBuiltInOps::CopyBufferRect:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyBufferRect>>(*this, context, device); });
         break;
+    case EBuiltInOps::CopyBufferRectStateless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyBufferRectStateless>>(*this, context, device); });
+        break;
     case EBuiltInOps::FillBuffer:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::FillBuffer>>(*this, context, device); });
+        break;
+    case EBuiltInOps::FillBufferStateless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::FillBufferStateless>>(*this, context, device); });
         break;
     case EBuiltInOps::CopyBufferToImage3d:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyBufferToImage3d>>(*this, context, device); });
         break;
+    case EBuiltInOps::CopyBufferToImage3dStateless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyBufferToImage3dStateless>>(*this, context, device); });
+        break;
     case EBuiltInOps::CopyImage3dToBuffer:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyImage3dToBuffer>>(*this, context, device); });
+        break;
+    case EBuiltInOps::CopyImage3dToBufferStateless:
+        std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyImage3dToBufferStateless>>(*this, context, device); });
         break;
     case EBuiltInOps::CopyImageToImage3d:
         std::call_once(operationBuilder.second, [&] { operationBuilder.first = std::make_unique<BuiltInOp<EBuiltInOps::CopyImageToImage3d>>(*this, context, device); });
