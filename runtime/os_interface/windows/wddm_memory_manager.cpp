@@ -34,9 +34,7 @@
 
 namespace NEO {
 
-WddmMemoryManager::~WddmMemoryManager() {
-    applyCommonCleanup();
-}
+WddmMemoryManager::~WddmMemoryManager() = default;
 
 WddmMemoryManager::WddmMemoryManager(ExecutionEnvironment &executionEnvironment) : MemoryManager(executionEnvironment),
                                                                                    wddm(executionEnvironment.osInterface->get()->getWddm()) {
@@ -143,7 +141,7 @@ GraphicsAllocation *WddmMemoryManager::allocateGraphicsMemoryForNonSvmHostPtr(co
 
     wddmAllocation->setDefaultGmm(gmm);
 
-    if (!createWddmAllocation(wddmAllocation.get(), wddmAllocation->getAlignedCpuPtr())) {
+    if (!createWddmAllocation(wddmAllocation.get(), nullptr)) {
         delete gmm;
         return nullptr;
     }

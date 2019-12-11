@@ -588,8 +588,8 @@ option(USE_CL_CACHE "Use OpenCL program binary cache" ON)
 set(CL_CACHE_LOCATION "cl_cache" CACHE STRING "OpenCL program binary cache location")
 
 # Put profiling enable flag into define
-if(OCL_RUNTIME_PROFILING)
-  add_definitions(-DOCL_RUNTIME_PROFILING=${OCL_RUNTIME_PROFILING})
+if(KMD_PROFILING)
+  add_definitions(-DKMD_PROFILING=${KMD_PROFILING})
 endif()
 
 if(MSVC)
@@ -775,6 +775,7 @@ endif()
 # Please keep alphabetical order
 include_directories(${NEO_BUILD_DIR})
 include_directories(${NEO_SOURCE_DIR})
+include_directories(${NEO_SOURCE_DIR}/core/compiler_interface/compiler_options${BRANCH_DIR_SUFFIX})
 include_directories(${NEO_SOURCE_DIR}/core/memory_manager/definitions${BRANCH_DIR_SUFFIX})
 include_directories(${NEO_SOURCE_DIR}/core/memory_properties${BRANCH_DIR_SUFFIX})
 include_directories(${NEO_SOURCE_DIR}/core/sku_info/definitions${BRANCH_DIR_SUFFIX})

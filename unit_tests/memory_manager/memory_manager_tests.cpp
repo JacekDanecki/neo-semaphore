@@ -962,29 +962,6 @@ TEST(OsAgnosticMemoryManager, givenDefaultMemoryManagerWhenGraphicsAllocationIsP
     ASSERT_NE(nullptr, paddedGraphicsAllocation);
     EXPECT_NE(paddedGraphicsAllocation, graphicsAllocation);
 
-    //padding buffer was created
-    ASSERT_NE(nullptr, memoryManager.peekPaddingAllocation());
-    auto paddingAllocation = memoryManager.peekPaddingAllocation();
-    EXPECT_EQ(paddingBufferSize, paddingAllocation->getUnderlyingBufferSize());
-
-    memoryManager.freeGraphicsMemory(paddedGraphicsAllocation);
-    memoryManager.freeGraphicsMemory(graphicsAllocation);
-}
-
-TEST(OsAgnosticMemoryManager, givenDefaultMemoryManagerWhenTwoGraphicsAllocationArePaddedThenOnlyOnePaddingBufferIsUsed) {
-    MockExecutionEnvironment executionEnvironment(*platformDevices);
-    MemoryManagerCreate<OsAgnosticMemoryManager> memoryManager(false, false, executionEnvironment);
-    auto graphicsAllocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
-
-    auto sizeWithPadding = 8192;
-    auto paddedGraphicsAllocation = memoryManager.createGraphicsAllocationWithPadding(graphicsAllocation, sizeWithPadding);
-    auto paddingAllocation = memoryManager.peekPaddingAllocation();
-    auto paddedGraphicsAllocation2 = memoryManager.createGraphicsAllocationWithPadding(graphicsAllocation, sizeWithPadding);
-    auto paddingAllocation2 = memoryManager.peekPaddingAllocation();
-
-    EXPECT_EQ(paddingAllocation2, paddingAllocation);
-
-    memoryManager.freeGraphicsMemory(paddedGraphicsAllocation2);
     memoryManager.freeGraphicsMemory(paddedGraphicsAllocation);
     memoryManager.freeGraphicsMemory(graphicsAllocation);
 }
@@ -1183,7 +1160,7 @@ TEST_P(OsAgnosticMemoryManagerWithParams, givenFullGpuAddressSpaceWhenAllocateGr
     bool requiresL3Flush = GetParam();
     MockExecutionEnvironment executionEnvironment(*platformDevices);
     executionEnvironment.setHwInfo(platformDevices[0]);
-    if (!executionEnvironment.isFullRangeSvm()) {
+    if (!executionEnvironment.isFullRangeSvm() || !executionEnvironment.getHardwareInfo()->capabilityTable.hostPtrTrackingEnabled) {
         return;
     }
     OsAgnosticMemoryManager memoryManager(executionEnvironment);
@@ -1201,7 +1178,7 @@ TEST_P(OsAgnosticMemoryManagerWithParams, givenFullGpuAddressSpaceWhenAllocateGr
 
 TEST_P(OsAgnosticMemoryManagerWithParams, givenDisabledHostPtrTrackingWhenAllocateGraphicsMemoryForHostPtrIsCalledThenAllocationWithoutFragmentsIsCreated) {
     DebugManagerStateRestore restore;
-    DebugManager.flags.EnableHostPtrTracking.set(false);
+    DebugManager.flags.EnableHostPtrTracking.set(0);
 
     bool requiresL3Flush = GetParam();
     MockExecutionEnvironment executionEnvironment(*platformDevices);
@@ -1944,4 +1921,24 @@ TEST(MemoryManagerTest, whenMemoryManagerReturnsNullptrThenAllocateGlobalsSurfac
 
     allocation = allocateGlobalsSurface(&context, &device, 1024, false, true, nullptr);
     EXPECT_EQ(nullptr, allocation);
+}
+
+HWTEST_F(MemoryAllocatorTest, givenMemoryManagerWhenEnableHostPtrTrackingFlagIsSetTo0ThenHostPointerTrackingIsDisabled) {
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableHostPtrTracking.set(0);
+    EXPECT_FALSE(memoryManager->isHostPointerTrackingEnabled());
+}
+
+HWTEST_F(MemoryAllocatorTest, givenMemoryManagerWhenEnableHostPtrTrackingFlagIsNotSetTo1ThenHostPointerTrackingIsEnabled) {
+    DebugManagerStateRestore dbgRestore;
+    DebugManager.flags.EnableHostPtrTracking.set(1);
+    EXPECT_TRUE(memoryManager->isHostPointerTrackingEnabled());
+}
+
+HWTEST_F(MemoryAllocatorTest, givenMemoryManagerWhenEnableHostPtrTrackingFlagIsSetNotSetThenHostPointerTrackingDependsOnCapabilityTable) {
+    if (is32bit) {
+        EXPECT_TRUE(memoryManager->isHostPointerTrackingEnabled());
+    } else {
+        EXPECT_EQ(executionEnvironment->getHardwareInfo()->capabilityTable.hostPtrTrackingEnabled, memoryManager->isHostPointerTrackingEnabled());
+    }
 }

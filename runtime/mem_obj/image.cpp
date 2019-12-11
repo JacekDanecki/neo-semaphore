@@ -281,7 +281,7 @@ Image *Image::create(Context *context,
                     zeroCopy = true;
                 }
                 if (memory) {
-                    AllocationProperties properties{rootDeviceIndex, false, hostPtrMinSize, GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR, false};
+                    AllocationProperties properties{rootDeviceIndex, false, hostPtrMinSize, GraphicsAllocation::AllocationType::MAP_ALLOCATION, false};
                     properties.flags.flushL3RequiredForRead = properties.flags.flushL3RequiredForWrite = true;
                     mapAllocation = memoryManager->allocateGraphicsMemoryWithProperties(properties, hostPtr);
                 }
@@ -380,7 +380,7 @@ Image *Image::create(Context *context,
                 } else {
                     errcodeRet = cmdQ->enqueueWriteImage(image, CL_TRUE, &copyOrigin[0], &copyRegion[0],
                                                          hostPtrRowPitch, hostPtrSlicePitch,
-                                                         hostPtr, nullptr, 0, nullptr, nullptr);
+                                                         hostPtr, mapAllocation, 0, nullptr, nullptr);
                 }
             } else {
                 image->transferData(memory->getUnderlyingBuffer(), imgInfo.rowPitch, imgInfo.slicePitch,
@@ -422,7 +422,7 @@ Image *Image::createImageHw(Context *context, const MemoryPropertiesFlags &memor
 Image *Image::createSharedImage(Context *context, SharingHandler *sharingHandler, McsSurfaceInfo &mcsSurfaceInfo,
                                 GraphicsAllocation *graphicsAllocation, GraphicsAllocation *mcsAllocation,
                                 cl_mem_flags flags, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount) {
-    auto sharedImage = createImageHw(context, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0), flags, 0, graphicsAllocation->getUnderlyingBufferSize(),
+    auto sharedImage = createImageHw(context, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0, 0), flags, 0, graphicsAllocation->getUnderlyingBufferSize(),
                                      nullptr, imgInfo.surfaceFormat->OCLImageFormat, *imgInfo.imgDesc, false, graphicsAllocation, false, baseMipLevel, mipCount, imgInfo.surfaceFormat);
     sharedImage->setSharingHandler(sharingHandler);
     sharedImage->setMcsAllocation(mcsAllocation);
@@ -860,7 +860,7 @@ Image *Image::redescribeFillImage() {
     imageFormatNew.image_channel_data_type = surfaceFormat->OCLImageFormat.image_channel_data_type;
 
     DEBUG_BREAK_IF(nullptr == createFunction);
-    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags | CL_MEM_USE_HOST_PTR, flagsIntel);
+    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags | CL_MEM_USE_HOST_PTR, flagsIntel, 0);
     auto image = createFunction(context,
                                 memoryProperties,
                                 flags | CL_MEM_USE_HOST_PTR,
@@ -910,7 +910,7 @@ Image *Image::redescribe() {
     imageFormatNew.image_channel_data_type = surfaceFormat->OCLImageFormat.image_channel_data_type;
 
     DEBUG_BREAK_IF(nullptr == createFunction);
-    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags | CL_MEM_USE_HOST_PTR, flagsIntel);
+    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags | CL_MEM_USE_HOST_PTR, flagsIntel, 0);
     auto image = createFunction(context,
                                 memoryProperties,
                                 flags | CL_MEM_USE_HOST_PTR,
@@ -972,7 +972,7 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     // Create NV12 UV Plane image
     std::unique_ptr<Image> imageYPlane(Image::create(
         context,
-        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0),
+        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0, 0),
         flags,
         0,
         surfaceFormat,
@@ -996,7 +996,7 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     // Create NV12 UV Plane image
     std::unique_ptr<Image> imageUVPlane(Image::create(
         context,
-        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0),
+        MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0, 0),
         flags,
         0,
         surfaceFormat,

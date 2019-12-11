@@ -9,11 +9,12 @@
 
 #include "core/helpers/file_io.h"
 #include "core/helpers/hw_info.h"
+#include "core/helpers/options.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
-#include "runtime/helpers/options.h"
 #include "runtime/os_interface/debug_settings_manager.h"
 #include "unit_tests/mocks/mock_compilers.h"
 
+#include "compiler_options.h"
 #include "environment.h"
 #include "gmock/gmock.h"
 #include "mock/mock_offline_compiler.h"
@@ -541,7 +542,7 @@ TEST_F(OfflineCompilerTests, NaughtyKernelTest) {
 TEST(OfflineCompilerTest, parseCmdLine) {
     std::vector<std::string> argv = {
         "ocloc",
-        "-cl-intel-greater-than-4GB-buffer-required"};
+        NEO::CompilerOptions::greaterThan4gbBuffersRequired.data()};
 
     MockOfflineCompiler *mockOfflineCompiler = new MockOfflineCompiler();
     ASSERT_NE(nullptr, mockOfflineCompiler);
@@ -565,7 +566,7 @@ TEST(OfflineCompilerTest, givenStatelessToStatefullOptimizationEnabledWhenDebugS
     mockOfflineCompiler.parseDebugSettings();
 
     std::string internalOptions = mockOfflineCompiler.getInternalOptions();
-    size_t found = internalOptions.find("-cl-intel-has-buffer-offset-arg");
+    size_t found = internalOptions.find(NEO::CompilerOptions::hasBufferOffsetArg);
     EXPECT_NE(std::string::npos, found);
 }
 
@@ -577,7 +578,7 @@ TEST(OfflineCompilerTest, givenStatelessToStatefullOptimizationEnabledWhenDebugS
     mockOfflineCompiler.parseDebugSettings();
 
     std::string internalOptions = mockOfflineCompiler.getInternalOptions();
-    size_t found = internalOptions.find("-cl-intel-has-buffer-offset-arg");
+    size_t found = internalOptions.find(NEO::CompilerOptions::hasBufferOffsetArg);
     EXPECT_NE(std::string::npos, found);
 }
 
@@ -589,7 +590,7 @@ TEST(OfflineCompilerTest, givenStatelessToStatefullOptimizationDisableddWhenDevi
     mockOfflineCompiler.parseDebugSettings();
 
     std::string internalOptions = mockOfflineCompiler.getInternalOptions();
-    size_t found = internalOptions.find("-cl-intel-has-buffer-offset-arg");
+    size_t found = internalOptions.find(NEO::CompilerOptions::hasBufferOffsetArg);
     EXPECT_EQ(std::string::npos, found);
 }
 
@@ -601,7 +602,7 @@ TEST(OfflineCompilerTest, givenStatelessToStatefullOptimizationEnabledWhenDevice
     mockOfflineCompiler.parseDebugSettings();
 
     std::string internalOptions = mockOfflineCompiler.getInternalOptions();
-    size_t found = internalOptions.find("-cl-intel-has-buffer-offset-arg");
+    size_t found = internalOptions.find(NEO::CompilerOptions::hasBufferOffsetArg);
     EXPECT_NE(std::string::npos, found);
 }
 
@@ -614,7 +615,7 @@ TEST(OfflineCompilerTest, givenStatelessToStatefullOptimizationDisabledWhenDevic
     mockOfflineCompiler.parseDebugSettings();
 
     std::string internalOptions = mockOfflineCompiler.getInternalOptions();
-    size_t found = internalOptions.find("-cl-intel-has-buffer-offset-arg");
+    size_t found = internalOptions.find(NEO::CompilerOptions::hasBufferOffsetArg);
     EXPECT_EQ(std::string::npos, found);
 }
 

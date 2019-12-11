@@ -12,21 +12,14 @@ namespace NEO {
 template <typename GfxFamily>
 void StateBaseAddressHelper<GfxFamily>::appendStateBaseAddressParameters(
     STATE_BASE_ADDRESS *stateBaseAddress,
-    const IndirectHeap &dsh,
-    const IndirectHeap &ioh,
-    const IndirectHeap &ssh,
-    uint64_t generalStateBase,
+    const IndirectHeap *ssh,
     uint64_t internalHeapBase,
     GmmHelper *gmmHelper,
-    DispatchFlags &dispatchFlags) {
+    bool isMultiOsContextCapable) {
 }
 
 template <typename GfxFamily>
-void StateBaseAddressHelper<GfxFamily>::programBindingTableBaseAddress(LinearStream &commandStream, const IndirectHeap &ssh,
-                                                                       size_t stateBaseAddressCmdOffset, GmmHelper *gmmHelper) {
-
-    auto sbaCommand = static_cast<STATE_BASE_ADDRESS *>(ptrOffset(commandStream.getCpuBase(), stateBaseAddressCmdOffset));
-    UNRECOVERABLE_IF(sbaCommand->getSurfaceStateBaseAddress() != ssh.getGraphicsAllocation()->getGpuAddress());
+void StateBaseAddressHelper<GfxFamily>::programBindingTableBaseAddress(LinearStream &commandStream, const IndirectHeap &ssh, GmmHelper *gmmHelper) {
 }
 
 } // namespace NEO

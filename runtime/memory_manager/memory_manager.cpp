@@ -11,6 +11,7 @@
 #include "core/helpers/basic_math.h"
 #include "core/helpers/hw_helper.h"
 #include "core/helpers/hw_info.h"
+#include "core/helpers/options.h"
 #include "core/memory_manager/host_ptr_manager.h"
 #include "core/utilities/stackvec.h"
 #include "runtime/command_stream/command_stream_receiver.h"
@@ -20,7 +21,6 @@
 #include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/hardware_commands_helper.h"
-#include "runtime/helpers/options.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/memory_manager/deferrable_allocation_deletion.h"
 #include "runtime/memory_manager/deferred_deleter.h"
@@ -118,9 +118,6 @@ void MemoryManager::cleanGraphicsMemoryCreatedFromHostPtr(GraphicsAllocation *gr
 }
 
 GraphicsAllocation *MemoryManager::createGraphicsAllocationWithPadding(GraphicsAllocation *inputGraphicsAllocation, size_t sizeWithPadding) {
-    if (!paddingAllocation) {
-        paddingAllocation = allocateGraphicsMemoryWithProperties({inputGraphicsAllocation->getRootDeviceIndex(), paddingBufferSize, GraphicsAllocation::AllocationType::INTERNAL_HOST_MEMORY});
-    }
     return createPaddedAllocation(inputGraphicsAllocation, sizeWithPadding);
 }
 
@@ -130,12 +127,6 @@ GraphicsAllocation *MemoryManager::createPaddedAllocation(GraphicsAllocation *in
 
 void MemoryManager::freeSystemMemory(void *ptr) {
     ::alignedFree(ptr);
-}
-
-void MemoryManager::applyCommonCleanup() {
-    if (this->paddingAllocation) {
-        this->freeGraphicsMemory(this->paddingAllocation);
-    }
 }
 
 void MemoryManager::freeGraphicsMemory(GraphicsAllocation *gfxAllocation) {
@@ -260,6 +251,7 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
     case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
     case GraphicsAllocation::AllocationType::GLOBAL_SURFACE:
     case GraphicsAllocation::AllocationType::IMAGE:
+    case GraphicsAllocation::AllocationType::MAP_ALLOCATION:
     case GraphicsAllocation::AllocationType::PIPE:
     case GraphicsAllocation::AllocationType::SHARED_BUFFER:
     case GraphicsAllocation::AllocationType::SHARED_IMAGE:
@@ -278,6 +270,7 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
     case GraphicsAllocation::AllocationType::DEVICE_QUEUE_BUFFER:
     case GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR:
     case GraphicsAllocation::AllocationType::FILL_PATTERN:
+    case GraphicsAllocation::AllocationType::MAP_ALLOCATION:
     case GraphicsAllocation::AllocationType::MCS:
     case GraphicsAllocation::AllocationType::PREEMPTION:
     case GraphicsAllocation::AllocationType::PROFILING_TAG_BUFFER:
@@ -340,7 +333,7 @@ GraphicsAllocation *MemoryManager::allocateGraphicsMemory(const AllocationData &
         return allocateGraphicsMemoryForImage(allocationData);
     }
     if (allocationData.type == GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR &&
-        (!peekExecutionEnvironment().isFullRangeSvm() || !DebugManager.flags.EnableHostPtrTracking.get())) {
+        (!peekExecutionEnvironment().isFullRangeSvm() || !isHostPointerTrackingEnabled())) {
         auto allocation = allocateGraphicsMemoryForNonSvmHostPtr(allocationData);
         if (allocation) {
             allocation->setFlushL3Required(allocationData.flags.flushL3);
@@ -483,6 +476,13 @@ void *MemoryManager::getReservedMemory(size_t size, size_t alignment) {
         reservedMemory = allocateSystemMemory(size, alignment);
     }
     return reservedMemory;
+}
+
+bool MemoryManager::isHostPointerTrackingEnabled() {
+    if (DebugManager.flags.EnableHostPtrTracking.get() != -1) {
+        return !!DebugManager.flags.EnableHostPtrTracking.get();
+    }
+    return (peekExecutionEnvironment().getHardwareInfo()->capabilityTable.hostPtrTrackingEnabled | is32bit);
 }
 
 } // namespace NEO
