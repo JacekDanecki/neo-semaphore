@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,6 +13,7 @@
 #include "runtime/os_interface/linux/drm_command_stream.h"
 #include "runtime/os_interface/linux/drm_gem_close_worker.h"
 #include "runtime/os_interface/linux/drm_memory_manager.h"
+#include "runtime/os_interface/linux/drm_memory_operations_handler.h"
 #include "runtime/os_interface/linux/os_interface.h"
 #include "test.h"
 #include "unit_tests/mocks/mock_execution_environment.h"
@@ -68,9 +69,9 @@ class DrmGemCloseWorkerFixture {
         this->drmMock->gem_close_cnt = 0;
         this->drmMock->gem_close_expected = 0;
 
-        executionEnvironment.osInterface = std::make_unique<OSInterface>();
-        executionEnvironment.osInterface->get()->setDrm(drmMock);
-        executionEnvironment.memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
+        executionEnvironment.rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment.rootDeviceEnvironments[0]->osInterface->get()->setDrm(drmMock);
+        executionEnvironment.rootDeviceEnvironments[0]->memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
 
         this->mm = new DrmMemoryManager(gemCloseWorkerMode::gemCloseWorkerInactive,
                                         false,

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,7 @@
 
 #include "core/command_stream/linear_stream.h"
 #include "core/command_stream/preemption.h"
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/cache_policy.h"
 #include "core/helpers/preamble.h"
@@ -22,7 +23,6 @@
 #include "runtime/event/user_event.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "test.h"
 #include "unit_tests/fixtures/built_in_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
@@ -59,7 +59,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
     typedef typename FamilyType::MI_BATCH_BUFFER_START MI_BATCH_BUFFER_START;
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
 
-    CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
+    CommandQueueHw<FamilyType> commandQueue(nullptr, pClDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
     auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex());
@@ -126,7 +126,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenCsrInBatchingModeThreeRe
 
 HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenAddPatchInfoCommentsForAUBDumpIsNotSetThenAddPatchInfoDataIsNotCollected) {
 
-    CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
+    CommandQueueHw<FamilyType> commandQueue(nullptr, pClDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
     auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex());
@@ -153,7 +153,7 @@ HWTEST_F(CommandStreamReceiverFlushTaskGmockTests, givenMockCommandStreamerWhenA
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.AddPatchInfoCommentsForAUBDump.set(true);
 
-    CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
+    CommandQueueHw<FamilyType> commandQueue(nullptr, pClDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
     auto mockCsr = new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex());
@@ -259,7 +259,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverFlushTaskGmockTests, givenPatch
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.AddPatchInfoCommentsForAUBDump.set(true);
 
-    CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
+    CommandQueueHw<FamilyType> commandQueue(nullptr, pClDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
     std::unique_ptr<MockCsrHw2<FamilyType>> mockCsr(new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex()));
@@ -278,7 +278,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverFlushTaskGmockTests, givenPatch
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverFlushTaskGmockTests, givenPatchInfoCollectionDisabledWhenScratchSpaceIsProgrammedThenPatchInfoIsNotCollected) {
-    CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
+    CommandQueueHw<FamilyType> commandQueue(nullptr, pClDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
     std::unique_ptr<MockCsrHw2<FamilyType>> mockCsr(new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex()));
@@ -299,7 +299,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, CommandStreamReceiverFlushTaskGmockTests, givenPatch
     DebugManagerStateRestore dbgRestore;
     DebugManager.flags.AddPatchInfoCommentsForAUBDump.set(true);
 
-    CommandQueueHw<FamilyType> commandQueue(nullptr, pDevice, 0);
+    CommandQueueHw<FamilyType> commandQueue(nullptr, pClDevice, 0);
     auto &commandStream = commandQueue.getCS(4096u);
 
     std::unique_ptr<MockCsrHw2<FamilyType>> mockCsr(new MockCsrHw2<FamilyType>(*pDevice->executionEnvironment, pDevice->getRootDeviceIndex()));

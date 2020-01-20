@@ -1,10 +1,12 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/debug_settings/debug_settings_manager.h"
+#include "core/execution_environment/root_device_environment.h"
 #include "core/helpers/hw_info.h"
 #include "runtime/device/device.h"
 #include "runtime/os_interface/device_factory.h"
@@ -28,21 +30,24 @@ bool DeviceFactory::getDevices(size_t &numDevices, ExecutionEnvironment &executi
 
     executionEnvironment.prepareRootDeviceEnvironments(static_cast<uint32_t>(numRootDevices));
 
-    Drm *drm = Drm::create(devNum);
-    if (!drm) {
-        return false;
-    }
+    for (auto rootDeviceIndex = 0u; rootDeviceIndex < numRootDevices; rootDeviceIndex++) {
+        Drm *drm = Drm::create(rootDeviceIndex);
+        if (!drm) {
+            return false;
+        }
 
-    executionEnvironment.memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
-    executionEnvironment.osInterface.reset(new OSInterface());
-    executionEnvironment.osInterface->get()->setDrm(drm);
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->osInterface.reset(new OSInterface());
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->osInterface->get()->setDrm(drm);
+    }
 
     auto hardwareInfo = executionEnvironment.getMutableHardwareInfo();
     const HardwareInfo *pCurrDevice = platformDevices[devNum];
     HwInfoConfig *hwConfig = HwInfoConfig::get(pCurrDevice->platform.eProductFamily);
-    if (hwConfig->configureHwInfo(pCurrDevice, hardwareInfo, executionEnvironment.osInterface.get())) {
+    if (hwConfig->configureHwInfo(pCurrDevice, hardwareInfo, executionEnvironment.rootDeviceEnvironments[0]->osInterface.get())) {
         return false;
     }
+    executionEnvironment.calculateMaxOsContextCount();
 
     numDevices = numRootDevices;
     DeviceFactory::numDevices = numDevices;
@@ -59,6 +64,6 @@ void DeviceFactory::releaseDevices() {
     DeviceFactory::numDevices = 0;
 }
 
-void Device::appendOSExtensions(std::string &deviceExtensions) {
+void ClDevice::initializeCaps() {
 }
 } // namespace NEO

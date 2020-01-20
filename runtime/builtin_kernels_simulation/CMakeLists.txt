@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2017-2019 Intel Corporation
+# Copyright (C) 2017-2020 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -38,7 +38,7 @@ endif()
 macro(macro_for_each_gen)
   list(APPEND DEFAULT_GEN_PLATFORMS_DEFITIONS DEFAULT_${GEN_TYPE}_PLATFORM=${DEFAULT_SUPPORTED_${GEN_TYPE}_PLATFORM})
   if(${SUPPORT_DEVICE_ENQUEUE_${GEN_TYPE}})
-    list(APPEND BUILTIN_KERNELS_SIMULATION_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/${GEN_TYPE_LOWER}/scheduler_simulation.cpp)
+    list(APPEND BUILTIN_KERNELS_SIMULATION_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/${GEN_TYPE_LOWER}/scheduler_simulation_${GEN_TYPE_LOWER}.cpp)
   endif()
 endmacro()
 
@@ -47,10 +47,10 @@ apply_macro_for_each_gen("SUPPORTED")
 add_library(${BIKSIM_LIB_NAME} OBJECT EXCLUDE_FROM_ALL ${BUILTIN_KERNELS_SIMULATION_SRCS})
 target_include_directories(${BIKSIM_LIB_NAME} BEFORE PRIVATE
   ${ENGINE_NODE_DIR}
-  ${UMKM_SHAREDDATA_INCLUDE_PATHS}
+  ${NEO__GMM_INCLUDE_DIR}
   ${KHRONOS_HEADERS_DIR}
   ${KHRONOS_GL_HEADERS_DIR}
-  ${IGDRCL__IGC_INCLUDE_DIR}
+  ${NEO__IGC_INCLUDE_DIR}
   ${THIRD_PARTY_DIR}
 )
 set_target_properties(${BIKSIM_LIB_NAME} PROPERTIES FOLDER "built_ins")

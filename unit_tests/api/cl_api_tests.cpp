@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,16 +15,21 @@
 #include "unit_tests/mocks/mock_memory_manager.h"
 
 namespace NEO {
-constexpr size_t ApiFixture::numRootDevices;
+constexpr uint32_t ApiFixture::numRootDevices;
+constexpr uint32_t ApiFixture::testedRootDeviceIndex;
+ApiFixture::ApiFixture() = default;
+ApiFixture::~ApiFixture() = default;
 void ApiFixture::SetUp() {
     numDevicesBackup = numRootDevices;
     PlatformFixture::SetUp();
 
-    auto pDevice = pPlatform->getDevice(testedRootDeviceIndex);
+    EXPECT_LT(0u, testedRootDeviceIndex);
+    rootDeviceEnvironmentBackup.swap(pPlatform->peekExecutionEnvironment()->rootDeviceEnvironments[0]);
+    auto pDevice = pPlatform->getClDevice(testedRootDeviceIndex);
     ASSERT_NE(nullptr, pDevice);
 
     testedClDevice = pDevice;
-    pContext = Context::create<MockContext>(nullptr, DeviceVector(&testedClDevice, 1), nullptr, nullptr, retVal);
+    pContext = Context::create<MockContext>(nullptr, ClDeviceVector(&testedClDevice, 1), nullptr, nullptr, retVal);
     EXPECT_EQ(retVal, CL_SUCCESS);
 
     pCommandQueue = new CommandQueue(pContext, pDevice, nullptr);
@@ -40,7 +45,7 @@ void ApiFixture::TearDown() {
     pCommandQueue->release();
     pContext->release();
     pProgram->release();
-
+    rootDeviceEnvironmentBackup.swap(pPlatform->peekExecutionEnvironment()->rootDeviceEnvironments[0]);
     PlatformFixture::TearDown();
 }
 
@@ -48,20 +53,19 @@ void api_fixture_using_aligned_memory_manager::SetUp() {
     retVal = CL_SUCCESS;
     retSize = 0;
 
-    device = MockDevice::createWithNewExecutionEnvironment<MockAlignedMallocManagerDevice>(*platformDevices);
-    Device *devPtr = reinterpret_cast<Device *>(device);
-    cl_device_id clDevice = devPtr;
+    device = new MockClDevice{MockDevice::createWithNewExecutionEnvironment<MockAlignedMallocManagerDevice>(*platformDevices)};
+    cl_device_id deviceId = device;
 
-    context = Context::create<MockContext>(nullptr, DeviceVector(&clDevice, 1), nullptr, nullptr, retVal);
+    context = Context::create<MockContext>(nullptr, ClDeviceVector(&deviceId, 1), nullptr, nullptr, retVal);
     EXPECT_EQ(CL_SUCCESS, retVal);
     Context *ctxPtr = reinterpret_cast<Context *>(context);
 
-    commandQueue = new CommandQueue(context, devPtr, 0);
+    commandQueue = new CommandQueue(context, device, 0);
 
     program = new MockProgram(*device->getExecutionEnvironment(), ctxPtr, false);
     Program *prgPtr = reinterpret_cast<Program *>(program);
 
-    kernel = new MockKernel(prgPtr, program->mockKernelInfo, *devPtr);
+    kernel = new MockKernel(prgPtr, program->mockKernelInfo, *device);
     ASSERT_NE(nullptr, kernel);
 }
 

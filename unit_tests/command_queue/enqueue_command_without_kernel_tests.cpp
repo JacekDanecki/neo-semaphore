@@ -1,16 +1,16 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/os_interface/os_context.h"
 #include "runtime/event/event_builder.h"
 #include "runtime/event/user_event.h"
 #include "runtime/helpers/enqueue_properties.h"
 #include "runtime/helpers/timestamp_packet.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/os_interface/os_context.h"
 #include "test.h"
 #include "unit_tests/fixtures/dispatch_flags_fixture.h"
 #include "unit_tests/fixtures/enqueue_handler_fixture.h"
@@ -35,7 +35,7 @@ class MockCommandQueueWithCacheFlush : public MockCommandQueueHw<GfxFamily> {
 
 HWTEST_F(EnqueueHandlerTest, GivenCommandStreamWithoutKernelWhenCommandEnqueuedThenTaskCountIncreased) {
 
-    std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(context, pDevice, 0));
+    std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(context, pClDevice, 0));
 
     char buffer[64];
     std::unique_ptr<MockGraphicsAllocation> allocation(new MockGraphicsAllocation(buffer, sizeof(buffer)));
@@ -53,7 +53,7 @@ HWTEST_F(EnqueueHandlerTest, GivenCommandStreamWithoutKernelWhenCommandEnqueuedT
 }
 
 HWTEST_F(EnqueueHandlerTest, givenNonBlitPropertyWhenEnqueueIsBlockedThenDontRegisterBlitProperties) {
-    std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(context, pDevice, 0));
+    std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(context, pClDevice, 0));
     auto &csr = mockCmdQ->getGpgpuCommandStreamReceiver();
 
     auto commandStream = new LinearStream();
@@ -77,7 +77,7 @@ HWTEST_F(EnqueueHandlerTest, givenNonBlitPropertyWhenEnqueueIsBlockedThenDontReg
 }
 
 HWTEST_F(EnqueueHandlerTest, givenBlitPropertyWhenEnqueueIsBlockedThenRegisterBlitProperties) {
-    std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(context, pDevice, 0));
+    std::unique_ptr<MockCommandQueueHw<FamilyType>> mockCmdQ(new MockCommandQueueHw<FamilyType>(context, pClDevice, 0));
     auto &csr = mockCmdQ->getGpgpuCommandStreamReceiver();
 
     auto commandStream = new LinearStream();
@@ -128,6 +128,27 @@ HWTEST_F(DispatchFlagsTests, whenEnqueueCommandWithoutKernelThenPassCorrectDispa
     EXPECT_TRUE(mockCsr->passedDispatchFlags.guardCommandBufferWithPipeControl);
     EXPECT_EQ(device->getPreemptionMode(), mockCsr->passedDispatchFlags.preemptionMode);
     EXPECT_EQ(mockCmdQ->flushStamp->getStampReference(), mockCsr->passedDispatchFlags.flushStampReference);
+}
+
+HWTEST_F(DispatchFlagsTests, whenEnqueueCommandWithoutKernelThenPassCorrectThrottleHint) {
+    using CsrType = MockCsrHw2<FamilyType>;
+    SetUpImpl<CsrType>();
+
+    auto mockCmdQ = std::make_unique<MockCommandQueueHw<FamilyType>>(context.get(), device.get(), nullptr);
+    mockCmdQ->throttle = QueueThrottle::HIGH;
+    auto mockCsr = static_cast<CsrType *>(&mockCmdQ->getGpgpuCommandStreamReceiver());
+
+    TimestampPacketDependencies timestampPacketDependencies;
+    EventsRequest eventsRequest(0, nullptr, nullptr);
+    EventBuilder eventBuilder;
+
+    EnqueueProperties enqueueProperties(false, false, false, true, nullptr);
+    bool blocking = true;
+
+    mockCmdQ->enqueueCommandWithoutKernel(nullptr, 0, mockCmdQ->getCS(0), 0, blocking, enqueueProperties, timestampPacketDependencies,
+                                          eventsRequest, eventBuilder, 0);
+
+    EXPECT_EQ(mockCmdQ->throttle, mockCsr->passedDispatchFlags.throttle);
 }
 
 HWTEST_F(DispatchFlagsTests, givenBlitEnqueueWhenDispatchingCommandsWithoutKernelThenDoImplicitFlush) {
@@ -210,7 +231,7 @@ HWTEST_F(DispatchFlagsTests, givenN1EnabledWhenDispatchingWithoutKernelTheAllowO
 }
 
 HWTEST_F(EnqueueHandlerTest, GivenCommandStreamWithoutKernelAndZeroSurfacesWhenEnqueuedHandlerThenProgramPipeControl) {
-    std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pDevice, 0));
+    std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pClDevice, 0));
 
     mockCmdQ->commandRequireCacheFlush = true;
     MultiDispatchInfo multiDispatch;
@@ -228,7 +249,7 @@ HWTEST_F(EnqueueHandlerTest, givenTimestampPacketWriteEnabledAndCommandWithCache
 
     auto mockTagAllocator = new MockTagAllocator<>(csr.rootDeviceIndex, pDevice->getMemoryManager());
     csr.timestampPacketAllocator.reset(mockTagAllocator);
-    std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pDevice, 0));
+    std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pClDevice, 0));
     mockCmdQ->commandRequireCacheFlush = true;
 
     cl_event event;
@@ -245,7 +266,7 @@ HWTEST_F(EnqueueHandlerTest, givenTimestampPacketWriteDisabledAndCommandWithCach
 
     auto mockTagAllocator = new MockTagAllocator<>(pDevice->getRootDeviceIndex(), pDevice->getMemoryManager());
     csr.timestampPacketAllocator.reset(mockTagAllocator);
-    std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pDevice, 0));
+    std::unique_ptr<MockCommandQueueWithCacheFlush<FamilyType>> mockCmdQ(new MockCommandQueueWithCacheFlush<FamilyType>(context, pClDevice, 0));
     mockCmdQ->commandRequireCacheFlush = true;
 
     cl_event event;

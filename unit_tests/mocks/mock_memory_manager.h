@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -45,8 +45,10 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     using MemoryManager::registeredEngines;
     using MemoryManager::supportsMultiStorageResources;
     using MemoryManager::useInternal32BitAllocator;
+    using MemoryManager::useNonSvmHostPtrAlloc;
     using OsAgnosticMemoryManager::allocateGraphicsMemoryForImageFromHostPtr;
     using MemoryManagerCreate<OsAgnosticMemoryManager>::MemoryManagerCreate;
+    using MemoryManager::isCopyRequired;
     using MemoryManager::reservedMemory;
 
     MockMemoryManager(ExecutionEnvironment &executionEnvironment) : MockMemoryManager(false, executionEnvironment) {}
@@ -65,6 +67,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     void setDeferredDeleter(DeferredDeleter *deleter);
     void overrideAsyncDeleterFlag(bool newValue);
     GraphicsAllocation *allocateGraphicsMemoryForImage(const AllocationData &allocationData) override;
+    GraphicsAllocation *allocateShareableMemory(const AllocationData &allocationData) override;
     int redundancyRatio = 1;
 
     GraphicsAllocation *allocateGraphicsMemoryInDevicePool(const AllocationData &allocationData, AllocationStatus &status) override;
@@ -93,11 +96,11 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
         OsAgnosticMemoryManager::handleFenceCompletion(graphicsAllocation);
     }
 
-    void *reserveCpuAddressRange(size_t size) override {
+    void *reserveCpuAddressRange(size_t size, uint32_t rootDeviceIndex) override {
         if (failReserveAddress) {
             return nullptr;
         }
-        return OsAgnosticMemoryManager::reserveCpuAddressRange(size);
+        return OsAgnosticMemoryManager::reserveCpuAddressRange(size, rootDeviceIndex);
     }
 
     GraphicsAllocation *allocate32BitGraphicsMemory(size_t size, const void *ptr, GraphicsAllocation::AllocationType allocationType);
@@ -117,6 +120,7 @@ class MockMemoryManager : public MemoryManagerCreate<OsAgnosticMemoryManager> {
     bool failInAllocateWithSizeAndAlignment = false;
     bool preferRenderCompressedFlagPassed = false;
     bool allocateForImageCalled = false;
+    bool allocateForShareableCalled = false;
     bool failReserveAddress = false;
     bool failAllocateSystemMemory = false;
     bool failAllocate32Bit = false;
@@ -128,10 +132,10 @@ using AllocationData = MockMemoryManager::AllocationData;
 class GMockMemoryManager : public MockMemoryManager {
   public:
     GMockMemoryManager(const ExecutionEnvironment &executionEnvironment) : MockMemoryManager(const_cast<ExecutionEnvironment &>(executionEnvironment)){};
-    MOCK_METHOD1(populateOsHandles, MemoryManager::AllocationStatus(OsHandleStorage &handleStorage));
+    MOCK_METHOD2(populateOsHandles, MemoryManager::AllocationStatus(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex));
     MOCK_METHOD1(allocateGraphicsMemoryForNonSvmHostPtr, GraphicsAllocation *(const AllocationData &));
 
-    MemoryManager::AllocationStatus MemoryManagerPopulateOsHandles(OsHandleStorage &handleStorage) { return OsAgnosticMemoryManager::populateOsHandles(handleStorage); }
+    MemoryManager::AllocationStatus MemoryManagerPopulateOsHandles(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex) { return OsAgnosticMemoryManager::populateOsHandles(handleStorage, rootDeviceIndex); }
 };
 
 class MockAllocSysMemAgnosticMemoryManager : public OsAgnosticMemoryManager {
@@ -191,12 +195,12 @@ class FailMemoryManager : public MockMemoryManager {
     void *lockResourceImpl(GraphicsAllocation &gfxAllocation) override { return nullptr; };
     void unlockResourceImpl(GraphicsAllocation &gfxAllocation) override{};
 
-    MemoryManager::AllocationStatus populateOsHandles(OsHandleStorage &handleStorage) override {
+    MemoryManager::AllocationStatus populateOsHandles(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex) override {
         return AllocationStatus::Error;
     };
     void cleanOsHandles(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex) override{};
 
-    uint64_t getSystemSharedMemory() override {
+    uint64_t getSystemSharedMemory(uint32_t rootDeviceIndex) override {
         return 0;
     };
 
@@ -204,6 +208,9 @@ class FailMemoryManager : public MockMemoryManager {
         return nullptr;
     };
     GraphicsAllocation *allocateGraphicsMemoryForImage(const AllocationData &allocationData) override {
+        return nullptr;
+    }
+    GraphicsAllocation *allocateShareableMemory(const AllocationData &allocationData) override {
         return nullptr;
     }
     int32_t failedAllocationsCount = 0;

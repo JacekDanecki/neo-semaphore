@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -11,18 +11,18 @@
 #pragma warning(disable : 4005)
 #include "core/command_stream/linear_stream.h"
 #include "core/command_stream/preemption.h"
+#include "core/gmm_helper/page_table_mngr.h"
 #include "core/helpers/hw_cmds.h"
 #include "core/helpers/ptr_math.h"
+#include "core/helpers/windows/gmm_callbacks.h"
 #include "runtime/device/device.h"
-#include "runtime/gmm_helper/page_table_mngr.h"
 #include "runtime/helpers/flush_stamp.h"
-#include "runtime/helpers/gmm_callbacks.h"
 #include "runtime/mem_obj/mem_obj.h"
 #include "runtime/os_interface/windows/wddm/wddm.h"
 #include "runtime/os_interface/windows/wddm_device_command_stream.h"
 #pragma warning(pop)
 
-#include "runtime/os_interface/windows/gdi_interface.h"
+#include "core/os_interface/windows/gdi_interface.h"
 #include "runtime/os_interface/windows/os_context_win.h"
 #include "runtime/os_interface/windows/os_interface.h"
 #include "runtime/os_interface/windows/wddm_memory_manager.h"
@@ -37,8 +37,8 @@ WddmCommandStreamReceiver<GfxFamily>::WddmCommandStreamReceiver(ExecutionEnviron
     : BaseClass(executionEnvironment, rootDeviceIndex) {
 
     notifyAubCaptureImpl = DeviceCallbacks<GfxFamily>::notifyAubCapture;
-    this->wddm = executionEnvironment.osInterface->get()->getWddm();
-    this->osInterface = executionEnvironment.osInterface.get();
+    this->osInterface = executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->osInterface.get();
+    this->wddm = this->osInterface->get()->getWddm();
 
     PreemptionMode preemptionMode = PreemptionHelper::getDefaultPreemptionMode(peekHwInfo());
 
@@ -97,9 +97,13 @@ bool WddmCommandStreamReceiver<GfxFamily>::flush(BatchBuffer &batchBuffer, Resid
     }
 
     auto osContextWin = static_cast<OsContextWin *>(osContext);
-    auto status = wddm->submit(commandStreamAddress, batchBuffer.usedSize - batchBuffer.startOffset, commandBufferHeader, *osContextWin);
+    WddmSubmitArguments submitArgs = {};
+    submitArgs.contextHandle = osContextWin->getWddmContextHandle();
+    submitArgs.hwQueueHandle = osContextWin->getHwQueue().handle;
+    submitArgs.monitorFence = &osContextWin->getResidencyController().getMonitoredFence();
+    auto status = wddm->submit(commandStreamAddress, batchBuffer.usedSize - batchBuffer.startOffset, commandBufferHeader, submitArgs);
 
-    flushStamp->setStamp(osContextWin->getResidencyController().getMonitoredFence().lastSubmittedFence);
+    flushStamp->setStamp(submitArgs.monitorFence->lastSubmittedFence);
     return status;
 }
 
@@ -130,20 +134,10 @@ GmmPageTableMngr *WddmCommandStreamReceiver<GfxFamily>::createPageTableManager()
     GMM_TRANSLATIONTABLE_CALLBACKS ttCallbacks = {};
     ttCallbacks.pfWriteL3Adr = TTCallbacks<GfxFamily>::writeL3Address;
 
-    GmmPageTableMngr *gmmPageTableMngr = GmmPageTableMngr::create(TT_TYPE::TRTT | TT_TYPE::AUXTT, &ttCallbacks);
+    GmmPageTableMngr *gmmPageTableMngr = GmmPageTableMngr::create(TT_TYPE::AUXTT, &ttCallbacks);
     gmmPageTableMngr->setCsrHandle(this);
-    this->wddm->resetPageTableManager(gmmPageTableMngr);
+    this->executionEnvironment.rootDeviceEnvironments[this->rootDeviceIndex]->pageTableManager.reset(gmmPageTableMngr);
     return gmmPageTableMngr;
-}
-
-template <typename GfxFamily>
-void WddmCommandStreamReceiver<GfxFamily>::initPageTableManagerRegisters(LinearStream &csr) {
-    if (wddm->getPageTableManager() && !pageTableManagerInitialized) {
-        wddm->getPageTableManager()->initContextTRTableRegister(this, GMM_ENGINE_TYPE::ENGINE_TYPE_RCS);
-        wddm->getPageTableManager()->initContextAuxTableRegister(this, GMM_ENGINE_TYPE::ENGINE_TYPE_RCS);
-
-        pageTableManagerInitialized = true;
-    }
 }
 
 template <typename GfxFamily>

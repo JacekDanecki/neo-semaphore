@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,6 +8,9 @@
 #include "runtime/mem_obj/image.h"
 
 #include "common/compiler_support.h"
+#include "core/debug_settings/debug_settings_manager.h"
+#include "core/gmm_helper/gmm.h"
+#include "core/gmm_helper/resource_info.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/hw_helper.h"
@@ -17,9 +20,7 @@
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/gmm_helper/gmm_types_converter.h"
-#include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/get_info.h"
 #include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/helpers/mipmap.h"
@@ -27,7 +28,7 @@
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/mem_obj/mem_obj_helper.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/platform/platform.h"
 
 #include "igfxfmid.h"
 
@@ -50,7 +51,7 @@ Image::Image(Context *context,
              bool isObjectRedescribed,
              uint32_t baseMipLevel,
              uint32_t mipCount,
-             const SurfaceFormatInfo &surfaceFormatInfo,
+             const ClSurfaceFormatInfo &surfaceFormatInfo,
              const SurfaceOffsets *surfaceOffsets)
     : MemObj(context,
              imageDesc.image_type,
@@ -83,7 +84,7 @@ void Image::transferData(void *dest, size_t destRowPitch, size_t destSlicePitch,
                          void *src, size_t srcRowPitch, size_t srcSlicePitch,
                          std::array<size_t, 3> copyRegion, std::array<size_t, 3> copyOrigin) {
 
-    size_t pixelSize = surfaceFormatInfo.ImageElementSizeInBytes;
+    size_t pixelSize = surfaceFormatInfo.surfaceFormat.ImageElementSizeInBytes;
     size_t lineWidth = copyRegion[0] * pixelSize;
 
     DBG_LOG(LogMemoryObject, __FUNCTION__, "memcpy dest:", dest, "sizeRowToCopy:", lineWidth, "src:", src);
@@ -114,7 +115,7 @@ Image *Image::create(Context *context,
                      const MemoryPropertiesFlags &memoryProperties,
                      cl_mem_flags flags,
                      cl_mem_flags_intel flagsIntel,
-                     const SurfaceFormatInfo *surfaceFormat,
+                     const ClSurfaceFormatInfo *surfaceFormat,
                      const cl_image_desc *imageDesc,
                      const void *hostPtr,
                      cl_int &errcodeRet) {
@@ -127,6 +128,7 @@ Image *Image::create(Context *context,
     Image *parentImage = castToObject<Image>(imageDesc->mem_object);
     auto &hwHelper = HwHelper::get(context->getDevice(0)->getHardwareInfo().platform.eRenderCoreFamily);
     auto rootDeviceIndex = context->getDevice(0)->getRootDeviceIndex();
+    auto clientContext = context->getDevice(0)->getExecutionEnvironment()->getGmmClientContext();
 
     do {
         size_t imageWidth = imageDesc->image_width;
@@ -136,15 +138,15 @@ Image *Image::create(Context *context,
         size_t hostPtrMinSize = 0;
 
         cl_image_desc imageDescriptor = *imageDesc;
-        ImageInfo imgInfo = {0};
+        ImageInfo imgInfo = {};
         void *hostPtrToSet = nullptr;
 
         if (memoryProperties.flags.useHostPtr) {
             hostPtrToSet = const_cast<void *>(hostPtr);
         }
 
-        imgInfo.imgDesc = &imageDescriptor;
-        imgInfo.surfaceFormat = surfaceFormat;
+        imgInfo.imgDesc = Image::convertDescriptor(imageDescriptor);
+        imgInfo.surfaceFormat = &surfaceFormat->surfaceFormat;
         imgInfo.mipCount = imageDesc->num_mip_levels;
         Gmm *gmm = nullptr;
 
@@ -182,11 +184,11 @@ Image *Image::create(Context *context,
                 }
             }
 
-            imgInfo.surfaceFormat = &parentImage->surfaceFormatInfo;
+            imgInfo.surfaceFormat = &parentImage->surfaceFormatInfo.surfaceFormat;
             imageDescriptor = parentImage->getImageDesc();
         }
 
-        auto hostPtrRowPitch = imageDesc->image_row_pitch ? imageDesc->image_row_pitch : imageWidth * surfaceFormat->ImageElementSizeInBytes;
+        auto hostPtrRowPitch = imageDesc->image_row_pitch ? imageDesc->image_row_pitch : imageWidth * surfaceFormat->surfaceFormat.ImageElementSizeInBytes;
         auto hostPtrSlicePitch = imageDesc->image_slice_pitch ? imageDesc->image_slice_pitch : hostPtrRowPitch * imageHeight;
         imgInfo.linearStorage = !hwHelper.tilingAllowed(context->isSharedContext, Image::isImage1d(*imageDesc),
                                                         memoryProperties.flags.forceLinearStorage);
@@ -248,7 +250,7 @@ Image *Image::create(Context *context,
             if (memoryManager->peekVirtualPaddingSupport() && (imageDesc->image_type == CL_MEM_OBJECT_IMAGE2D)) {
                 // Retrieve sizes from GMM and apply virtual padding if buffer storage is not big enough
                 auto queryGmmImgInfo(imgInfo);
-                auto gmm = std::make_unique<Gmm>(queryGmmImgInfo, StorageInfo{});
+                auto gmm = std::make_unique<Gmm>(clientContext, queryGmmImgInfo, StorageInfo{});
                 auto gmmAllocationSize = gmm->gmmResourceInfo->getSizeAllocation();
                 if (gmmAllocationSize > memory->getUnderlyingBufferSize()) {
                     memory = memoryManager->createGraphicsAllocationWithPadding(memory, gmmAllocationSize);
@@ -275,7 +277,7 @@ Image *Image::create(Context *context,
                         }
                     }
                 } else {
-                    gmm = new Gmm(imgInfo, StorageInfo{});
+                    gmm = new Gmm(clientContext, imgInfo, StorageInfo{});
                     memory = memoryManager->allocateGraphicsMemoryWithProperties({rootDeviceIndex, false, imgInfo.size, GraphicsAllocation::AllocationType::SHARED_CONTEXT_IMAGE, false}, hostPtr);
                     memory->setDefaultGmm(gmm);
                     zeroCopy = true;
@@ -320,6 +322,7 @@ Image *Image::create(Context *context,
             imageDescriptor.image_slice_pitch = 0;
             imageDescriptor.mem_object = imageDesc->mem_object;
             parentImage->incRefInternal();
+            imgInfo.imgDesc = Image::convertDescriptor(imageDescriptor);
         }
 
         image = createImageHw(context, memoryProperties, flags, flagsIntel, imgInfo.size, hostPtrToSet, surfaceFormat->OCLImageFormat,
@@ -406,7 +409,7 @@ Image *Image::createImageHw(Context *context, const MemoryPropertiesFlags &memor
                             const cl_image_format &imageFormat, const cl_image_desc &imageDesc,
                             bool zeroCopy, GraphicsAllocation *graphicsAllocation,
                             bool isObjectRedescribed, uint32_t baseMipLevel, uint32_t mipCount,
-                            const SurfaceFormatInfo *surfaceFormatInfo) {
+                            const ClSurfaceFormatInfo *surfaceFormatInfo) {
     const auto device = context->getDevice(0);
     const auto &hwInfo = device->getHardwareInfo();
 
@@ -419,16 +422,16 @@ Image *Image::createImageHw(Context *context, const MemoryPropertiesFlags &memor
     return image;
 }
 
-Image *Image::createSharedImage(Context *context, SharingHandler *sharingHandler, McsSurfaceInfo &mcsSurfaceInfo,
+Image *Image::createSharedImage(Context *context, SharingHandler *sharingHandler, const McsSurfaceInfo &mcsSurfaceInfo,
                                 GraphicsAllocation *graphicsAllocation, GraphicsAllocation *mcsAllocation,
-                                cl_mem_flags flags, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount) {
+                                cl_mem_flags flags, const ClSurfaceFormatInfo *surfaceFormat, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount) {
     auto sharedImage = createImageHw(context, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0, 0), flags, 0, graphicsAllocation->getUnderlyingBufferSize(),
-                                     nullptr, imgInfo.surfaceFormat->OCLImageFormat, *imgInfo.imgDesc, false, graphicsAllocation, false, baseMipLevel, mipCount, imgInfo.surfaceFormat);
+                                     nullptr, surfaceFormat->OCLImageFormat, Image::convertDescriptor(imgInfo.imgDesc), false, graphicsAllocation, false, baseMipLevel, mipCount, surfaceFormat);
     sharedImage->setSharingHandler(sharingHandler);
     sharedImage->setMcsAllocation(mcsAllocation);
     sharedImage->setQPitch(imgInfo.qPitch);
-    sharedImage->setHostPtrRowPitch(imgInfo.imgDesc->image_row_pitch);
-    sharedImage->setHostPtrSlicePitch(imgInfo.imgDesc->image_slice_pitch);
+    sharedImage->setHostPtrRowPitch(imgInfo.imgDesc.imageRowPitch);
+    sharedImage->setHostPtrSlicePitch(imgInfo.imgDesc.imageSlicePitch);
     sharedImage->setCubeFaceIndex(cubeFaceIndex);
     sharedImage->setSurfaceOffsets(imgInfo.offset, imgInfo.xOffset, imgInfo.yOffset, imgInfo.yOffsetForUVPlane);
     sharedImage->setMcsSurfaceInfo(mcsSurfaceInfo);
@@ -437,10 +440,10 @@ Image *Image::createSharedImage(Context *context, SharingHandler *sharingHandler
 
 cl_int Image::validate(Context *context,
                        const MemoryPropertiesFlags &memoryProperties,
-                       const SurfaceFormatInfo *surfaceFormat,
+                       const ClSurfaceFormatInfo *surfaceFormat,
                        const cl_image_desc *imageDesc,
                        const void *hostPtr) {
-    auto pDevice = context->getDevice(0);
+    auto pClDevice = context->getDevice(0);
     size_t srcSize = 0;
     size_t retSize = 0;
     const size_t *maxWidth = nullptr;
@@ -454,17 +457,17 @@ cl_int Image::validate(Context *context,
     Image *parentImage = castToObject<Image>(imageDesc->mem_object);
     Buffer *parentBuffer = castToObject<Buffer>(imageDesc->mem_object);
     if (imageDesc->image_type == CL_MEM_OBJECT_IMAGE2D) {
-        pDevice->getCap<CL_DEVICE_IMAGE2D_MAX_WIDTH>(reinterpret_cast<const void *&>(maxWidth), srcSize, retSize);
-        pDevice->getCap<CL_DEVICE_IMAGE2D_MAX_HEIGHT>(reinterpret_cast<const void *&>(maxHeight), srcSize, retSize);
+        pClDevice->getCap<CL_DEVICE_IMAGE2D_MAX_WIDTH>(reinterpret_cast<const void *&>(maxWidth), srcSize, retSize);
+        pClDevice->getCap<CL_DEVICE_IMAGE2D_MAX_HEIGHT>(reinterpret_cast<const void *&>(maxHeight), srcSize, retSize);
         if (imageDesc->image_width > *maxWidth ||
             imageDesc->image_height > *maxHeight) {
             return CL_INVALID_IMAGE_SIZE;
         }
         if (parentBuffer) { // Image 2d from buffer
-            pDevice->getCap<CL_DEVICE_IMAGE_PITCH_ALIGNMENT>(reinterpret_cast<const void *&>(pitchAlignment), srcSize, retSize);
-            pDevice->getCap<CL_DEVICE_IMAGE_BASE_ADDRESS_ALIGNMENT>(reinterpret_cast<const void *&>(baseAddressAlignment), srcSize, retSize);
+            pClDevice->getCap<CL_DEVICE_IMAGE_PITCH_ALIGNMENT>(reinterpret_cast<const void *&>(pitchAlignment), srcSize, retSize);
+            pClDevice->getCap<CL_DEVICE_IMAGE_BASE_ADDRESS_ALIGNMENT>(reinterpret_cast<const void *&>(baseAddressAlignment), srcSize, retSize);
 
-            const auto rowSize = imageDesc->image_row_pitch != 0 ? imageDesc->image_row_pitch : alignUp(imageDesc->image_width * surfaceFormat->NumChannels * surfaceFormat->PerChannelSizeInBytes, *pitchAlignment);
+            const auto rowSize = imageDesc->image_row_pitch != 0 ? imageDesc->image_row_pitch : alignUp(imageDesc->image_width * surfaceFormat->surfaceFormat.NumChannels * surfaceFormat->surfaceFormat.PerChannelSizeInBytes, *pitchAlignment);
             const auto minimumBufferSize = imageDesc->image_height * rowSize;
 
             if ((imageDesc->image_row_pitch % (*pitchAlignment)) ||
@@ -491,8 +494,8 @@ cl_int Image::validate(Context *context,
         }
     } else {
         if (imageDesc->image_row_pitch != 0) {
-            if (imageDesc->image_row_pitch % surfaceFormat->ImageElementSizeInBytes != 0 ||
-                imageDesc->image_row_pitch < imageDesc->image_width * surfaceFormat->ImageElementSizeInBytes) {
+            if (imageDesc->image_row_pitch % surfaceFormat->surfaceFormat.ImageElementSizeInBytes != 0 ||
+                imageDesc->image_row_pitch < imageDesc->image_width * surfaceFormat->surfaceFormat.ImageElementSizeInBytes) {
                 return CL_INVALID_IMAGE_DESCRIPTOR;
             }
         }
@@ -522,10 +525,9 @@ cl_int Image::validateImageFormat(const cl_image_format *imageFormat) {
                          isValidRGBAFormat(imageFormat) ||
                          isValidSRGBFormat(imageFormat) ||
                          isValidARGBFormat(imageFormat) ||
-                         isValidDepthStencilFormat(imageFormat);
-#if SUPPORT_YUV
-    isValidFormat = isValidFormat || isValidYUVFormat(imageFormat);
-#endif
+                         isValidDepthStencilFormat(imageFormat) ||
+                         isValidYUVFormat(imageFormat);
+
     if (isValidFormat) {
         return CL_SUCCESS;
     }
@@ -537,7 +539,7 @@ cl_int Image::validatePlanarYUV(Context *context,
                                 const cl_image_desc *imageDesc,
                                 const void *hostPtr) {
     cl_int errorCode = CL_SUCCESS;
-    auto pDevice = context->getDevice(0);
+    auto pClDevice = context->getDevice(0);
     const size_t *maxWidth = nullptr;
     const size_t *maxHeight = nullptr;
     size_t srcSize = 0;
@@ -571,8 +573,8 @@ cl_int Image::validatePlanarYUV(Context *context,
             }
         }
 
-        pDevice->getCap<CL_DEVICE_PLANAR_YUV_MAX_WIDTH_INTEL>(reinterpret_cast<const void *&>(maxWidth), srcSize, retSize);
-        pDevice->getCap<CL_DEVICE_PLANAR_YUV_MAX_HEIGHT_INTEL>(reinterpret_cast<const void *&>(maxHeight), srcSize, retSize);
+        pClDevice->getCap<CL_DEVICE_PLANAR_YUV_MAX_WIDTH_INTEL>(reinterpret_cast<const void *&>(maxWidth), srcSize, retSize);
+        pClDevice->getCap<CL_DEVICE_PLANAR_YUV_MAX_HEIGHT_INTEL>(reinterpret_cast<const void *&>(maxHeight), srcSize, retSize);
         if (imageDesc->image_width > *maxWidth || imageDesc->image_height > *maxHeight) {
             errorCode = CL_INVALID_IMAGE_SIZE;
             break;
@@ -665,18 +667,19 @@ void Image::calculateHostPtrOffset(size_t *imageOffset, const size_t *origin, co
 // Assumption: all parameters are already validated be calling function
 cl_int Image::getImageParams(Context *context,
                              cl_mem_flags memFlags,
-                             const SurfaceFormatInfo *surfaceFormat,
+                             const ClSurfaceFormatInfo *surfaceFormat,
                              const cl_image_desc *imageDesc,
                              size_t *imageRowPitch,
                              size_t *imageSlicePitch) {
     cl_int retVal = CL_SUCCESS;
+    auto clientContext = context->getDevice(0)->getExecutionEnvironment()->getGmmClientContext();
 
-    ImageInfo imgInfo = {0};
+    ImageInfo imgInfo = {};
     cl_image_desc imageDescriptor = *imageDesc;
-    imgInfo.imgDesc = &imageDescriptor;
-    imgInfo.surfaceFormat = surfaceFormat;
+    imgInfo.imgDesc = Image::convertDescriptor(imageDescriptor);
+    imgInfo.surfaceFormat = &surfaceFormat->surfaceFormat;
 
-    auto gmm = std::make_unique<Gmm>(imgInfo, StorageInfo{});
+    auto gmm = std::make_unique<Gmm>(clientContext, imgInfo, StorageInfo{});
 
     *imageRowPitch = imgInfo.rowPitch;
     *imageSlicePitch = imgInfo.slicePitch;
@@ -692,47 +695,78 @@ const cl_image_format &Image::getImageFormat() const {
     return imageFormat;
 }
 
-const SurfaceFormatInfo &Image::getSurfaceFormatInfo() const {
+const ClSurfaceFormatInfo &Image::getSurfaceFormatInfo() const {
     return surfaceFormatInfo;
 }
 
-bool Image::isCopyRequired(ImageInfo &imgInfo, const void *hostPtr) {
-    if (!hostPtr) {
-        return false;
-    }
-
-    size_t imageWidth = imgInfo.imgDesc->image_width;
-    size_t imageHeight = 1;
-    size_t imageDepth = 1;
-    size_t imageCount = 1;
-
-    switch (imgInfo.imgDesc->image_type) {
-    case CL_MEM_OBJECT_IMAGE3D:
-        imageDepth = imgInfo.imgDesc->image_depth;
-        CPP_ATTRIBUTE_FALLTHROUGH;
-    case CL_MEM_OBJECT_IMAGE2D:
-    case CL_MEM_OBJECT_IMAGE2D_ARRAY:
-        imageHeight = imgInfo.imgDesc->image_height;
-        break;
+cl_mem_object_type Image::convertType(const ImageType type) {
+    switch (type) {
+    case ImageType::Image2D:
+        return CL_MEM_OBJECT_IMAGE2D;
+    case ImageType::Image3D:
+        return CL_MEM_OBJECT_IMAGE3D;
+    case ImageType::Image2DArray:
+        return CL_MEM_OBJECT_IMAGE2D_ARRAY;
+    case ImageType::Image1D:
+        return CL_MEM_OBJECT_IMAGE1D;
+    case ImageType::Image1DArray:
+        return CL_MEM_OBJECT_IMAGE1D_ARRAY;
+    case ImageType::Image1DBuffer:
+        return CL_MEM_OBJECT_IMAGE1D_BUFFER;
     default:
         break;
     }
+    return 0;
+}
 
-    auto hostPtrRowPitch = imgInfo.imgDesc->image_row_pitch ? imgInfo.imgDesc->image_row_pitch : imageWidth * imgInfo.surfaceFormat->ImageElementSizeInBytes;
-    auto hostPtrSlicePitch = imgInfo.imgDesc->image_slice_pitch ? imgInfo.imgDesc->image_slice_pitch : hostPtrRowPitch * imgInfo.imgDesc->image_height;
+ImageType Image::convertType(const cl_mem_object_type type) {
+    switch (type) {
+    case CL_MEM_OBJECT_IMAGE2D:
+        return ImageType::Image2D;
+    case CL_MEM_OBJECT_IMAGE3D:
+        return ImageType::Image3D;
+    case CL_MEM_OBJECT_IMAGE2D_ARRAY:
+        return ImageType::Image2DArray;
+    case CL_MEM_OBJECT_IMAGE1D:
+        return ImageType::Image1D;
+    case CL_MEM_OBJECT_IMAGE1D_ARRAY:
+        return ImageType::Image1DArray;
+    case CL_MEM_OBJECT_IMAGE1D_BUFFER:
+        return ImageType::Image1DBuffer;
+    default:
+        break;
+    }
+    return ImageType::Invalid;
+}
 
-    size_t pointerPassedSize = hostPtrRowPitch * imageHeight * imageDepth * imageCount;
-    auto alignedSizePassedPointer = alignSizeWholePage(const_cast<void *>(hostPtr), pointerPassedSize);
-    auto alignedSizeRequiredForAllocation = alignSizeWholePage(const_cast<void *>(hostPtr), imgInfo.size);
+ImageDescriptor Image::convertDescriptor(const cl_image_desc &imageDesc) {
+    ImageDescriptor desc = {};
+    desc.fromParent = imageDesc.mem_object != nullptr;
+    desc.imageArraySize = imageDesc.image_array_size;
+    desc.imageDepth = imageDesc.image_depth;
+    desc.imageHeight = imageDesc.image_height;
+    desc.imageRowPitch = imageDesc.image_row_pitch;
+    desc.imageSlicePitch = imageDesc.image_slice_pitch;
+    desc.imageType = convertType(imageDesc.image_type);
+    desc.imageWidth = imageDesc.image_width;
+    desc.numMipLevels = imageDesc.num_mip_levels;
+    desc.numSamples = imageDesc.num_samples;
+    return desc;
+}
 
-    // Passed pointer doesn't have enough memory, copy is needed
-    bool copyRequired = (alignedSizeRequiredForAllocation > alignedSizePassedPointer) |
-                        (imgInfo.rowPitch != hostPtrRowPitch) |
-                        (imgInfo.slicePitch != hostPtrSlicePitch) |
-                        ((reinterpret_cast<uintptr_t>(hostPtr) & (MemoryConstants::cacheLineSize - 1)) != 0) |
-                        !imgInfo.linearStorage;
-
-    return copyRequired;
+cl_image_desc Image::convertDescriptor(const ImageDescriptor &imageDesc) {
+    cl_image_desc desc = {};
+    desc.mem_object = nullptr;
+    desc.image_array_size = imageDesc.imageArraySize;
+    desc.image_depth = imageDesc.imageDepth;
+    desc.image_height = imageDesc.imageHeight;
+    desc.image_row_pitch = imageDesc.imageRowPitch;
+    desc.image_slice_pitch = imageDesc.imageSlicePitch;
+    desc.image_type = convertType(imageDesc.imageType);
+    desc.image_width = imageDesc.imageWidth;
+    desc.num_mip_levels = imageDesc.numMipLevels;
+    desc.num_samples = imageDesc.numSamples;
+    return desc;
 }
 
 cl_int Image::getImageInfo(cl_image_info paramName,
@@ -756,13 +790,13 @@ cl_int Image::getImageInfo(cl_image_info paramName,
 
     case CL_IMAGE_ELEMENT_SIZE:
         srcParamSize = sizeof(size_t);
-        srcParam = &(surfFmtInfo.ImageElementSizeInBytes);
+        srcParam = &(surfFmtInfo.surfaceFormat.ImageElementSizeInBytes);
         break;
 
     case CL_IMAGE_ROW_PITCH:
         srcParamSize = sizeof(size_t);
         if (mcsSurfaceInfo.multisampleCount > 1) {
-            retParam = imageDesc.image_width * surfFmtInfo.ImageElementSizeInBytes * imageDesc.num_samples;
+            retParam = imageDesc.image_width * surfFmtInfo.surfaceFormat.ImageElementSizeInBytes * imageDesc.num_samples;
         } else {
             retParam = hostPtrRowPitch;
         }
@@ -847,11 +881,11 @@ Image *Image::redescribeFillImage() {
 
     auto imageFormatNew = this->imageFormat;
     auto imageDescNew = this->imageDesc;
-    const SurfaceFormatInfo *surfaceFormat = nullptr;
-    uint32_t redescribeTableCol = this->surfaceFormatInfo.NumChannels / 2;
-    uint32_t redescribeTableRow = this->surfaceFormatInfo.PerChannelSizeInBytes / 2;
+    const ClSurfaceFormatInfo *surfaceFormat = nullptr;
+    uint32_t redescribeTableCol = this->surfaceFormatInfo.surfaceFormat.NumChannels / 2;
+    uint32_t redescribeTableRow = this->surfaceFormatInfo.surfaceFormat.PerChannelSizeInBytes / 2;
 
-    ArrayRef<const SurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
+    ArrayRef<const ClSurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
 
     uint32_t surfaceFormatIdx = redescribeTable[redescribeTableRow][redescribeTableCol];
     surfaceFormat = &readWriteSurfaceFormats[surfaceFormatIdx];
@@ -892,20 +926,14 @@ Image *Image::redescribe() {
         7   // {CL_RGBA, CL_UNSIGNED_INT32}    16 byte
     };
 
+    const uint32_t bytesPerPixel = this->surfaceFormatInfo.surfaceFormat.NumChannels * surfaceFormatInfo.surfaceFormat.PerChannelSizeInBytes;
+    const uint32_t exponent = Math::log2(bytesPerPixel);
+    DEBUG_BREAK_IF(exponent >= 5u);
+    const uint32_t surfaceFormatIdx = redescribeTableBytes[exponent % 5];
+    const ArrayRef<const ClSurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
+    const ClSurfaceFormatInfo *surfaceFormat = &readWriteSurfaceFormats[surfaceFormatIdx];
+
     auto imageFormatNew = this->imageFormat;
-    auto imageDescNew = this->imageDesc;
-    const SurfaceFormatInfo *surfaceFormat = nullptr;
-    auto bytesPerPixel = this->surfaceFormatInfo.NumChannels * surfaceFormatInfo.PerChannelSizeInBytes;
-    uint32_t exponent = 0;
-
-    exponent = Math::log2(bytesPerPixel);
-    DEBUG_BREAK_IF(exponent >= 32);
-
-    uint32_t surfaceFormatIdx = redescribeTableBytes[exponent % 5];
-    ArrayRef<const SurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
-
-    surfaceFormat = &readWriteSurfaceFormats[surfaceFormatIdx];
-
     imageFormatNew.image_channel_order = surfaceFormat->OCLImageFormat.image_channel_order;
     imageFormatNew.image_channel_data_type = surfaceFormat->OCLImageFormat.image_channel_data_type;
 
@@ -918,7 +946,7 @@ Image *Image::redescribe() {
                                 this->getSize(),
                                 this->getCpuAddress(),
                                 imageFormatNew,
-                                imageDescNew,
+                                this->imageDesc,
                                 this->isMemObjZeroCopy(),
                                 this->getGraphicsAllocation(),
                                 true,
@@ -967,7 +995,7 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     imageDesc.mem_object = this;
     // get access to the Y plane (CL_R)
     imageDesc.image_depth = 0;
-    SurfaceFormatInfo *surfaceFormat = (SurfaceFormatInfo *)Image::getSurfaceFormatFromTable(flags, &imageFormat);
+    const ClSurfaceFormatInfo *surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
 
     // Create NV12 UV Plane image
     std::unique_ptr<Image> imageYPlane(Image::create(
@@ -992,7 +1020,7 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     imageFormat.image_channel_order = CL_RG;
 
     hostPtr = static_cast<const void *>(static_cast<const char *>(hostPtr) + (hostPtrRowPitch * this->imageDesc.image_height));
-    surfaceFormat = (SurfaceFormatInfo *)Image::getSurfaceFormatFromTable(flags, &imageFormat);
+    surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
     // Create NV12 UV Plane image
     std::unique_ptr<Image> imageUVPlane(Image::create(
         context,
@@ -1009,13 +1037,13 @@ cl_int Image::writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch) {
     return retVal;
 }
 
-const SurfaceFormatInfo *Image::getSurfaceFormatFromTable(cl_mem_flags flags, const cl_image_format *imageFormat) {
+const ClSurfaceFormatInfo *Image::getSurfaceFormatFromTable(cl_mem_flags flags, const cl_image_format *imageFormat) {
     if (!imageFormat) {
         DEBUG_BREAK_IF("Invalid format");
         return nullptr;
     }
 
-    ArrayRef<const SurfaceFormatInfo> formats = SurfaceFormats::surfaceFormats(flags, imageFormat);
+    ArrayRef<const ClSurfaceFormatInfo> formats = SurfaceFormats::surfaceFormats(flags, imageFormat);
 
     for (auto &format : formats) {
         if (format.OCLImageFormat.image_channel_data_type == imageFormat->image_channel_data_type &&
@@ -1269,7 +1297,7 @@ size_t Image::calculateOffsetForMapping(const MemObjOffsetArray &origin) const {
     size_t rowPitch = mappingOnCpuAllowed() ? imageDesc.image_row_pitch : getHostPtrRowPitch();
     size_t slicePitch = mappingOnCpuAllowed() ? imageDesc.image_slice_pitch : getHostPtrSlicePitch();
 
-    size_t offset = getSurfaceFormatInfo().ImageElementSizeInBytes * origin[0];
+    size_t offset = getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes * origin[0];
 
     switch (imageDesc.image_type) {
     case CL_MEM_OBJECT_IMAGE1D_ARRAY:

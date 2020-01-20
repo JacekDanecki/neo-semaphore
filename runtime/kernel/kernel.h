@@ -1,11 +1,13 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "core/command_stream/thread_arbitration_policy.h"
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/address_patch.h"
 #include "core/helpers/preamble.h"
 #include "core/unified_memory/unified_memory.h"
@@ -13,11 +15,9 @@
 #include "public/cl_ext_private.h"
 #include "runtime/api/cl_types.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
-#include "runtime/command_stream/thread_arbitration_policy.h"
 #include "runtime/device_queue/device_queue.h"
 #include "runtime/helpers/base_object.h"
 #include "runtime/helpers/properties_helper.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/program/kernel_info.h"
 #include "runtime/program/program.h"
 
@@ -90,10 +90,10 @@ class Kernel : public BaseObject<_cl_kernel> {
             *errcodeRet = retVal;
         }
 
-        if (DebugManager.debugKernelDumpingAvailable()) {
+        if (FileLoggerInstance().enabled()) {
             std::string source;
             program->getSource(source);
-            DebugManager.dumpKernel(kernelInfo.name, source);
+            FileLoggerInstance().dumpKernel(kernelInfo.name, source);
         }
 
         return pKernel;
@@ -190,7 +190,7 @@ class Kernel : public BaseObject<_cl_kernel> {
         return kernelInfo;
     }
 
-    const Device &getDevice() const {
+    const ClDevice &getDevice() const {
         return device;
     }
 
@@ -395,10 +395,10 @@ class Kernel : public BaseObject<_cl_kernel> {
     void clearUnifiedMemoryExecInfo();
 
     bool areStatelessWritesUsed() { return containsStatelessWrites; }
-    void setThreadArbitrationPolicy(uint32_t propertyValue) {
-        this->threadArbitrationPolicy = propertyValue;
+    int setKernelThreadArbitrationPolicy(uint32_t propertyValue);
+    void setThreadArbitrationPolicy(uint32_t policy) {
+        this->threadArbitrationPolicy = policy;
     }
-
     uint32_t getMaxWorkGroupCount(const cl_uint workDim, const size_t *localWorkSize) const;
 
   protected:
@@ -479,7 +479,7 @@ class Kernel : public BaseObject<_cl_kernel> {
     void patchWithImplicitSurface(void *ptrToPatchInCrossThreadData, GraphicsAllocation &allocation, const PatchTokenT &patch);
 
     void getParentObjectCounts(ObjectCounts &objectCount);
-    Kernel(Program *programArg, const KernelInfo &kernelInfoArg, const Device &deviceArg, bool schedulerKernel = false);
+    Kernel(Program *programArg, const KernelInfo &kernelInfoArg, const ClDevice &deviceArg, bool schedulerKernel = false);
     void provideInitializationHints();
 
     void patchBlocksCurbeWithConstantValues();
@@ -492,7 +492,7 @@ class Kernel : public BaseObject<_cl_kernel> {
     bool allocationForCacheFlush(GraphicsAllocation *argAllocation) const;
     Program *program;
     Context *context;
-    const Device &device;
+    const ClDevice &device;
     const KernelInfo &kernelInfo;
 
     std::vector<SimpleKernelArgInfo> kernelArguments;

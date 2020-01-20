@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,8 +13,11 @@
 #include "runtime/platform/platform.h"
 #include "runtime/program/program.h"
 #include "test.h"
+#include "unit_tests/compiler_interface/patchtokens_tests.h"
 #include "unit_tests/mocks/mock_buffer.h"
 #include "unit_tests/mocks/mock_csr.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
+#include "unit_tests/mocks/mock_memory_manager.h"
 #include "unit_tests/mocks/mock_program.h"
 #include "unit_tests/program/program_with_source.h"
 
@@ -44,7 +47,7 @@ class ProgramDataTestBase : public testing::Test,
 
     void SetUp() override {
         PlatformFixture::SetUp();
-        cl_device_id device = pPlatform->getDevice(0);
+        cl_device_id device = pPlatform->getClDevice(0);
         ContextFixture::SetUp(1, &device);
         ProgramFixture::SetUp();
 
@@ -718,8 +721,28 @@ TEST_F(ProgramDataTest, ConstantPointerProgramBinaryInfo) {
     delete[] pConstantPointer;
 }
 
+TEST(ProgramScopeMetadataTest, WhenPatchingGlobalSurfaceThenPickProperSourceBuffer) {
+    MockExecutionEnvironment execEnv;
+    MockClDevice device{new MockDevice};
+    execEnv.memoryManager = std::make_unique<MockMemoryManager>();
+    PatchTokensTestData::ValidProgramWithMixedGlobalVarAndConstSurfacesAndPointers decodedProgram;
+    decodedProgram.globalPointerMutable->GlobalPointerOffset = 0U;
+    decodedProgram.constantPointerMutable->ConstantPointerOffset = 0U;
+    memset(decodedProgram.globalSurfMutable + 1, 0U, sizeof(uintptr_t));
+    memset(decodedProgram.constSurfMutable + 1, 0U, sizeof(uintptr_t));
+    MockProgram program(execEnv);
+    program.pDevice = &device;
+    program.processProgramScopeMetadata(decodedProgram);
+    ASSERT_NE(nullptr, program.globalSurface);
+    ASSERT_NE(nullptr, program.constantSurface);
+    ASSERT_NE(nullptr, program.globalSurface->getUnderlyingBuffer());
+    ASSERT_NE(nullptr, program.constantSurface->getUnderlyingBuffer());
+    EXPECT_EQ(static_cast<uintptr_t>(program.globalSurface->getGpuAddressToPatch()), *reinterpret_cast<uintptr_t *>(program.constantSurface->getUnderlyingBuffer()));
+    EXPECT_EQ(static_cast<uintptr_t>(program.constantSurface->getGpuAddressToPatch()), *reinterpret_cast<uintptr_t *>(program.globalSurface->getUnderlyingBuffer()));
+}
+
 TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeConstantBufferPatchTokensAreReadThenConstantPointerOffsetIsPatchedWith32bitPointer) {
-    cl_device_id device = pPlatform->getDevice(0);
+    cl_device_id device = pPlatform->getClDevice(0);
     CreateProgramWithSource(pContext, &device, "CopyBuffer_simd8.cl");
     ASSERT_NE(nullptr, pProgram);
 
@@ -762,7 +785,7 @@ TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeConstantB
 }
 
 TEST_F(ProgramDataTest, GivenProgramWith32bitPointerOptWhenProgramScopeGlobalPointerPatchTokensAreReadThenGlobalPointerOffsetIsPatchedWith32bitPointer) {
-    cl_device_id device = pPlatform->getDevice(0);
+    cl_device_id device = pPlatform->getClDevice(0);
     CreateProgramWithSource(pContext, &device, "CopyBuffer_simd8.cl");
     ASSERT_NE(nullptr, pProgram);
 

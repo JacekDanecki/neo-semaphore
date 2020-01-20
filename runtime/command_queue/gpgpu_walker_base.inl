@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,9 +8,11 @@
 #pragma once
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/debug_helpers.h"
+#include "core/helpers/engine_node_helper.h"
 #include "core/helpers/hw_helper.h"
 #include "core/indirect_heap/indirect_heap.h"
 #include "core/memory_manager/graphics_allocation.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/command_queue/local_id_gen.h"
@@ -18,12 +20,10 @@
 #include "runtime/device/device_info.h"
 #include "runtime/event/perf_counter.h"
 #include "runtime/event/user_event.h"
-#include "runtime/helpers/engine_node_helper.h"
 #include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/queue_helpers.h"
 #include "runtime/helpers/validators.h"
 #include "runtime/mem_obj/mem_obj.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/utilities/tag_allocator.h"
 
 #include <algorithm>
@@ -159,7 +159,7 @@ void GpgpuWalkerHelper<GfxFamily>::dispatchPerfCountersCommandsStart(
     LinearStream *commandStream) {
 
     const auto pPerformanceCounters = commandQueue.getPerfCounters();
-    const auto commandBufferType = isCcs(commandQueue.getDevice().getDefaultEngine().osContext->getEngineType())
+    const auto commandBufferType = EngineHelpers::isCcs(commandQueue.getDevice().getDefaultEngine().osContext->getEngineType())
                                        ? MetricsLibraryApi::GpuCommandBufferType::Compute
                                        : MetricsLibraryApi::GpuCommandBufferType::Render;
     const uint32_t size = pPerformanceCounters->getGpuCommandsSize(commandBufferType, true);
@@ -175,7 +175,7 @@ void GpgpuWalkerHelper<GfxFamily>::dispatchPerfCountersCommandsEnd(
     LinearStream *commandStream) {
 
     const auto pPerformanceCounters = commandQueue.getPerfCounters();
-    const auto commandBufferType = isCcs(commandQueue.getDevice().getDefaultEngine().osContext->getEngineType())
+    const auto commandBufferType = EngineHelpers::isCcs(commandQueue.getDevice().getDefaultEngine().osContext->getEngineType())
                                        ? MetricsLibraryApi::GpuCommandBufferType::Compute
                                        : MetricsLibraryApi::GpuCommandBufferType::Render;
     const uint32_t size = pPerformanceCounters->getGpuCommandsSize(commandBufferType, false);

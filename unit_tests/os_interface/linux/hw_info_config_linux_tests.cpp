@@ -263,6 +263,19 @@ TEST_F(HwInfoConfigTestLinuxDummy, dummyNegativeUnknownDeviceId) {
     EXPECT_EQ(-1, ret);
 }
 
+TEST_F(HwInfoConfigTestLinuxDummy, whenConfigureHwInfoIsCalledThenAreNonPersistentContextsSupportedReturnsTrue) {
+    int ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    EXPECT_EQ(0, ret);
+    EXPECT_TRUE(drm->areNonPersistentContextsSupported());
+}
+
+TEST_F(HwInfoConfigTestLinuxDummy, whenConfigureHwInfoIsCalledAndPersitentContextIsUnsupportedThenAreNonPersistentContextsSupportedReturnsFalse) {
+    drm->StoredPersistentContextsSupport = 0;
+    int ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    EXPECT_EQ(0, ret);
+    EXPECT_FALSE(drm->areNonPersistentContextsSupported());
+}
+
 TEST_F(HwInfoConfigTestLinuxDummy, dummyConfigPreemptionDrmEnabledMidThreadOn) {
     pInHwInfo.capabilityTable.defaultPreemptionMode = PreemptionMode::MidThread;
     drm->StoredPreemptionSupport =
@@ -392,4 +405,33 @@ TEST_F(HwInfoConfigTestLinuxDummy, givenInstrumentationForHardwareIsEnabledOrDis
     ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
     ASSERT_EQ(0, ret);
     EXPECT_TRUE(outHwInfo.capabilityTable.instrumentationEnabled == haveInstrumentation);
+}
+
+TEST_F(HwInfoConfigTestLinuxDummy, givenGttSizeReturnedWhenInitializingHwInfoThenSetSvmFtr) {
+    drm->storedGTTSize = MemoryConstants::max64BitAppAddress;
+    int ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    EXPECT_EQ(0, ret);
+    EXPECT_FALSE(outHwInfo.capabilityTable.ftrSvm);
+
+    drm->storedGTTSize = MemoryConstants::max64BitAppAddress + 1;
+    ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    EXPECT_EQ(0, ret);
+    EXPECT_TRUE(outHwInfo.capabilityTable.ftrSvm);
+}
+
+TEST_F(HwInfoConfigTestLinuxDummy, givenGttSizeReturnedWhenInitializingHwInfoThenSetGpuAddressSpace) {
+    drm->storedGTTSize = maxNBitValue(40) + 1;
+    int ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    EXPECT_EQ(0, ret);
+    EXPECT_EQ(drm->storedGTTSize - 1, outHwInfo.capabilityTable.gpuAddressSpace);
+}
+
+TEST_F(HwInfoConfigTestLinuxDummy, givenFailingGttSizeIoctlWhenInitializingHwInfoThenSetDefaultValues) {
+    drm->StoredRetValForGetGttSize = -1;
+    int ret = hwConfig.configureHwInfo(&pInHwInfo, &outHwInfo, osInterface);
+    EXPECT_EQ(0, ret);
+
+    EXPECT_TRUE(outHwInfo.capabilityTable.ftrSvm);
+    EXPECT_NE(0u, outHwInfo.capabilityTable.gpuAddressSpace);
+    EXPECT_EQ(pInHwInfo.capabilityTable.gpuAddressSpace, outHwInfo.capabilityTable.gpuAddressSpace);
 }

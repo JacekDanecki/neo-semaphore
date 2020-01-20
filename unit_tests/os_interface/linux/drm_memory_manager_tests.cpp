@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -14,6 +14,8 @@
 #include "core/helpers/ptr_math.h"
 #include "core/memory_manager/host_ptr_manager.h"
 #include "core/memory_manager/memory_constants.h"
+#include "core/memory_manager/residency.h"
+#include "core/os_interface/os_context.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/device_command_stream.h"
 #include "runtime/event/event.h"
@@ -27,7 +29,6 @@
 #include "runtime/os_interface/linux/drm_command_stream.h"
 #include "runtime/os_interface/linux/drm_memory_manager.h"
 #include "runtime/os_interface/linux/os_context_linux.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/utilities/tag_allocator.h"
 #include "test.h"
 #include "unit_tests/helpers/unit_test_helper.h"
@@ -43,7 +44,8 @@
 #include <iostream>
 #include <memory>
 
-using namespace NEO;
+namespace NEO {
+extern bool overrideDeviceWithDefaultHardwareInfo;
 
 AllocationProperties createAllocationProperties(size_t size, bool forcePin) {
     MockAllocationProperties properties(size);
@@ -56,7 +58,7 @@ typedef Test<DrmMemoryManagerFixture> DrmMemoryManagerTest;
 typedef Test<DrmMemoryManagerFixtureWithoutQuietIoctlExpectation> DrmMemoryManagerWithExplicitExpectationsTest;
 
 TEST_F(DrmMemoryManagerTest, whenCreatingDrmMemoryManagerThenSupportsMultiStorageResourcesFlagIsSetToFalse) {
-    EXPECT_FALSE(memoryManager->supportsMultiStorageResources);
+    EXPECT_TRUE(memoryManager->supportsMultiStorageResources);
 }
 
 TEST_F(DrmMemoryManagerTest, GivenGraphicsAllocationWhenAddAndRemoveAllocationToHostPtrManagerThenfragmentHasCorrectValues) {
@@ -505,11 +507,20 @@ TEST_F(DrmMemoryManagerTest, givenDrmAllocationWhenHandleFenceCompletionThenCall
 }
 
 TEST_F(DrmMemoryManagerTest, givenDrmMemoryManagerWhengetSystemSharedMemoryIsCalledThenContextGetParamIsCalled) {
-    mock->getContextParamRetValue = 16 * MemoryConstants::gigaByte;
-    uint64_t mem = memoryManager->getSystemSharedMemory();
-    mock->ioctl_expected.contextGetParam = 1;
-    EXPECT_EQ(mock->recordedGetContextParam.param, static_cast<__u64>(I915_CONTEXT_PARAM_GTT_SIZE));
-    EXPECT_GT(mem, 0u);
+    executionEnvironment->prepareRootDeviceEnvironments(4u);
+    for (auto i = 0u; i < 4u; i++) {
+        auto mock = std::make_unique<DrmMockCustom>();
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface->get()->setDrm(mock.get());
+
+        mock->getContextParamRetValue = 16 * MemoryConstants::gigaByte;
+        uint64_t mem = memoryManager->getSystemSharedMemory(i);
+        mock->ioctl_expected.contextGetParam = 1;
+        EXPECT_EQ(mock->recordedGetContextParam.param, static_cast<__u64>(I915_CONTEXT_PARAM_GTT_SIZE));
+        EXPECT_GT(mem, 0u);
+
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface.reset();
+    }
 }
 
 TEST_F(DrmMemoryManagerTest, getMaxApplicationAddress) {
@@ -522,26 +533,36 @@ TEST_F(DrmMemoryManagerTest, getMaxApplicationAddress) {
 }
 
 TEST_F(DrmMemoryManagerTest, getMinimumSystemSharedMemory) {
-    auto hostMemorySize = MemoryConstants::pageSize * (uint64_t)(sysconf(_SC_PHYS_PAGES));
-    // gpuMemSize < hostMemSize
-    auto gpuMemorySize = hostMemorySize - 1u;
-    mock->getContextParamRetValue = gpuMemorySize;
+    executionEnvironment->prepareRootDeviceEnvironments(4u);
+    for (auto i = 0u; i < 4u; i++) {
+        auto mock = std::make_unique<DrmMockCustom>();
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface->get()->setDrm(mock.get());
 
-    uint64_t systemSharedMemorySize = memoryManager->getSystemSharedMemory();
-    mock->ioctl_expected.contextGetParam = 1;
+        auto hostMemorySize = MemoryConstants::pageSize * (uint64_t)(sysconf(_SC_PHYS_PAGES));
+        // gpuMemSize < hostMemSize
+        auto gpuMemorySize = hostMemorySize - 1u;
+        mock->getContextParamRetValue = gpuMemorySize;
 
-    EXPECT_EQ(gpuMemorySize, systemSharedMemorySize);
-    mock->ioctl_expected.contextDestroy = 0;
-    mock->testIoctls();
+        uint64_t systemSharedMemorySize = memoryManager->getSystemSharedMemory(i);
+        mock->ioctl_expected.contextGetParam = 1;
 
-    // gpuMemSize > hostMemSize
-    gpuMemorySize = hostMemorySize + 1u;
-    mock->getContextParamRetValue = gpuMemorySize;
-    systemSharedMemorySize = memoryManager->getSystemSharedMemory();
-    mock->ioctl_expected.contextGetParam = 2;
-    EXPECT_EQ(hostMemorySize, systemSharedMemorySize);
-    mock->testIoctls();
-    mock->ioctl_expected.contextDestroy = static_cast<int>(device->engines.size());
+        EXPECT_EQ(gpuMemorySize, systemSharedMemorySize);
+        mock->ioctl_expected.contextDestroy = 0;
+        mock->ioctl_expected.contextCreate = 0;
+        mock->testIoctls();
+
+        // gpuMemSize > hostMemSize
+        gpuMemorySize = hostMemorySize + 1u;
+        mock->getContextParamRetValue = gpuMemorySize;
+        systemSharedMemorySize = memoryManager->getSystemSharedMemory(i);
+        mock->ioctl_expected.contextGetParam = 2;
+        EXPECT_EQ(hostMemorySize, systemSharedMemorySize);
+        mock->testIoctls();
+        mock->ioctl_expected.contextDestroy = static_cast<int>(device->engines.size());
+
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface.reset();
+    }
 }
 
 TEST_F(DrmMemoryManagerTest, BoWaitFailure) {
@@ -567,7 +588,7 @@ TEST_F(DrmMemoryManagerTest, NullOsHandleStorageAskedForPopulationReturnsFilledP
     OsHandleStorage storage;
     storage.fragmentStorageData[0].cpuPtr = reinterpret_cast<void *>(0x1000);
     storage.fragmentStorageData[0].fragmentSize = 1;
-    memoryManager->populateOsHandles(storage);
+    memoryManager->populateOsHandles(storage, 0u);
     EXPECT_NE(nullptr, storage.fragmentStorageData[0].osHandleStorage);
     EXPECT_EQ(nullptr, storage.fragmentStorageData[1].osHandleStorage);
     EXPECT_EQ(nullptr, storage.fragmentStorageData[2].osHandleStorage);
@@ -597,7 +618,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValid
     mock->ioctl_expected.gemUserptr = 1;
     mock->ioctl_expected.execbuffer2 = 1;
 
-    MemoryManager::AllocationStatus result = memoryManager->populateOsHandles(storage);
+    MemoryManager::AllocationStatus result = memoryManager->populateOsHandles(storage, 0u);
 
     EXPECT_EQ(MemoryManager::AllocationStatus::InvalidHostPointer, result);
     mock->testIoctls();
@@ -609,6 +630,82 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValid
     storage.fragmentStorageData[0].freeTheFragment = true;
     memoryManager->cleanOsHandles(storage, 0);
     mock->ioctl_res_ext = &mock->NONE;
+}
+
+TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValidationWhenReadOnlyPointerCausesPinningFailWithEfaultThenAlocateMemoryForNonSvmHostPtrReturnsNullptr) {
+    std::unique_ptr<TestedDrmMemoryManager> memoryManager(new (std::nothrow) TestedDrmMemoryManager(false,
+                                                                                                    false,
+                                                                                                    true,
+                                                                                                    *executionEnvironment));
+
+    memoryManager->registeredEngines = EngineControlContainer{this->device->engines};
+    for (auto engine : memoryManager->registeredEngines) {
+        engine.osContext->incRefInternal();
+    }
+
+    mock->reset();
+    size_t dummySize = 13u;
+
+    DrmMockCustom::IoctlResExt ioctlResExt = {1, -1};
+    mock->ioctl_res_ext = &ioctlResExt;
+    mock->errnoValue = EFAULT;
+    mock->ioctl_expected.gemUserptr = 1;
+    mock->ioctl_expected.execbuffer2 = 1;
+    mock->ioctl_expected.gemClose = 1;
+
+    AllocationData allocationData;
+    allocationData.size = dummySize;
+    allocationData.hostPtr = reinterpret_cast<const void *>(0x5001);
+
+    auto gfxPartition = memoryManager->getGfxPartition(0u);
+
+    auto allocatedPointer = gfxPartition->heapAllocate(HeapIndex::HEAP_STANDARD, dummySize);
+    gfxPartition->freeGpuAddressRange(allocatedPointer, dummySize);
+
+    auto allocation = memoryManager->allocateGraphicsMemoryForNonSvmHostPtr(allocationData);
+
+    EXPECT_EQ(nullptr, allocation);
+    mock->testIoctls();
+    mock->ioctl_res_ext = &mock->NONE;
+
+    //make sure that partition is free
+    size_t dummySize2 = 13u;
+    auto allocatedPointer2 = gfxPartition->heapAllocate(HeapIndex::HEAP_STANDARD, dummySize2);
+    EXPECT_EQ(allocatedPointer2, allocatedPointer);
+    gfxPartition->freeGpuAddressRange(allocatedPointer, dummySize2);
+}
+
+TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValidationWhenHostPtrDoesntCausePinningFailThenAlocateMemoryForNonSvmHostPtrReturnsAllocation) {
+    std::unique_ptr<TestedDrmMemoryManager> memoryManager(new (std::nothrow) TestedDrmMemoryManager(false,
+                                                                                                    false,
+                                                                                                    true,
+                                                                                                    *executionEnvironment));
+
+    memoryManager->registeredEngines = EngineControlContainer{this->device->engines};
+    for (auto engine : memoryManager->registeredEngines) {
+        engine.osContext->incRefInternal();
+    }
+
+    mock->reset();
+
+    DrmMockCustom::IoctlResExt ioctlResExt = {1, -1};
+    mock->ioctl_res_ext = &ioctlResExt;
+    mock->errnoValue = SUCCESS;
+    mock->ioctl_expected.gemUserptr = 1;
+    mock->ioctl_expected.execbuffer2 = 1;
+
+    AllocationData allocationData;
+    allocationData.size = 13u;
+    allocationData.hostPtr = reinterpret_cast<const void *>(0x5001);
+
+    auto allocation = memoryManager->allocateGraphicsMemoryForNonSvmHostPtr(allocationData);
+
+    EXPECT_NE(nullptr, allocation);
+
+    mock->testIoctls();
+    mock->ioctl_res_ext = &mock->NONE;
+
+    memoryManager->freeGraphicsMemory(allocation);
 }
 
 TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValidationWhenPinningFailWithErrorDifferentThanEfaultThenPopulateOsHandlesReturnsError) {
@@ -632,7 +729,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValid
     mock->ioctl_expected.gemUserptr = 1;
     mock->ioctl_expected.execbuffer2 = 1;
 
-    MemoryManager::AllocationStatus result = memoryManager->populateOsHandles(storage);
+    MemoryManager::AllocationStatus result = memoryManager->populateOsHandles(storage, 0u);
 
     EXPECT_EQ(MemoryManager::AllocationStatus::Error, result);
     mock->testIoctls();
@@ -691,6 +788,19 @@ TEST_F(DrmMemoryManagerTest, GivenPointerAndSizeWhenAskedToCreateGrahicsAllocati
     allocationData.size = MemoryConstants::pageSize64k;
     auto allocation = memoryManager->allocateGraphicsMemory64kb(allocationData);
     EXPECT_EQ(nullptr, allocation);
+}
+
+TEST_F(DrmMemoryManagerTest, GivenShareableEnabledWhenAskedToCreateGrahicsAllocationThenValidAllocationIsReturned) {
+    mock->ioctl_expected.gemWait = 1;
+    mock->ioctl_expected.gemCreate = 1;
+    mock->ioctl_expected.gemClose = 1;
+
+    allocationData.size = MemoryConstants::pageSize;
+    allocationData.flags.shareable = true;
+    auto allocation = memoryManager->allocateShareableMemory(allocationData);
+    EXPECT_NE(nullptr, allocation);
+    EXPECT_NE(0u, allocation->getGpuAddress());
+    memoryManager->freeGraphicsMemory(allocation);
 }
 
 TEST_F(DrmMemoryManagerTest, GivenMisalignedHostPtrAndMultiplePagesSizeWhenAskedForGraphicsAllcoationThenItContainsAllFragmentsWithProperGpuAdrresses) {
@@ -1109,7 +1219,7 @@ TEST_F(DrmMemoryManagerTest, GivenMemoryManagerWhenAllocateGraphicsMemoryForImag
     imgDesc.image_width = 512;
     imgDesc.image_height = 512;
     auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
-    imgInfo.imgDesc = &imgDesc;
+    imgInfo.imgDesc = Image::convertDescriptor(imgDesc);
     imgInfo.size = 4096u;
     imgInfo.rowPitch = 512u;
 
@@ -1497,13 +1607,13 @@ TEST_F(DrmMemoryManagerTest, givenHostPointerNotRequiringCopyWhenAllocateGraphic
     auto surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
 
     auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, surfaceFormat);
-    imgInfo.rowPitch = imgDesc.image_width * surfaceFormat->ImageElementSizeInBytes;
+    imgInfo.rowPitch = imgDesc.image_width * surfaceFormat->surfaceFormat.ImageElementSizeInBytes;
     imgInfo.slicePitch = imgInfo.rowPitch * imgDesc.image_height;
     imgInfo.size = imgInfo.slicePitch;
     imgInfo.linearStorage = true;
 
     auto hostPtr = alignedMalloc(imgDesc.image_width * imgDesc.image_height * 4, MemoryConstants::pageSize);
-    bool copyRequired = Image::isCopyRequired(imgInfo, hostPtr);
+    bool copyRequired = MockMemoryManager::isCopyRequired(imgInfo, hostPtr);
     EXPECT_FALSE(copyRequired);
 
     TestedDrmMemoryManager::AllocationData allocationData;
@@ -1557,7 +1667,7 @@ TEST_F(DrmMemoryManagerTest, givenDrmMemoryManagerAndOsHandleWhenCreateIsCalledA
     this->mock->outputHandle = 2u;
     size_t size = 4096u;
     AllocationProperties properties(0u, false, size, GraphicsAllocation::AllocationType::SHARED_BUFFER, false, false, 0u);
-    ASSERT_EQ(properties.subDeviceIndex, 0u);
+    ASSERT_TRUE(properties.subDevicesBitfield.none());
     ASSERT_EQ(properties.rootDeviceIndex, 0u);
 
     auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(handle, properties, false);
@@ -1594,15 +1704,16 @@ TEST_F(DrmMemoryManagerTest, givenOsHandleWithNonTiledObjectWhenCreateFromShared
     cl_mem_flags flags = CL_MEM_READ_ONLY;
     cl_image_desc imgDesc = {};
     cl_image_format gmmImgFormat = {CL_NV12_INTEL, CL_UNORM_INT8};
-    const SurfaceFormatInfo *gmmSurfaceFormat = nullptr;
-    ImageInfo imgInfo = {0};
+    const ClSurfaceFormatInfo *gmmSurfaceFormat = nullptr;
+    ImageInfo imgInfo = {};
 
-    imgInfo.imgDesc = &imgDesc;
     imgDesc.image_width = 4;
     imgDesc.image_height = 4;
     imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+
+    imgInfo.imgDesc = Image::convertDescriptor(imgDesc);
     gmmSurfaceFormat = Image::getSurfaceFormatFromTable(flags, &gmmImgFormat);
-    imgInfo.surfaceFormat = gmmSurfaceFormat;
+    imgInfo.surfaceFormat = &gmmSurfaceFormat->surfaceFormat;
     imgInfo.plane = GMM_PLANE_Y;
 
     AllocationProperties properties(0, false, imgInfo, GraphicsAllocation::AllocationType::SHARED_IMAGE);
@@ -1634,15 +1745,16 @@ TEST_F(DrmMemoryManagerTest, givenOsHandleWithTileYObjectWhenCreateFromSharedHan
     cl_mem_flags flags = CL_MEM_READ_ONLY;
     cl_image_desc imgDesc = {};
     cl_image_format gmmImgFormat = {CL_NV12_INTEL, CL_UNORM_INT8};
-    const SurfaceFormatInfo *gmmSurfaceFormat = nullptr;
-    ImageInfo imgInfo = {0};
+    const ClSurfaceFormatInfo *gmmSurfaceFormat = nullptr;
+    ImageInfo imgInfo = {};
 
-    imgInfo.imgDesc = &imgDesc;
     imgDesc.image_width = 4;
     imgDesc.image_height = 4;
     imgDesc.image_type = CL_MEM_OBJECT_IMAGE2D;
+
+    imgInfo.imgDesc = Image::convertDescriptor(imgDesc);
     gmmSurfaceFormat = Image::getSurfaceFormatFromTable(flags, &gmmImgFormat);
-    imgInfo.surfaceFormat = gmmSurfaceFormat;
+    imgInfo.surfaceFormat = &gmmSurfaceFormat->surfaceFormat;
     imgInfo.plane = GMM_PLANE_Y;
 
     AllocationProperties properties(0, false, imgInfo, GraphicsAllocation::AllocationType::SHARED_IMAGE);
@@ -1827,8 +1939,8 @@ TEST_F(DrmMemoryManagerTest, givenTwoGraphicsAllocationsThatShareTheSameBufferOb
     auto graphicsAllocation = memoryManager->createGraphicsAllocationFromSharedHandle(sharedHandle, properties, false);
     auto graphicsAllocation2 = memoryManager->createGraphicsAllocationFromSharedHandle(sharedHandle, properties, false);
 
-    executionEnvironment->osInterface = std::make_unique<OSInterface>();
-    executionEnvironment->osInterface->get()->setDrm(mock.get());
+    executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+    executionEnvironment->rootDeviceEnvironments[0]->osInterface->get()->setDrm(mock.get());
     auto testedCsr = new TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME>(*executionEnvironment);
     device->resetCommandStreamReceiver(testedCsr);
 
@@ -1855,8 +1967,8 @@ TEST_F(DrmMemoryManagerTest, givenTwoGraphicsAllocationsThatDoesnShareTheSameBuf
     mock->outputHandle++;
     auto graphicsAllocation2 = memoryManager->createGraphicsAllocationFromSharedHandle(sharedHandle, properties, false);
 
-    executionEnvironment->osInterface = std::make_unique<OSInterface>();
-    executionEnvironment->osInterface->get()->setDrm(mock.get());
+    executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+    executionEnvironment->rootDeviceEnvironments[0]->osInterface->get()->setDrm(mock.get());
     auto testedCsr = new TestedDrmCommandStreamReceiver<DEFAULT_TEST_FAMILY_NAME>(*executionEnvironment);
     device->resetCommandStreamReceiver(testedCsr);
 
@@ -1929,7 +2041,7 @@ TEST_F(DrmMemoryManagerTest, givenDrmMemoryManagerWhenLockUnlockIsCalledOnAlloca
     imgDesc.image_width = 512;
     imgDesc.image_height = 512;
     auto imgInfo = MockGmm::initImgInfo(imgDesc, 0, nullptr);
-    imgInfo.imgDesc = &imgDesc;
+    imgInfo.imgDesc = Image::convertDescriptor(imgDesc);
     imgInfo.size = 4096u;
     imgInfo.rowPitch = 512u;
 
@@ -2055,7 +2167,7 @@ TEST_F(DrmMemoryManagerTest, givenDrmMemoryManagerAndUnifiedAuxCapableAllocation
     mock->ioctl_expected.gemWait = 1;
     mock->ioctl_expected.gemClose = 1;
 
-    auto gmm = new Gmm(nullptr, 123, false);
+    auto gmm = new Gmm(executionEnvironment->getGmmClientContext(), nullptr, 123, false);
     auto allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
     allocation->setDefaultGmm(gmm);
 
@@ -2430,7 +2542,7 @@ TEST_F(DrmMemoryManagerBasic, givenMemoryManagerWhenAllocateGraphicsMemoryIsCall
 }
 
 TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenMemoryManagerWhenAllocateGraphicsMemoryWithPtrIsCalledThenMemoryPoolIsSystem4KBPages) {
-    executionEnvironment->osInterface->get()->setDrm(Drm::get(0));
+    executionEnvironment->rootDeviceEnvironments[0]->osInterface->get()->setDrm(Drm::get(0));
     std::unique_ptr<TestedDrmMemoryManager> memoryManager(new (std::nothrow) TestedDrmMemoryManager(false,
                                                                                                     false,
                                                                                                     true,
@@ -2526,7 +2638,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenDisabledForcePinAndEna
     OsHandleStorage handleStorage;
     handleStorage.fragmentStorageData[0].cpuPtr = reinterpret_cast<void *>(0x1000);
     handleStorage.fragmentStorageData[0].fragmentSize = 4096;
-    auto result = memoryManager->populateOsHandles(handleStorage);
+    auto result = memoryManager->populateOsHandles(handleStorage, 0u);
     EXPECT_EQ(MemoryManager::AllocationStatus::Success, result);
 
     mock->testIoctls();
@@ -2584,7 +2696,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenDisabledForcePinAndEna
     handleStorage.fragmentStorageData[2].cpuPtr = reinterpret_cast<void *>(0x4000);
     handleStorage.fragmentStorageData[2].fragmentSize = 4096;
 
-    auto result = memoryManager->populateOsHandles(handleStorage);
+    auto result = memoryManager->populateOsHandles(handleStorage, 0u);
     EXPECT_EQ(MemoryManager::AllocationStatus::Success, result);
 
     mock->testIoctls();
@@ -2638,7 +2750,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledHostMemoryValid
     OsHandleStorage storage;
     storage.fragmentStorageData[0].cpuPtr = reinterpret_cast<void *>(0x1000);
     storage.fragmentStorageData[0].fragmentSize = 1;
-    auto result = memoryManager->populateOsHandles(storage);
+    auto result = memoryManager->populateOsHandles(storage, 0u);
     EXPECT_EQ(MemoryManager::AllocationStatus::Success, result);
 
     EXPECT_NE(nullptr, storage.fragmentStorageData[0].osHandleStorage);
@@ -2853,7 +2965,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledValidateHostMem
     handleStorage.fragmentStorageData[2].cpuPtr = reinterpret_cast<void *>(0x4000);
     handleStorage.fragmentStorageData[2].fragmentSize = 4096;
 
-    auto result = memoryManager->populateOsHandles(handleStorage);
+    auto result = memoryManager->populateOsHandles(handleStorage, 0u);
     EXPECT_EQ(MemoryManager::AllocationStatus::InvalidHostPointer, result);
 
     mock->testIoctls();
@@ -2869,7 +2981,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledValidateHostMem
     handleStorage.fragmentStorageData[1].freeTheFragment = true;
     handleStorage.fragmentStorageData[2].freeTheFragment = true;
 
-    memoryManager->cleanOsHandles(handleStorage, 0);
+    memoryManager->cleanOsHandles(handleStorage, 0u);
     mock->ioctl_res_ext = &mock->NONE;
 }
 
@@ -2903,7 +3015,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledValidateHostMem
     handleStorage.fragmentStorageData[2].cpuPtr = reinterpret_cast<void *>(0x4000);
     handleStorage.fragmentStorageData[2].fragmentSize = 4096;
 
-    auto result = memoryManager->populateOsHandles(handleStorage);
+    auto result = memoryManager->populateOsHandles(handleStorage, 0u);
     EXPECT_EQ(MemoryManager::AllocationStatus::InvalidHostPointer, result);
 
     mock->testIoctls();
@@ -2939,7 +3051,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, givenEnabledValidateHostMem
     handleStorage.fragmentStorageData[0].cpuPtr = reinterpret_cast<void *>(0x1000);
     handleStorage.fragmentStorageData[0].fragmentSize = 4096;
 
-    auto result = memoryManager->populateOsHandles(handleStorage);
+    auto result = memoryManager->populateOsHandles(handleStorage, 0u);
     EXPECT_EQ(MemoryManager::AllocationStatus::Success, result);
 
     mock->testIoctls();
@@ -2992,6 +3104,16 @@ TEST_F(DrmMemoryManagerBasic, ifLimitedRangeAllocatorAvailableWhenAskedForAlloca
     EXPECT_LT(0u, address64bit);
 
     memoryManager->getGfxPartition(0)->heapFree(HeapIndex::HEAP_STANDARD, ptr, size);
+}
+
+TEST_F(DrmMemoryManagerBasic, givenSpecificAddressSpaceWhenInitializingMemoryManagerThenSetCorrectHeaps) {
+    executionEnvironment.getMutableHardwareInfo()->capabilityTable.gpuAddressSpace = maxNBitValue(48);
+    TestedDrmMemoryManager memoryManager(false, false, false, executionEnvironment);
+
+    auto gfxPartition = memoryManager.getGfxPartition(0);
+    auto limit = gfxPartition->getHeapLimit(HeapIndex::HEAP_SVM);
+
+    EXPECT_EQ(maxNBitValue(48 - 1), limit);
 }
 
 TEST_F(DrmMemoryManagerBasic, givenDisabledHostPtrTrackingWhenAllocateGraphicsMemoryForNonSvmHostPtrIsCalledWithNotAlignedPtrIsPassedThenAllocationIsCreated) {
@@ -3068,7 +3190,7 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, whenReservingAddressRangeTh
     constexpr size_t size = 0x1000;
     auto allocation = memoryManager->allocateGraphicsMemoryWithProperties(MockAllocationProperties{size});
     ASSERT_NE(nullptr, allocation);
-    void *reserve = memoryManager->reserveCpuAddressRange(size);
+    void *reserve = memoryManager->reserveCpuAddressRange(size, 0u);
     EXPECT_EQ(nullptr, reserve);
     allocation->setReservedAddressRange(reserve, size);
     EXPECT_EQ(reserve, allocation->getReservedAddressPtr());
@@ -3077,13 +3199,22 @@ TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, whenReservingAddressRangeTh
 }
 
 TEST_F(DrmMemoryManagerWithExplicitExpectationsTest, whenObtainFdFromHandleIsCalledThenProperFdHandleIsReturned) {
-    int boHandle = 3;
-    this->mock->outputFd = 1337;
-    this->mock->ioctl_expected.handleToPrimeFd = 1;
-    auto fdHandle = memoryManager->obtainFdFromHandle(boHandle);
-    EXPECT_EQ(this->mock->inputHandle, static_cast<uint32_t>(boHandle));
-    EXPECT_EQ(this->mock->inputFlags, DRM_CLOEXEC | DRM_RDWR);
-    EXPECT_EQ(1337, fdHandle);
+    executionEnvironment->prepareRootDeviceEnvironments(4u);
+    for (auto i = 0u; i < 4u; i++) {
+        auto mock = std::make_unique<DrmMockCustom>();
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface->get()->setDrm(mock.get());
+
+        int boHandle = 3;
+        mock->outputFd = 1337;
+        mock->ioctl_expected.handleToPrimeFd = 1;
+        auto fdHandle = memoryManager->obtainFdFromHandle(boHandle, i);
+        EXPECT_EQ(mock->inputHandle, static_cast<uint32_t>(boHandle));
+        EXPECT_EQ(mock->inputFlags, DRM_CLOEXEC | DRM_RDWR);
+        EXPECT_EQ(1337, fdHandle);
+
+        executionEnvironment->rootDeviceEnvironments[i]->osInterface.reset();
+    }
 }
 
 TEST_F(DrmMemoryManagerTest, givenSvmCpuAllocationWhenSizeAndAlignmentProvidedThenAllocateMemoryAndReserveGpuVa) {
@@ -3138,7 +3269,7 @@ TEST_F(DrmMemoryManagerTest, givenSvmCpuAllocationWhenSizeAndAlignmentProvidedBu
     EXPECT_EQ(nullptr, allocation);
 }
 
-TEST_F(DrmMemoryManagerTest, givenDrmMemoryManagerAndReleaseGpuRangeIsCalledThenGpuAddressIsDecanonized) {
+TEST_F(DrmMemoryManagerTest, DISABLED_givenDrmMemoryManagerAndReleaseGpuRangeIsCalledThenGpuAddressIsDecanonized) {
     auto mockGfxPartition = std::make_unique<MockGfxPartition>();
     mockGfxPartition->init(maxNBitValue(48), 0, 0);
     auto size = 2 * MemoryConstants::megaByte;
@@ -3180,8 +3311,8 @@ class GMockDrmMemoryManager : public TestedDrmMemoryManager {
 
 TEST(DrmMemoryManagerFreeGraphicsMemoryCallSequenceTest, givenDrmMemoryManagerAndFreeGraphicsMemoryIsCalledThenUnreferenceBufferObjectIsCalledFirstWithSynchronousDestroySetToTrue) {
     MockExecutionEnvironment executionEnvironment(*platformDevices);
-    executionEnvironment.osInterface = std::make_unique<OSInterface>();
-    executionEnvironment.osInterface->get()->setDrm(Drm::get(0));
+    executionEnvironment.rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+    executionEnvironment.rootDeviceEnvironments[0]->osInterface->get()->setDrm(Drm::get(0));
     GMockDrmMemoryManager gmockDrmMemoryManager(executionEnvironment);
 
     AllocationProperties properties{0, MemoryConstants::pageSize, GraphicsAllocation::AllocationType::BUFFER};
@@ -3190,7 +3321,7 @@ TEST(DrmMemoryManagerFreeGraphicsMemoryCallSequenceTest, givenDrmMemoryManagerAn
 
     {
         ::testing::InSequence inSequence;
-        EXPECT_CALL(gmockDrmMemoryManager, unreference(::testing::_, true)).Times(maxHandleCount);
+        EXPECT_CALL(gmockDrmMemoryManager, unreference(::testing::_, true)).Times(EngineLimits::maxHandleCount);
         EXPECT_CALL(gmockDrmMemoryManager, releaseGpuRange(::testing::_, ::testing::_, ::testing::_)).Times(1);
         EXPECT_CALL(gmockDrmMemoryManager, alignedFreeWrapper(::testing::_)).Times(1);
     }
@@ -3200,8 +3331,8 @@ TEST(DrmMemoryManagerFreeGraphicsMemoryCallSequenceTest, givenDrmMemoryManagerAn
 
 TEST(DrmMemoryManagerFreeGraphicsMemoryUnreferenceTest, givenDrmMemoryManagerAndFreeGraphicsMemoryIsCalledForSharedAllocationThenUnreferenceBufferObjectIsCalledWithSynchronousDestroySetToFalse) {
     MockExecutionEnvironment executionEnvironment(*platformDevices);
-    executionEnvironment.osInterface = std::make_unique<OSInterface>();
-    executionEnvironment.osInterface->get()->setDrm(Drm::get(0));
+    executionEnvironment.rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+    executionEnvironment.rootDeviceEnvironments[0]->osInterface->get()->setDrm(Drm::get(0));
     ::testing::NiceMock<GMockDrmMemoryManager> gmockDrmMemoryManager(executionEnvironment);
 
     osHandle handle = 1u;
@@ -3210,7 +3341,21 @@ TEST(DrmMemoryManagerFreeGraphicsMemoryUnreferenceTest, givenDrmMemoryManagerAnd
     ASSERT_NE(nullptr, allocation);
 
     EXPECT_CALL(gmockDrmMemoryManager, unreference(::testing::_, false)).Times(1);
-    EXPECT_CALL(gmockDrmMemoryManager, unreference(::testing::_, true)).Times(maxHandleCount - 1);
+    EXPECT_CALL(gmockDrmMemoryManager, unreference(::testing::_, true)).Times(EngineLimits::maxHandleCount - 1);
 
     gmockDrmMemoryManager.freeGraphicsMemory(allocation);
 }
+
+TEST(DrmMemoryMangerTest, givenMultipleRootDeviceWhenMemoryManagerGetsDrmThenDrmIsFromCorrectRootDevice) {
+    DebugManagerStateRestore restorer;
+    DebugManager.flags.CreateMultipleRootDevices.set(4);
+    VariableBackup<bool> backup(&overrideDeviceWithDefaultHardwareInfo, false);
+    platform()->initialize();
+
+    TestedDrmMemoryManager drmMemoryManager(*platformImpl->peekExecutionEnvironment());
+    for (auto i = 0u; i < platformImpl->peekExecutionEnvironment()->rootDeviceEnvironments.size(); i++) {
+        auto drmFromRootDevice = platformImpl->peekExecutionEnvironment()->rootDeviceEnvironments[i]->osInterface->get()->getDrm();
+        EXPECT_EQ(drmFromRootDevice, &drmMemoryManager.getDrm(i));
+    }
+}
+} // namespace NEO

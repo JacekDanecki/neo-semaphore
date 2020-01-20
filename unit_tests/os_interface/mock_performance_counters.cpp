@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,9 @@
 
 #include "mock_performance_counters.h"
 
+#include "core/execution_environment/root_device_environment.h"
+#include "runtime/os_interface/os_interface.h"
+#include "unit_tests/mocks/mock_execution_environment.h"
 using namespace MetricsLibraryApi;
 
 namespace NEO {
@@ -341,10 +344,24 @@ void PerformanceCountersMetricsLibraryFixture::TearDown() {
 }
 
 //////////////////////////////////////////////////////
+// PerformanceCountersFixture::PerformanceCountersFixture
+//////////////////////////////////////////////////////
+PerformanceCountersFixture::PerformanceCountersFixture() {
+    executionEnvironment = std::make_unique<MockExecutionEnvironment>();
+    rootDeviceEnvironment = std::make_unique<RootDeviceEnvironment>(*executionEnvironment);
+}
+
+//////////////////////////////////////////////////////
+// PerformanceCountersFixture::~PerformanceCountersFixture
+//////////////////////////////////////////////////////
+PerformanceCountersFixture::~PerformanceCountersFixture() {
+}
+
+//////////////////////////////////////////////////////
 // PerformanceCountersMetricsLibraryFixture::createPerformanceCounters
 //////////////////////////////////////////////////////
 void PerformanceCountersMetricsLibraryFixture::createPerformanceCounters(const bool validMetricsLibraryApi, const bool mockMetricsLibrary) {
-    performanceCountersBase = MockPerformanceCounters::create(device.get());
+    performanceCountersBase = MockPerformanceCounters::create(&device->getDevice());
     auto metricsLibraryInterface = performanceCountersBase->getMetricsLibraryInterface();
     auto metricsLibraryDll = std::make_unique<MockMetricsLibraryDll>();
     EXPECT_NE(performanceCountersBase, nullptr);

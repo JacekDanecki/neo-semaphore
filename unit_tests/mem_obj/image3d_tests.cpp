@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -26,7 +26,7 @@ class CreateImage3DTest : public DeviceFixture,
   protected:
     void SetUp() override {
         DeviceFixture::SetUp();
-        context = new MockContext(pDevice);
+        context = new MockContext(pClDevice);
 
         // clang-format off
         imageFormat.image_channel_data_type = CL_UNORM_INT8;
@@ -89,7 +89,7 @@ HWTEST_F(CreateImage3DTest, calculate3dImageQpitchTiledAndLinear) {
     imageDesc.image_height = 1;
     auto surfaceFormat = Image::getSurfaceFormatFromTable(0, &imageFormat);
     auto imgInfo = MockGmm::initImgInfo(imageDesc, 0, surfaceFormat);
-    MockGmm::queryImgParams(imgInfo);
+    MockGmm::queryImgParams(context->getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), imgInfo);
 
     auto image = Image::create(
         context,
@@ -113,7 +113,7 @@ HWTEST_F(CreateImage3DTest, calculate3dImageQpitchTiledAndLinear) {
 
     // query again
     surfaceFormat = Image::getSurfaceFormatFromTable(0, &imageFormat);
-    MockGmm::queryImgParams(imgInfo);
+    MockGmm::queryImgParams(context->getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), imgInfo);
 
     image = Image::create(
         context,

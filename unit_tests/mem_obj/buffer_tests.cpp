@@ -1,31 +1,32 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/gmm_helper/gmm.h"
 #include "core/gmm_helper/gmm_helper.h"
+#include "core/gmm_helper/resource_info.h"
 #include "core/helpers/hw_helper.h"
 #include "core/helpers/options.h"
 #include "core/memory_manager/unified_memory_manager.h"
+#include "core/os_interface/os_context.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "core/unit_tests/utilities/base_object_utils.h"
 #include "public/cl_ext_private.h"
 #include "runtime/command_queue/command_queue_hw.h"
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/event/user_event.h"
-#include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/array_count.h"
 #include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/allocations_list.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/platform/platform.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
+#include "unit_tests/fixtures/multi_root_device_fixture.h"
 #include "unit_tests/gen_common/matchers.h"
 #include "unit_tests/helpers/hw_parse.h"
 #include "unit_tests/helpers/unit_test_helper.h"
@@ -123,7 +124,7 @@ TEST(Buffer, givenReadOnlyHostPtrMemoryWhenBufferIsCreatedWithReadOnlyFlagsThenB
 
     memset(memory, 0xAA, MemoryConstants::pageSize);
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation> *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*device->getExecutionEnvironment());
 
     device->injectMemoryManager(memoryManager);
@@ -153,7 +154,7 @@ TEST(Buffer, givenReadOnlyHostPtrMemoryWhenBufferIsCreatedWithReadOnlyFlagsAndSe
 
     memset(memory, 0xAA, MemoryConstants::pageSize);
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation> *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*device->getExecutionEnvironment());
 
     device->injectMemoryManager(memoryManager);
@@ -179,7 +180,7 @@ TEST(Buffer, givenReadOnlyHostPtrMemoryWhenBufferIsCreatedWithKernelWriteFlagThe
 
     memset(memory, 0xAA, MemoryConstants::pageSize);
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation> *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*device->getExecutionEnvironment());
 
     device->injectMemoryManager(memoryManager);
@@ -199,7 +200,7 @@ TEST(Buffer, givenReadOnlyHostPtrMemoryWhenBufferIsCreatedWithKernelWriteFlagThe
 }
 
 TEST(Buffer, givenNullPtrWhenBufferIsCreatedWithKernelReadOnlyFlagsThenBufferAllocationFailsAndReturnsNullptr) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation> *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*device->getExecutionEnvironment());
 
     device->injectMemoryManager(memoryManager);
@@ -218,7 +219,7 @@ TEST(Buffer, givenNullPtrWhenBufferIsCreatedWithKernelReadOnlyFlagsThenBufferAll
 }
 
 TEST(Buffer, givenNullptrPassedToBufferCreateWhenAllocationIsNotSystemMemoryPoolThenBufferIsNotZeroCopy) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation> *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*device->getExecutionEnvironment());
 
     device->injectMemoryManager(memoryManager);
@@ -237,7 +238,7 @@ TEST(Buffer, givenNullptrPassedToBufferCreateWhenAllocationIsNotSystemMemoryPool
 }
 
 TEST(Buffer, givenNullptrPassedToBufferCreateWhenAllocationIsNotSystemMemoryPoolThenAllocationIsNotAddedToHostPtrManager) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation> *memoryManager = new ::testing::NiceMock<GMockMemoryManagerFailFirstAllocation>(*device->getExecutionEnvironment());
 
     device->injectMemoryManager(memoryManager);
@@ -260,7 +261,7 @@ TEST(Buffer, givenNullptrPassedToBufferCreateWhenAllocationIsNotSystemMemoryPool
 }
 
 TEST(Buffer, givenNullptrPassedToBufferCreateWhenNoSharedContextOrRenderCompressedBuffersThenBuffersAllocationTypeIsBufferOrBufferHostMemory) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MockContext ctx(device.get());
 
     cl_int retVal = 0;
@@ -277,7 +278,7 @@ TEST(Buffer, givenNullptrPassedToBufferCreateWhenNoSharedContextOrRenderCompress
 }
 
 TEST(Buffer, givenHostPtrPassedToBufferCreateWhenMemUseHostPtrFlagisSetAndBufferIsNotZeroCopyThenCreateMapAllocationWithHostPtr) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MockContext ctx(device.get());
 
     cl_int retVal = 0;
@@ -299,7 +300,7 @@ TEST(Buffer, givenHostPtrPassedToBufferCreateWhenMemUseHostPtrFlagisSetAndBuffer
 }
 
 TEST(Buffer, givenAlignedHostPtrPassedToBufferCreateWhenNoSharedContextOrRenderCompressedBuffersThenBuffersAllocationTypeIsBufferHostMemory) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MockContext ctx(device.get());
 
     cl_int retVal = 0;
@@ -313,7 +314,7 @@ TEST(Buffer, givenAlignedHostPtrPassedToBufferCreateWhenNoSharedContextOrRenderC
 }
 
 TEST(Buffer, givenAllocHostPtrFlagPassedToBufferCreateWhenNoSharedContextOrRenderCompressedBuffersThenBuffersAllocationTypeIsBufferHostMemory) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MockContext ctx(device.get());
 
     cl_int retVal = 0;
@@ -448,7 +449,7 @@ TEST(Buffer, givenClMemCopyHostPointerPassedToBufferCreateWhenAllocationIsNotInS
     EXPECT_CALL(*memoryManager, allocateGraphicsMemoryInDevicePool(::testing::_, ::testing::_))
         .WillRepeatedly(::testing::Invoke(memoryManager, &GMockMemoryManagerFailFirstAllocation::baseAllocateGraphicsMemoryInDevicePool));
 
-    std::unique_ptr<MockDevice> device(MockDevice::create<MockDevice>(executionEnvironment, 0));
+    auto device = std::make_unique<MockClDevice>(MockDevice::create<MockDevice>(executionEnvironment, 0));
 
     MockContext ctx(device.get());
     EXPECT_CALL(*memoryManager, allocateGraphicsMemoryInDevicePool(::testing::_, ::testing::_))
@@ -469,14 +470,14 @@ struct RenderCompressedBuffersTests : public ::testing::Test {
     void SetUp() override {
         ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
         hwInfo = executionEnvironment->getMutableHardwareInfo();
-        device.reset(Device::create<MockDevice>(executionEnvironment, 0u));
+        device = std::make_unique<MockClDevice>(MockDevice::create<MockDevice>(executionEnvironment, 0u));
         context = std::make_unique<MockContext>(device.get(), true);
         context->contextType = ContextType::CONTEXT_TYPE_UNRESTRICTIVE;
     }
 
     cl_int retVal = CL_SUCCESS;
     HardwareInfo *hwInfo = nullptr;
-    std::unique_ptr<MockDevice> device;
+    std::unique_ptr<MockClDevice> device;
     std::unique_ptr<MockContext> context;
     std::unique_ptr<Buffer> buffer;
 
@@ -647,7 +648,7 @@ TEST_F(RenderCompressedBuffersCopyHostMemoryTests, givenRenderCompressedBufferWh
 struct BcsBufferTests : public ::testing::Test {
     class BcsMockContext : public MockContext {
       public:
-        BcsMockContext(Device *device) : MockContext(device) {
+        BcsMockContext(ClDevice *device) : MockContext(device) {
             bcsOsContext.reset(OsContext::create(nullptr, 0, 0, aub_stream::ENGINE_BCS, PreemptionMode::Disabled, false));
             bcsCsr.reset(createCommandStream(*device->getExecutionEnvironment(), device->getRootDeviceIndex()));
             bcsCsr->setupContext(*bcsOsContext);
@@ -658,8 +659,10 @@ struct BcsBufferTests : public ::testing::Test {
         }
         BlitOperationResult blitMemoryToAllocation(MemObj &memObj, GraphicsAllocation *memory, void *hostPtr, size_t size) const override {
             auto blitProperties = BlitProperties::constructPropertiesForReadWriteBuffer(BlitterConstants::BlitDirection::HostPtrToBuffer,
-                                                                                        *bcsCsr, memory, 0, nullptr,
-                                                                                        hostPtr, 0, 0, size);
+                                                                                        *bcsCsr, memory, nullptr,
+                                                                                        hostPtr,
+                                                                                        memory->getGpuAddress(), 0,
+                                                                                        0, 0, size);
 
             BlitPropertiesContainer container;
             container.push_back(blitProperties);
@@ -685,7 +688,7 @@ struct BcsBufferTests : public ::testing::Test {
             waitForTaskCountWithKmdNotifyFallbackCalled++;
         }
 
-        void waitForTaskCountAndCleanAllocationList(uint32_t requiredTaskCount, uint32_t allocationUsage) override {
+        void waitForTaskCountAndCleanTemporaryAllocationList(uint32_t requiredTaskCount) override {
             EXPECT_EQ(1u, waitForTaskCountWithKmdNotifyFallbackCalled);
             EXPECT_EQ(this->latestFlushedTaskCount, requiredTaskCount);
             waitForTaskCountAndCleanAllocationListCalled++;
@@ -703,7 +706,7 @@ struct BcsBufferTests : public ::testing::Test {
         }
         DebugManager.flags.EnableTimestampPacket.set(1);
         DebugManager.flags.EnableBlitterOperationsForReadWriteBuffers.set(1);
-        device.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+        device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
         auto &capabilityTable = device->getExecutionEnvironment()->getMutableHardwareInfo()->capabilityTable;
         bool createBcsEngine = !capabilityTable.blitterOperationsSupported;
         capabilityTable.blitterOperationsSupported = true;
@@ -725,7 +728,7 @@ struct BcsBufferTests : public ::testing::Test {
     DebugManagerStateRestore restore;
 
     std::unique_ptr<OsContext> bcsOsContext;
-    std::unique_ptr<MockDevice> device;
+    std::unique_ptr<MockClDevice> device;
     std::unique_ptr<BcsMockContext> bcsMockContext;
     std::unique_ptr<CommandQueue> commandQueue;
     uint32_t hostPtr = 0;
@@ -1330,7 +1333,7 @@ class BufferTest : public DeviceFixture,
     void SetUp() override {
         flags = GetParam();
         DeviceFixture::SetUp();
-        context.reset(new MockContext(pDevice));
+        context.reset(new MockContext(pClDevice));
     }
 
     void TearDown() override {
@@ -1483,6 +1486,7 @@ struct ValidHostPtr
     void TearDown() override {
         delete buffer;
         BaseClass::TearDown();
+        platformImpl.reset();
         MemoryManagementFixture::TearDown();
     }
 
@@ -1827,11 +1831,11 @@ TEST(SharedBuffersTest, whenBuffersIsCreatedWithSharingHandlerThenItIsSharedBuff
 class BufferTests : public ::testing::Test {
   protected:
     void SetUp() override {
-        device.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(*platformDevices));
+        device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(*platformDevices));
     }
     void TearDown() override {
     }
-    std::unique_ptr<Device> device;
+    std::unique_ptr<MockClDevice> device;
 };
 
 typedef BufferTests BufferSetSurfaceTests;
@@ -2167,7 +2171,7 @@ HWTEST_F(BufferSetSurfaceTests, givenRenderCompressedGmmResourceWhenSurfaceState
 
     std::unique_ptr<Buffer> buffer(Buffer::create(&context, CL_MEM_READ_WRITE, 1, nullptr, retVal));
     buffer->getGraphicsAllocation()->setAllocationType(GraphicsAllocation::AllocationType::BUFFER_COMPRESSED);
-    auto gmm = new Gmm(nullptr, 1, false);
+    auto gmm = new Gmm(context.getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), nullptr, 1, false);
     buffer->getGraphicsAllocation()->setDefaultGmm(gmm);
     gmm->isRenderCompressed = true;
 
@@ -2191,7 +2195,7 @@ HWTEST_F(BufferSetSurfaceTests, givenNonRenderCompressedGmmResourceWhenSurfaceSt
     auto retVal = CL_SUCCESS;
 
     std::unique_ptr<Buffer> buffer(Buffer::create(&context, CL_MEM_READ_WRITE, 1, nullptr, retVal));
-    auto gmm = new Gmm(nullptr, 1, false);
+    auto gmm = new Gmm(context.getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), nullptr, 1, false);
     buffer->getGraphicsAllocation()->setDefaultGmm(gmm);
     gmm->isRenderCompressed = false;
 
@@ -2331,8 +2335,8 @@ struct BufferUnmapTest : public DeviceFixture, public ::testing::Test {
 };
 
 HWTEST_F(BufferUnmapTest, givenBufferWithSharingHandlerWhenUnmappingThenUseEnqueueWriteBuffer) {
-    MockContext context(pDevice);
-    MockCommandQueueHw<FamilyType> cmdQ(&context, pDevice, nullptr);
+    MockContext context(pClDevice);
+    MockCommandQueueHw<FamilyType> cmdQ(&context, pClDevice, nullptr);
 
     auto retVal = CL_SUCCESS;
     std::unique_ptr<Buffer> buffer(Buffer::create(&context, CL_MEM_ALLOC_HOST_PTR, 123, nullptr, retVal));
@@ -2353,8 +2357,8 @@ HWTEST_F(BufferUnmapTest, givenBufferWithSharingHandlerWhenUnmappingThenUseEnque
 }
 
 HWTEST_F(BufferUnmapTest, givenBufferWithoutSharingHandlerWhenUnmappingThenDontUseEnqueueWriteBuffer) {
-    MockContext context(pDevice);
-    MockCommandQueueHw<FamilyType> cmdQ(&context, pDevice, nullptr);
+    MockContext context(pClDevice);
+    MockCommandQueueHw<FamilyType> cmdQ(&context, pClDevice, nullptr);
 
     auto retVal = CL_SUCCESS;
     std::unique_ptr<Buffer> buffer(Buffer::create(&context, CL_MEM_ALLOC_HOST_PTR, 123, nullptr, retVal));
@@ -2374,7 +2378,7 @@ HWTEST_F(BufferUnmapTest, givenBufferWithoutSharingHandlerWhenUnmappingThenDontU
 using BufferTransferTests = BufferUnmapTest;
 
 TEST_F(BufferTransferTests, givenBufferWhenTransferToHostPtrCalledThenCopyRequestedSizeAndOffsetOnly) {
-    MockContext context(pDevice);
+    MockContext context(pClDevice);
     auto retVal = CL_SUCCESS;
     const size_t bufferSize = 100;
     size_t ignoredParam = 123;
@@ -2397,7 +2401,7 @@ TEST_F(BufferTransferTests, givenBufferWhenTransferToHostPtrCalledThenCopyReques
 }
 
 TEST_F(BufferTransferTests, givenBufferWhenTransferFromHostPtrCalledThenCopyRequestedSizeAndOffsetOnly) {
-    MockContext context(pDevice);
+    MockContext context(pClDevice);
     auto retVal = CL_SUCCESS;
     const size_t bufferSize = 100;
     size_t ignoredParam = 123;
@@ -2416,4 +2420,17 @@ TEST_F(BufferTransferTests, givenBufferWhenTransferFromHostPtrCalledThenCopyRequ
     buffer->transferDataFromHostPtr(copySize, copyOffset);
 
     EXPECT_TRUE(memcmp(expectedBufferMemory, buffer->getCpuAddress(), copySize[0]) == 0);
+}
+
+using MultiRootDeviceBufferTest = MultiRootDeviceFixture;
+
+TEST_F(MultiRootDeviceBufferTest, bufferGraphicsAllocationHasCorrectRootDeviceIndex) {
+    cl_int retVal = 0;
+    cl_mem_flags flags = CL_MEM_READ_WRITE;
+
+    std::unique_ptr<Buffer> buffer(Buffer::create(context.get(), flags, MemoryConstants::pageSize, nullptr, retVal));
+
+    auto graphicsAllocation = buffer->getGraphicsAllocation();
+    ASSERT_NE(nullptr, graphicsAllocation);
+    EXPECT_EQ(expectedRootDeviceIndex, graphicsAllocation->getRootDeviceIndex());
 }

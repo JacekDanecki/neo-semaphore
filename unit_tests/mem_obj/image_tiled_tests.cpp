@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -35,7 +35,7 @@ class CreateTiledImageTest : public DeviceFixture,
   protected:
     void SetUp() override {
         DeviceFixture::SetUp();
-        CommandQueueFixture::SetUp(pDevice, 0);
+        CommandQueueFixture::SetUp(pClDevice, 0);
         type = GetParam();
 
         // clang-format off
@@ -89,16 +89,16 @@ HWTEST_P(CreateTiledImageTest, isTiledImageIsSetForTiledImages) {
 TEST_P(CreateTiledImageTest, isTiledImageIsSetForSharedImages) {
     MockContext context;
     MockGraphicsAllocation *alloc = new MockGraphicsAllocation(0, 0x1000);
-    ImageInfo info = {0};
+    ImageInfo info = {};
     McsSurfaceInfo msi = {};
-    SurfaceFormatInfo surfaceFormat;
-    surfaceFormat.GMMSurfaceFormat = GMM_FORMAT_B8G8R8A8_UNORM;
-    info.surfaceFormat = &surfaceFormat;
+    ClSurfaceFormatInfo surfaceFormat;
+    surfaceFormat.surfaceFormat.GMMSurfaceFormat = GMM_FORMAT_B8G8R8A8_UNORM;
+    info.surfaceFormat = &surfaceFormat.surfaceFormat;
 
-    info.imgDesc = &imageDesc;
+    info.imgDesc = Image::convertDescriptor(imageDesc);
     info.plane = GMM_NO_PLANE;
 
-    auto gmm = MockGmm::queryImgParams(info);
+    auto gmm = MockGmm::queryImgParams(context.getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), info);
 
     alloc->setDefaultGmm(gmm.release());
 
@@ -109,6 +109,7 @@ TEST_P(CreateTiledImageTest, isTiledImageIsSetForSharedImages) {
         alloc,
         nullptr,
         CL_MEM_READ_WRITE,
+        &surfaceFormat,
         info,
         0, 0, 0);
 
@@ -124,19 +125,19 @@ typedef CreateTiledImageTest CreateNonTiledImageTest;
 TEST_P(CreateNonTiledImageTest, isTiledImageIsNotSetForNonTiledSharedImage) {
     MockContext context;
     MockGraphicsAllocation *alloc = new MockGraphicsAllocation(0, 0x1000);
-    ImageInfo info = {0};
+    ImageInfo info = {};
     McsSurfaceInfo msi = {};
-    SurfaceFormatInfo surfaceFormat;
+    ClSurfaceFormatInfo surfaceFormat;
 
     imageDesc.image_height = 1;
 
-    surfaceFormat.GMMSurfaceFormat = GMM_FORMAT_B8G8R8A8_UNORM;
-    info.surfaceFormat = &surfaceFormat;
+    surfaceFormat.surfaceFormat.GMMSurfaceFormat = GMM_FORMAT_B8G8R8A8_UNORM;
+    info.surfaceFormat = &surfaceFormat.surfaceFormat;
 
-    info.imgDesc = &imageDesc;
+    info.imgDesc = Image::convertDescriptor(imageDesc);
     info.plane = GMM_NO_PLANE;
 
-    auto gmm = MockGmm::queryImgParams(info);
+    auto gmm = MockGmm::queryImgParams(context.getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), info);
 
     alloc->setDefaultGmm(gmm.release());
 
@@ -147,6 +148,7 @@ TEST_P(CreateNonTiledImageTest, isTiledImageIsNotSetForNonTiledSharedImage) {
         alloc,
         nullptr,
         CL_MEM_READ_WRITE,
+        &surfaceFormat,
         info,
         0, 0, 0);
 

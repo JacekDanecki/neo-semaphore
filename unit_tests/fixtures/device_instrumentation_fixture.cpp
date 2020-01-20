@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -12,8 +12,9 @@
 
 namespace NEO {
 void DeviceInstrumentationFixture::SetUp(bool instrumentation) {
-    ExecutionEnvironment *executionEnvironment = getExecutionEnvironmentImpl(hwInfo);
+    ExecutionEnvironment *executionEnvironment = getExecutionEnvironmentImpl(hwInfo, 1);
     hwInfo->capabilityTable.instrumentationEnabled = instrumentation;
-    device = std::unique_ptr<Device>(Device::create<RootDevice>(executionEnvironment, 0));
+    device = std::make_unique<ClDevice>(*Device::create<RootDevice>(executionEnvironment, 0));
 }
+
 } // namespace NEO

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,9 +7,9 @@
 
 #include "runtime/os_interface/linux/os_context_linux.h"
 
+#include "core/os_interface/os_context.h"
 #include "runtime/os_interface/linux/drm_neo.h"
 #include "runtime/os_interface/linux/os_interface.h"
-#include "runtime/os_interface/os_context.h"
 
 namespace NEO {
 
@@ -27,6 +27,9 @@ OsContextLinux::OsContextLinux(Drm &drm, uint32_t contextId, DeviceBitfield devi
     for (auto deviceIndex = 0u; deviceIndex < deviceBitfield.size(); deviceIndex++) {
         if (deviceBitfield.test(deviceIndex)) {
             auto drmContextId = drm.createDrmContext();
+            if (drm.areNonPersistentContextsSupported()) {
+                drm.setNonPersistentContext(drmContextId);
+            }
             if (drm.isPreemptionSupported() && lowPriority) {
                 drm.setLowPriorityContextParam(drmContextId);
             }

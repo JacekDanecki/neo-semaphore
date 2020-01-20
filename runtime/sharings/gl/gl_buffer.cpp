@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,10 +7,12 @@
 
 #include "gl_buffer.h"
 
+// clang-format off
 #include "public/cl_gl_private_intel.h"
+// clang-format on
+#include "core/gmm_helper/gmm.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/get_info.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -144,7 +146,8 @@ GraphicsAllocation *GlBuffer::createGraphicsAllocation(Context *context, unsigne
         sharingFunctions->graphicsAllocationsForGlBufferReuse.push_back(std::make_pair(bufferId, graphicsAllocation));
         if (bufferInfo.pGmmResInfo) {
             DEBUG_BREAK_IF(graphicsAllocation->getDefaultGmm() != nullptr);
-            graphicsAllocation->setDefaultGmm(new Gmm(bufferInfo.pGmmResInfo));
+            auto clientContext = context->getDevice(0)->getExecutionEnvironment()->getGmmClientContext();
+            graphicsAllocation->setDefaultGmm(new Gmm(clientContext, bufferInfo.pGmmResInfo));
         }
     }
 

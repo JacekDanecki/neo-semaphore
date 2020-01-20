@@ -1,16 +1,16 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/gmm_helper/gmm_helper.h"
+#include "core/gmm_helper/resource_info.h"
 #include "core/helpers/options.h"
 #include "core/unit_tests/helpers/memory_leak_listener.h"
 #include "core/utilities/debug_settings_reader.h"
-#include "runtime/gmm_helper/resource_info.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/os_interface/hw_info_config.h"
 #include "runtime/os_interface/ocl_reg_path.h"
 #include "unit_tests/custom_event_listener.h"
@@ -49,12 +49,11 @@ extern TestMode testMode;
 extern const char *executionDirectorySuffix;
 
 std::thread::id tempThreadID;
+
+namespace MockSipData {
+extern std::unique_ptr<MockSipKernel> mockSipKernel;
+}
 } // namespace NEO
-namespace Os {
-extern const char *gmmDllName;
-extern const char *gmmInitFuncName;
-extern const char *gmmDestroyFuncName;
-} // namespace Os
 
 using namespace NEO;
 TestEnvironment *gEnvironment;
@@ -140,6 +139,7 @@ LONG WINAPI UltExceptionFilter(
 
 void initializeTestHelpers() {
     GlobalMockSipProgram::initSipProgram();
+    MockSipData::mockSipKernel.reset(new MockSipKernel());
 }
 
 void cleanTestHelpers() {
@@ -454,14 +454,11 @@ int main(int argc, char **argv) {
 #else
     SetUnhandledExceptionFilter(&UltExceptionFilter);
 #endif
-    if (!useMockGmm) {
-        Os::gmmDllName = GMM_UMD_DLL;
-        Os::gmmInitFuncName = GMM_INIT_NAME;
-        Os::gmmDestroyFuncName = GMM_DESTROY_NAME;
-    } else {
+    if (useMockGmm) {
         GmmHelper::createGmmContextWrapperFunc = GmmClientContextBase::create<MockGmmClientContext>;
+    } else {
+        InitializeGmm(nullptr, nullptr);
     }
-    std::unique_ptr<OsLibrary> gmmLib(OsLibrary::load(Os::gmmDllName));
     initializeTestHelpers();
 
     retVal = RUN_ALL_TESTS();

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -82,7 +82,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfilingAndFor
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
 
     uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 2 * sizeof(MI_STORE_REGISTER_MEM) + sizeof(GPGPU_WALKER) + HardwareCommandsHelper<FamilyType>::getSizeRequiredCS(&kernel);
 
@@ -127,7 +127,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfilingAndFor
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
 
     uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM) + HardwareCommandsHelper<FamilyType>::getSizeRequiredCS(&kernel);
     requiredSize += 2 * sizeof(GPGPU_WALKER);
@@ -153,7 +153,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProfolingWHENWa
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -207,7 +207,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueWithProflingWHENWal
     typedef typename FamilyType::MI_STORE_REGISTER_MEM MI_STORE_REGISTER_MEM;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -261,7 +261,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -318,7 +318,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingTests, GIVENCommandQueueBlockedWithProfilin
     typedef typename FamilyType::MI_STORE_REGISTER_MEM MI_STORE_REGISTER_MEM;
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -437,7 +437,7 @@ class MyOSTime : public OSTime {
 int MyOSTime::instanceNum = 0;
 
 TEST(EventProfilingTest, givenEventWhenCompleteIsZeroThenCalcProfilingDataSetsEndTimestampInCompleteTimestampAndDoesntCallOsTimeMethods) {
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MyOSTime::instanceNum = 0;
     device->setOSTime(new MyOSTime());
     EXPECT_EQ(1, MyOSTime::instanceNum);
@@ -472,7 +472,7 @@ TEST(EventProfilingTest, givenEventWhenCompleteIsZeroThenCalcProfilingDataSetsEn
 TEST(EventProfilingTest, givenRawTimestampsDebugModeWhenDataIsQueriedThenRawDataIsReturned) {
     DebugManagerStateRestore stateRestore;
     DebugManager.flags.ReturnRawGpuTimestamps.set(1);
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
     MyOSTime::instanceNum = 0;
     device->setOSTime(new MyOSTime());
     EXPECT_EQ(1, MyOSTime::instanceNum);
@@ -556,7 +556,7 @@ HWTEST_F(ProfilingWithPerfCountersTests,
     typedef typename FamilyType::PIPE_CONTROL PIPE_CONTROL;
     typedef typename FamilyType::WALKER_TYPE GPGPU_WALKER;
 
-    pCmdQ->setPerfCountersEnabled(true, 0);
+    pCmdQ->setPerfCountersEnabled();
 
     uint64_t requiredSize = 2 * sizeof(PIPE_CONTROL) + 4 * sizeof(MI_STORE_REGISTER_MEM);
 
@@ -573,8 +573,6 @@ HWTEST_F(ProfilingWithPerfCountersTests,
     expectedSizeCS = EnqueueOperation<FamilyType>::getSizeRequiredCS(CL_COMMAND_MARKER, true, true, *pCmdQ, nullptr);
     EXPECT_GE(expectedSizeCS, requiredSize);
     EXPECT_GE(commandStreamMarker.getAvailableSpace(), requiredSize);
-
-    pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWithProfilingPerfCountersWHENWalkerIsDispatchedTHENPipeControlWithTimeStampIsPresentInCS) {
@@ -582,9 +580,9 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     typedef typename FamilyType::MI_REPORT_PERF_COUNT MI_REPORT_PERF_COUNT;
 
-    pCmdQ->setPerfCountersEnabled(true, 0);
+    pCmdQ->setPerfCountersEnabled();
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -636,8 +634,6 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     EXPECT_TRUE(static_cast<MockEvent<Event> *>(event)->calcProfilingData());
 
     clReleaseEvent(event);
-
-    pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWithProfilingPerfCountersNoUserRegistersWHENWalkerIsDispatchedTHENPipeControlWithTimeStampIsPresentInCS) {
@@ -645,9 +641,9 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     typedef typename FamilyType::MI_REPORT_PERF_COUNT MI_REPORT_PERF_COUNT;
 
-    pCmdQ->setPerfCountersEnabled(true, 0);
+    pCmdQ->setPerfCountersEnabled();
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -699,8 +695,6 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueWit
     EXPECT_TRUE(static_cast<MockEvent<Event> *>(event)->calcProfilingData());
 
     clReleaseEvent(event);
-
-    pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
 HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueBlockedWithProflingPerfCounterWHENWalkerIsDispatchedTHENPipeControlWithTimeStampIsPresentInCS) {
@@ -708,9 +702,9 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueBlo
     typedef typename FamilyType::GPGPU_WALKER GPGPU_WALKER;
     typedef typename FamilyType::MI_REPORT_PERF_COUNT MI_REPORT_PERF_COUNT;
 
-    pCmdQ->setPerfCountersEnabled(true, 0);
+    pCmdQ->setPerfCountersEnabled();
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -764,7 +758,6 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ProfilingWithPerfCountersTests, GIVENCommandQueueBlo
     clReleaseEvent(event);
     ((UserEvent *)ue)->release();
     pCmdQ->isQueueBlocked();
-    pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
 HWTEST_F(ProfilingWithPerfCountersTests,
@@ -773,9 +766,9 @@ HWTEST_F(ProfilingWithPerfCountersTests,
     typedef typename FamilyType::WALKER_TYPE GPGPU_WALKER;
     typedef typename FamilyType::MI_REPORT_PERF_COUNT MI_REPORT_PERF_COUNT;
 
-    pCmdQ->setPerfCountersEnabled(true, 0);
+    pCmdQ->setPerfCountersEnabled();
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -822,8 +815,6 @@ HWTEST_F(ProfilingWithPerfCountersTests,
     // expect MI_REPORT_PERF_COUNT after WALKER
     auto itorAfterReportPerf = find<MI_REPORT_PERF_COUNT *>(itorGPGPUWalkerCmd, cmdList.end());
     ASSERT_EQ(cmdList.end(), itorAfterReportPerf);
-
-    pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
 template <typename TagType>
@@ -849,9 +840,9 @@ HWTEST_F(ProfilingWithPerfCountersTests, GIVENCommandQueueWithProfilingPerfCount
     csr.profilingTimeStampAllocator.reset(new FixedGpuAddressTagAllocator<HwTimeStamps>(csr, timeStampGpuAddress));
     csr.perfCounterAllocator.reset(new FixedGpuAddressTagAllocator<HwPerfCounter>(csr, perfCountersGpuAddress));
 
-    pCmdQ->setPerfCountersEnabled(true, 0);
+    pCmdQ->setPerfCountersEnabled();
 
-    MockKernel kernel(program.get(), kernelInfo, *pDevice);
+    MockKernel kernel(program.get(), kernelInfo, *pClDevice);
     ASSERT_EQ(CL_SUCCESS, kernel.initialize());
 
     size_t globalOffsets[3] = {0, 0, 0};
@@ -883,8 +874,6 @@ HWTEST_F(ProfilingWithPerfCountersTests, GIVENCommandQueueWithProfilingPerfCount
     EXPECT_TRUE(pEvent->calcProfilingData());
 
     clReleaseEvent(event);
-
-    pCmdQ->setPerfCountersEnabled(false, UINT32_MAX);
 }
 
 struct MockTimestampContainer : public TimestampPacketContainer {

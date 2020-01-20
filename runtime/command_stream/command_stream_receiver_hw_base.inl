@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,6 +7,9 @@
 
 #include "core/command_stream/linear_stream.h"
 #include "core/command_stream/preemption.h"
+#include "core/debug_settings/debug_settings_manager.h"
+#include "core/execution_environment/root_device_environment.h"
+#include "core/gmm_helper/page_table_mngr.h"
 #include "core/helpers/cache_policy.h"
 #include "core/helpers/hw_helper.h"
 #include "core/helpers/options.h"
@@ -14,6 +17,7 @@
 #include "core/helpers/ptr_math.h"
 #include "core/helpers/state_base_address.h"
 #include "core/indirect_heap/indirect_heap.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/command_queue/gpgpu_walker.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/command_stream/experimental_command_buffer.h"
@@ -28,8 +32,6 @@
 #include "runtime/helpers/timestamp_packet.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/os_interface/debug_settings_manager.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/utilities/tag_allocator.h"
 
 #include "command_stream_receiver_hw_ext.inl"
@@ -124,14 +126,6 @@ inline typename GfxFamily::PIPE_CONTROL *CommandStreamReceiverHw<GfxFamily>::add
     auto pCmd = reinterpret_cast<PIPE_CONTROL *>(commandStream.getSpace(sizeof(PIPE_CONTROL)));
     *pCmd = GfxFamily::cmdInitPipeControl;
     pCmd->setCommandStreamerStallEnable(true);
-    return pCmd;
-}
-
-template <typename GfxFamily>
-inline typename GfxFamily::PIPE_CONTROL *CommandStreamReceiverHw<GfxFamily>::addPipeControlBeforeStateBaseAddress(LinearStream &commandStream) {
-    auto pCmd = addPipeControlCmd(commandStream);
-    pCmd->setTextureCacheInvalidationEnable(true);
-    pCmd->setDcFlushEnable(true);
     return pCmd;
 }
 
@@ -267,7 +261,9 @@ CompletionStamp CommandStreamReceiverHw<GfxFamily>::flushTask(
     }
 
     programEngineModeCommands(commandStreamCSR, dispatchFlags);
-    initPageTableManagerRegisters(commandStreamCSR);
+    if (executionEnvironment.rootDeviceEnvironments[device.getRootDeviceIndex()]->pageTableManager.get() && !pageTableManagerInitialized) {
+        pageTableManagerInitialized = executionEnvironment.rootDeviceEnvironments[device.getRootDeviceIndex()]->pageTableManager->initPageTableManagerRegisters(this);
+    }
     programComputeMode(commandStreamCSR, dispatchFlags);
     programL3(commandStreamCSR, dispatchFlags, newL3Config);
     programPipelineSelect(commandStreamCSR, dispatchFlags.pipelineSelectArgs);

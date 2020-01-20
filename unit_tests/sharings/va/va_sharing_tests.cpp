@@ -1,15 +1,15 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/gmm_helper/gmm.h"
 #include "core/memory_manager/graphics_allocation.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/api/api.h"
 #include "runtime/device/device.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/array_count.h"
 #include "runtime/platform/platform.h"
 #include "runtime/sharings/va/cl_va_api.h"
@@ -474,8 +474,8 @@ TEST_F(VaSharingTests, givenValidPlatformWhenGetDeviceIdsFromVaApiMediaAdapterCa
     auto errCode = clGetDeviceIDsFromVA_APIMediaAdapterINTEL(platformId, 0u, nullptr, 0u, 1, &devices, &numDevices);
     EXPECT_EQ(CL_SUCCESS, errCode);
     EXPECT_EQ(1u, numDevices);
-    EXPECT_NE(nullptr, platform()->getDevice(0));
-    EXPECT_EQ(platform()->getDevice(0), devices);
+    EXPECT_NE(nullptr, platform()->getClDevice(0));
+    EXPECT_EQ(platform()->getClDevice(0), devices);
 }
 
 TEST_F(VaSharingTests, givenInValidPlatformWhenGetDeviceIdsFromVaApiMediaAdapterCalledThenReturnFirstDevice) {
@@ -499,7 +499,7 @@ TEST_F(VaSharingTests, givenEnabledExtendedVaFormatsAndP010FormatWhenCreatingSha
                                                                              CL_MEM_READ_WRITE, &vaSurfaceId, 0, &errCode));
     EXPECT_EQ(static_cast<cl_channel_type>(CL_UNORM_INT16), vaSurface->getImageFormat().image_channel_data_type);
     EXPECT_EQ(static_cast<cl_channel_order>(CL_R), vaSurface->getImageFormat().image_channel_order);
-    EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_R16_UNORM, vaSurface->getSurfaceFormatInfo().GMMSurfaceFormat);
+    EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_R16_UNORM, vaSurface->getSurfaceFormatInfo().surfaceFormat.GMMSurfaceFormat);
     EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_P010, vaSurface->getGraphicsAllocation()->getDefaultGmm()->resourceParams.Format);
     EXPECT_EQ(CL_SUCCESS, errCode);
 }
@@ -515,7 +515,7 @@ TEST_F(VaSharingTests, givenEnabledExtendedVaFormatsAndP010FormatWhenCreatingSha
                                                                              CL_MEM_READ_WRITE, &vaSurfaceId, 1, &errCode));
     EXPECT_EQ(static_cast<cl_channel_type>(CL_UNORM_INT16), vaSurface->getImageFormat().image_channel_data_type);
     EXPECT_EQ(static_cast<cl_channel_order>(CL_RG), vaSurface->getImageFormat().image_channel_order);
-    EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_R16G16_UNORM, vaSurface->getSurfaceFormatInfo().GMMSurfaceFormat);
+    EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_R16G16_UNORM, vaSurface->getSurfaceFormatInfo().surfaceFormat.GMMSurfaceFormat);
     EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_P010, vaSurface->getGraphicsAllocation()->getDefaultGmm()->resourceParams.Format);
     EXPECT_EQ(CL_SUCCESS, errCode);
 }
@@ -531,7 +531,7 @@ TEST_F(VaSharingTests, givenEnabledExtendedVaFormatsAndNV12FormatWhenCreatingSha
                                                                              CL_MEM_READ_WRITE, &vaSurfaceId, 0, &errCode));
     EXPECT_EQ(static_cast<cl_channel_type>(CL_UNORM_INT8), vaSurface->getImageFormat().image_channel_data_type);
     EXPECT_EQ(static_cast<cl_channel_order>(CL_R), vaSurface->getImageFormat().image_channel_order);
-    EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_R8_UNORM, vaSurface->getSurfaceFormatInfo().GMMSurfaceFormat);
+    EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_R8_UNORM, vaSurface->getSurfaceFormatInfo().surfaceFormat.GMMSurfaceFormat);
     EXPECT_EQ(GMM_RESOURCE_FORMAT::GMM_FORMAT_NV12, vaSurface->getGraphicsAllocation()->getDefaultGmm()->resourceParams.Format);
     EXPECT_EQ(CL_SUCCESS, errCode);
 }

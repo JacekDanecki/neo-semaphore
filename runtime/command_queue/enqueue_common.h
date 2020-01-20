@@ -1,12 +1,14 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "core/helpers/engine_node_helper.h"
 #include "core/helpers/options.h"
+#include "core/os_interface/os_context.h"
 #include "core/program/sync_buffer_handler.h"
 #include "core/utilities/range.h"
 #include "runtime/built_ins/built_ins.h"
@@ -21,7 +23,6 @@
 #include "runtime/gtpin/gtpin_notify.h"
 #include "runtime/helpers/array_count.h"
 #include "runtime/helpers/dispatch_info_builder.h"
-#include "runtime/helpers/engine_node_helper.h"
 #include "runtime/helpers/enqueue_properties.h"
 #include "runtime/helpers/hardware_commands_helper.h"
 #include "runtime/helpers/task_information.h"
@@ -30,7 +31,6 @@
 #include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/program/block_kernel_manager.h"
 #include "runtime/program/printf_handler.h"
 #include "runtime/utilities/tag_allocator.h"
@@ -105,7 +105,7 @@ void CommandQueueHw<GfxFamily>::forceDispatchScheduler(NEO::MultiDispatchInfo &m
     DispatchInfo dispatchInfo(&scheduler, 1, Vec3<size_t>(scheduler.getGws(), 1, 1), Vec3<size_t>(scheduler.getLws(), 1, 1), Vec3<size_t>(0, 0, 0));
 
     auto devQueue = this->getContext().getDefaultDeviceQueue();
-    DeviceQueueHw<GfxFamily> *devQueueHw = castToObject<DeviceQueueHw<GfxFamily>>(devQueue);
+    DeviceQueueHw<GfxFamily> *devQueueHw = castToObjectOrAbort<DeviceQueueHw<GfxFamily>>(devQueue);
 
     scheduler.createReflectionSurface();
     GraphicsAllocation *reflectionSurface = scheduler.getKernelReflectionSurface();
@@ -341,12 +341,12 @@ void CommandQueueHw<GfxFamily>::enqueueHandler(Surface **surfacesForResidency,
 
     if (eventBuilder.getEvent()) {
         eventBuilder.getEvent()->updateCompletionStamp(completionStamp.taskCount, completionStamp.taskLevel, completionStamp.flushStamp);
-        DebugManager.log(DebugManager.flags.EventsDebugEnable.get(), "updateCompletionStamp Event", eventBuilder.getEvent(), "taskLevel", eventBuilder.getEvent()->taskLevel.load());
+        FileLoggerInstance().log(DebugManager.flags.EventsDebugEnable.get(), "updateCompletionStamp Event", eventBuilder.getEvent(), "taskLevel", eventBuilder.getEvent()->taskLevel.load());
     }
 
     if (blockQueue) {
         if (parentKernel) {
-            size_t minSizeSSHForEM = HardwareCommandsHelper<GfxFamily>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, *parentKernel);
+            size_t minSizeSSHForEM = HardwareCommandsHelper<GfxFamily>::getSshSizeForExecutionModel(*parentKernel);
             blockedCommandsData->surfaceStateHeapSizeEM = minSizeSSHForEM;
         }
 
@@ -391,7 +391,7 @@ void CommandQueueHw<GfxFamily>::processDispatchForKernels(const MultiDispatchInf
                                                           KernelOperation *blockedCommandsData,
                                                           TimestampPacketDependencies &timestampPacketDependencies) {
     TagNode<HwPerfCounter> *hwPerfCounter = nullptr;
-    DebugManager.dumpKernelArgs(&multiDispatchInfo);
+    FileLoggerInstance().dumpKernelArgs(&multiDispatchInfo);
 
     printfHandler.reset(PrintfHandler::create(multiDispatchInfo, *device));
     if (printfHandler) {
@@ -531,8 +531,8 @@ void CommandQueueHw<GfxFamily>::processDeviceEnqueue(DeviceQueueHw<GfxFamily> *d
                                                      TagNode<HwTimeStamps> *hwTimeStamps,
                                                      bool &blocking) {
     auto parentKernel = multiDispatchInfo.peekParentKernel();
-    size_t minSizeSSHForEM = HardwareCommandsHelper<GfxFamily>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, *parentKernel);
-    bool isCcsUsed = isCcs(gpgpuEngine->osContext->getEngineType());
+    size_t minSizeSSHForEM = HardwareCommandsHelper<GfxFamily>::getSshSizeForExecutionModel(*parentKernel);
+    bool isCcsUsed = EngineHelpers::isCcs(gpgpuEngine->osContext->getEngineType());
 
     uint32_t taskCount = getGpgpuCommandStreamReceiver().peekTaskCount() + 1;
     devQueueHw->setupExecutionModelDispatch(getIndirectHeap(IndirectHeap::SURFACE_STATE, minSizeSSHForEM),
@@ -557,7 +557,7 @@ void CommandQueueHw<GfxFamily>::processDeviceEnqueue(DeviceQueueHw<GfxFamily> *d
                       this->getIndirectHeap(IndirectHeap::SURFACE_STATE, 0u).getGraphicsAllocation(),
                       devQueueHw->getDebugQueue());
 
-    auto preemptionMode = PreemptionHelper::taskPreemptionMode(*device, multiDispatchInfo);
+    auto preemptionMode = PreemptionHelper::taskPreemptionMode(getDevice(), multiDispatchInfo);
     GpgpuWalkerHelper<GfxFamily>::dispatchScheduler(
         *this->commandStream,
         *devQueueHw,
@@ -731,7 +731,7 @@ CompletionStamp CommandQueueHw<GfxFamily>::enqueueNonBlocked(
         {},                                                                                         //pipelineSelectArgs
         this->flushStamp->getStampReference(),                                                      //flushStampReference
         getThrottle(),                                                                              //throttle
-        PreemptionHelper::taskPreemptionMode(*device, multiDispatchInfo),                           //preemptionMode
+        PreemptionHelper::taskPreemptionMode(getDevice(), multiDispatchInfo),                       //preemptionMode
         numGrfRequired,                                                                             //numGrfRequired
         L3CachingSettings::l3CacheOn,                                                               //l3CacheSettings
         kernel->getThreadArbitrationPolicy(),                                                       //threadArbitrationPolicy
@@ -786,7 +786,7 @@ CompletionStamp CommandQueueHw<GfxFamily>::enqueueNonBlocked(
         getIndirectHeap(IndirectHeap::SURFACE_STATE, 0u),
         taskLevel,
         dispatchFlags,
-        *device);
+        getDevice());
 
     return completionStamp;
 }
@@ -859,7 +859,7 @@ void CommandQueueHw<GfxFamily>::enqueueBlocked(
             allSurfaces.push_back(surface->duplicate());
         }
 
-        PreemptionMode preemptionMode = PreemptionHelper::taskPreemptionMode(*device, multiDispatchInfo);
+        PreemptionMode preemptionMode = PreemptionHelper::taskPreemptionMode(getDevice(), multiDispatchInfo);
         bool slmUsed = multiDispatchInfo.usesSlm() || multiDispatchInfo.peekParentKernel();
         command = std::make_unique<CommandComputeKernel>(*this,
                                                          blockedCommandsData,
@@ -925,7 +925,7 @@ CompletionStamp CommandQueueHw<GfxFamily>::enqueueCommandWithoutKernel(
         &timestampPacketDependencies.barrierNodes,                           //barrierTimestampPacketNodes
         {},                                                                  //pipelineSelectArgs
         flushStamp->getStampReference(),                                     //flushStampReference
-        QueueThrottle::MEDIUM,                                               //throttle
+        getThrottle(),                                                       //throttle
         device->getPreemptionMode(),                                         //preemptionMode
         GrfConfig::DefaultGrfNumber,                                         //numGrfRequired
         L3CachingSettings::l3CacheOn,                                        //l3CacheSettings
@@ -955,7 +955,7 @@ CompletionStamp CommandQueueHw<GfxFamily>::enqueueCommandWithoutKernel(
         getIndirectHeap(IndirectHeap::SURFACE_STATE, 0u),
         taskLevel,
         dispatchFlags,
-        *device);
+        getDevice());
 
     return completionStamp;
 }
@@ -980,7 +980,7 @@ void CommandQueueHw<GfxFamily>::computeOffsetsValueForRectCommands(size_t *buffe
 
 template <typename GfxFamily>
 size_t CommandQueueHw<GfxFamily>::calculateHostPtrSizeForImage(const size_t *region, size_t rowPitch, size_t slicePitch, Image *image) {
-    auto bytesPerPixel = image->getSurfaceFormatInfo().ImageElementSizeInBytes;
+    auto bytesPerPixel = image->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes;
     auto dstRowPitch = rowPitch ? rowPitch : region[0] * bytesPerPixel;
     auto dstSlicePitch = slicePitch ? slicePitch : ((image->getImageDesc().image_type == CL_MEM_OBJECT_IMAGE1D_ARRAY ? 1 : region[1]) * dstRowPitch);
 

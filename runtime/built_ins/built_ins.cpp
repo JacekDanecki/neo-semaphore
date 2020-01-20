@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -47,7 +47,7 @@ SchedulerKernel &BuiltIns::getSchedulerKernel(Context &context) {
     auto initializeSchedulerProgramAndKernel = [&] {
         cl_int retVal = CL_SUCCESS;
 
-        auto src = context.getDevice(0)->getExecutionEnvironment()->getBuiltIns()->builtinsLib->getBuiltinCode(EBuiltInOps::Scheduler, BuiltinCode::ECodeType::Any, *context.getDevice(0));
+        auto src = context.getDevice(0)->getExecutionEnvironment()->getBuiltIns()->builtinsLib->getBuiltinCode(EBuiltInOps::Scheduler, BuiltinCode::ECodeType::Any, context.getDevice(0)->getDevice());
 
         auto program = Program::createFromGenBinary(*context.getDevice(0)->getExecutionEnvironment(),
                                                     &context,
@@ -179,9 +179,8 @@ Program *BuiltIns::createBuiltInProgram(
             &device.getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockAdvancedMotionEstimateCheckIntel, context, device);
         builtinsBuilders["block_advanced_motion_estimate_bidirectional_check_intel"] =
             &device.getExecutionEnvironment()->getBuiltIns()->getBuiltinDispatchInfoBuilder(EBuiltInOps::VmeBlockAdvancedMotionEstimateBidirectionalCheckIntel, context, device);
-        const cl_device_id clDevice = &device;
         errcodeRet = pBuiltInProgram->build(
-            clDevice,
+            &device,
             mediaKernelsBuildOptions,
             enableCacheing,
             builtinsBuilders);
@@ -559,7 +558,7 @@ class BuiltInOp<EBuiltInOps::CopyBufferToImage3d> : public BuiltinDispatchInfoBu
         multiDispatchInfo.pushRedescribedMemObj(std::unique_ptr<MemObj>(dstImageRedescribed)); // life range same as mdi's
 
         // Calculate srcRowPitch and srcSlicePitch
-        auto bytesPerPixel = dstImage->getSurfaceFormatInfo().ImageElementSizeInBytes;
+        auto bytesPerPixel = dstImage->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes;
 
         size_t region[] = {operationParams.size.x, operationParams.size.y, operationParams.size.z};
 
@@ -673,7 +672,7 @@ class BuiltInOp<EBuiltInOps::CopyImage3dToBuffer> : public BuiltinDispatchInfoBu
         multiDispatchInfo.pushRedescribedMemObj(std::unique_ptr<MemObj>(srcImageRedescribed)); // life range same as mdi's
 
         // Calculate dstRowPitch and dstSlicePitch
-        auto bytesPerPixel = srcImage->getSurfaceFormatInfo().ImageElementSizeInBytes;
+        auto bytesPerPixel = srcImage->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes;
 
         size_t region[] = {operationParams.size.x, operationParams.size.y, operationParams.size.z};
 

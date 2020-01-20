@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2017-2019 Intel Corporation
+# Copyright (C) 2017-2020 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -48,7 +48,7 @@ target_include_directories(igdrcl_aub_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_sources(igdrcl_aub_tests PRIVATE
   ${NEO_SOURCE_DIR}/core/unit_tests/page_fault_manager/default_asan_options.cpp
-  ${NEO_SOURCE_DIR}/runtime/gmm_helper/resource_info.cpp
+  ${NEO_SOURCE_DIR}/core/gmm_helper/resource_info.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_mode.h
 )
 
@@ -66,7 +66,14 @@ target_link_libraries(igdrcl_aub_tests igdrcl_mocks)
 target_link_libraries(igdrcl_aub_tests ${NEO_MOCKABLE_LIB_NAME})
 target_link_libraries(igdrcl_aub_tests igdrcl_mocks)
 target_link_libraries(igdrcl_aub_tests gmock-gtest ${IGDRCL_EXTRA_LIBS})
-
+if(UNIX)
+  target_link_libraries(igdrcl_aub_tests ${GMM_LINK_NAME})
+else()
+  add_dependencies(igdrcl_aub_tests ${GMM_TARGET_NAME})
+  target_sources(igdrcl_aub_tests PRIVATE
+    ${NEO_SOURCE_DIR}/core/os_interface/windows/gmm_interface.cpp
+  )
+endif()
 target_include_directories(igdrcl_aub_tests BEFORE PRIVATE ${NEO_SOURCE_DIR}/core/unit_tests/test_macros${BRANCH_DIR_SUFFIX})
 
 macro(macro_for_each_test_config)

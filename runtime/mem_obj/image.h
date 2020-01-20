@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -37,7 +37,7 @@ typedef Image *(*ImageCreatFunc)(Context *context,
                                  bool isImageRedescribed,
                                  uint32_t baseMipLevel,
                                  uint32_t mipCount,
-                                 const SurfaceFormatInfo *surfaceFormatInfo,
+                                 const ClSurfaceFormatInfo *surfaceFormatInfo,
                                  const SurfaceOffsets *surfaceOffsets);
 
 typedef struct {
@@ -55,7 +55,7 @@ class Image : public MemObj {
                          const MemoryPropertiesFlags &memoryProperties,
                          cl_mem_flags flags,
                          cl_mem_flags_intel flagsIntel,
-                         const SurfaceFormatInfo *surfaceFormat,
+                         const ClSurfaceFormatInfo *surfaceFormat,
                          const cl_image_desc *imageDesc,
                          const void *hostPtr,
                          cl_int &errcodeRet);
@@ -73,15 +73,15 @@ class Image : public MemObj {
                                 cl_mem_flags_intel flagsIntel, size_t size, void *hostPtr,
                                 const cl_image_format &imageFormat, const cl_image_desc &imageDesc,
                                 bool zeroCopy, GraphicsAllocation *graphicsAllocation,
-                                bool isObjectRedescribed, uint32_t baseMipLevel, uint32_t mipCount, const SurfaceFormatInfo *surfaceFormatInfo = nullptr);
+                                bool isObjectRedescribed, uint32_t baseMipLevel, uint32_t mipCount, const ClSurfaceFormatInfo *surfaceFormatInfo = nullptr);
 
-    static Image *createSharedImage(Context *context, SharingHandler *sharingHandler, McsSurfaceInfo &mcsSurfaceInfo,
+    static Image *createSharedImage(Context *context, SharingHandler *sharingHandler, const McsSurfaceInfo &mcsSurfaceInfo,
                                     GraphicsAllocation *graphicsAllocation, GraphicsAllocation *mcsAllocation,
-                                    cl_mem_flags flags, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount);
+                                    cl_mem_flags flags, const ClSurfaceFormatInfo *surfaceFormat, ImageInfo &imgInfo, uint32_t cubeFaceIndex, uint32_t baseMipLevel, uint32_t mipCount);
 
     static cl_int validate(Context *context,
                            const MemoryPropertiesFlags &memoryProperties,
-                           const SurfaceFormatInfo *surfaceFormat,
+                           const ClSurfaceFormatInfo *surfaceFormat,
                            const cl_image_desc *imageDesc,
                            const void *hostPtr);
     static cl_int validateImageFormat(const cl_image_format *imageFormat);
@@ -101,7 +101,7 @@ class Image : public MemObj {
 
     static cl_int getImageParams(Context *context,
                                  cl_mem_flags flags,
-                                 const SurfaceFormatInfo *surfaceFormat,
+                                 const ClSurfaceFormatInfo *surfaceFormat,
                                  const cl_image_desc *imageDesc,
                                  size_t *imageRowPitch,
                                  size_t *imageSlicePitch);
@@ -118,7 +118,10 @@ class Image : public MemObj {
         return (type == CL_MEM_OBJECT_IMAGE3D) || (type == CL_MEM_OBJECT_IMAGE1D_ARRAY) || (type == CL_MEM_OBJECT_IMAGE2D_ARRAY);
     }
 
-    static bool isCopyRequired(ImageInfo &imgInfo, const void *hostPtr);
+    static ImageType convertType(const cl_mem_object_type type);
+    static cl_mem_object_type convertType(const ImageType type);
+    static ImageDescriptor convertDescriptor(const cl_image_desc &imageDesc);
+    static cl_image_desc convertDescriptor(const ImageDescriptor &imageDesc);
 
     cl_int getImageInfo(cl_image_info paramName,
                         size_t paramValueSize,
@@ -132,7 +135,7 @@ class Image : public MemObj {
 
     const cl_image_desc &getImageDesc() const;
     const cl_image_format &getImageFormat() const;
-    const SurfaceFormatInfo &getSurfaceFormatInfo() const;
+    const ClSurfaceFormatInfo &getSurfaceFormatInfo() const;
 
     void transferDataToHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) override;
     void transferDataFromHostPtr(MemObjSizeArray &copySize, MemObjOffsetArray &copyOffset) override;
@@ -169,11 +172,11 @@ class Image : public MemObj {
     uint32_t peekMipCount() { return mipCount; }
     void setMipCount(uint32_t mipCountNew) { this->mipCount = mipCountNew; }
 
-    static const SurfaceFormatInfo *getSurfaceFormatFromTable(cl_mem_flags flags, const cl_image_format *imageFormat);
+    static const ClSurfaceFormatInfo *getSurfaceFormatFromTable(cl_mem_flags flags, const cl_image_format *imageFormat);
     static cl_int validateRegionAndOrigin(const size_t *origin, const size_t *region, const cl_image_desc &imgDesc);
 
     cl_int writeNV12Planes(const void *hostPtr, size_t hostPtrRowPitch);
-    void setMcsSurfaceInfo(McsSurfaceInfo &info) { mcsSurfaceInfo = info; }
+    void setMcsSurfaceInfo(const McsSurfaceInfo &info) { mcsSurfaceInfo = info; }
     const McsSurfaceInfo &getMcsSurfaceInfo() { return mcsSurfaceInfo; }
     size_t calculateOffsetForMapping(const MemObjOffsetArray &origin) const override;
 
@@ -200,7 +203,7 @@ class Image : public MemObj {
           bool isObjectRedescribed,
           uint32_t baseMipLevel,
           uint32_t mipCount,
-          const SurfaceFormatInfo &surfaceFormatInfo,
+          const ClSurfaceFormatInfo &surfaceFormatInfo,
           const SurfaceOffsets *surfaceOffsets = nullptr);
 
     void getOsSpecificImageInfo(const cl_mem_info &paramName, size_t *srcParamSize, void **srcParam);
@@ -211,7 +214,7 @@ class Image : public MemObj {
 
     cl_image_format imageFormat;
     cl_image_desc imageDesc;
-    SurfaceFormatInfo surfaceFormatInfo;
+    ClSurfaceFormatInfo surfaceFormatInfo;
     McsSurfaceInfo mcsSurfaceInfo = {};
     uint32_t qPitch = 0;
     size_t hostPtrRowPitch = 0;
@@ -256,7 +259,7 @@ class ImageHw : public Image {
             bool isObjectRedescribed,
             uint32_t baseMipLevel,
             uint32_t mipCount,
-            const SurfaceFormatInfo &surfaceFormatInfo,
+            const ClSurfaceFormatInfo &surfaceFormatInfo,
             const SurfaceOffsets *surfaceOffsets = nullptr)
         : Image(context, memoryProperties, flags, flagsIntel, size, hostPtr, imageFormat, imageDesc,
                 zeroCopy, graphicsAllocation, isObjectRedescribed, baseMipLevel, mipCount, surfaceFormatInfo, surfaceOffsets) {
@@ -312,7 +315,7 @@ class ImageHw : public Image {
                          bool isObjectRedescribed,
                          uint32_t baseMipLevel,
                          uint32_t mipCount,
-                         const SurfaceFormatInfo *surfaceFormatInfo,
+                         const ClSurfaceFormatInfo *surfaceFormatInfo,
                          const SurfaceOffsets *surfaceOffsets) {
         UNRECOVERABLE_IF(surfaceFormatInfo == nullptr);
         return new ImageHw<GfxFamily>(context,

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -367,7 +367,7 @@ TEST_P(PerformanceHintEnqueueReadImageTest, GivenHostPtrAndSizeAlignmentsWhenEnq
                             0,
                             nullptr,
                             nullptr);
-    size_t sizeForReadImage = sizeForReadImageInPixels * image->getSurfaceFormatInfo().ImageElementSizeInBytes;
+    size_t sizeForReadImage = sizeForReadImageInPixels * image->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes;
     ASSERT_EQ(alignedSize, isAligned<MemoryConstants::cacheLineSize>(sizeForReadImage));
 
     snprintf(expectedHint, DriverDiagnostics::maxHintStringSize, DriverDiagnostics::hintFormat[CL_ENQUEUE_READ_IMAGE_DOESNT_MEET_ALIGNMENT_RESTRICTIONS], addressForReadImage, sizeForReadImage, MemoryConstants::pageSize, MemoryConstants::pageSize);
@@ -794,7 +794,7 @@ TEST_F(PerformanceHintEnqueueTest, GivenKernelWithCoherentPtrWhenEnqueueKernelIs
     size_t preferredWorkGroupSize[3];
     size_t globalWorkGroupSize[3] = {1, 1, 1};
     auto maxWorkGroupSize = static_cast<uint32_t>(pPlatform->getDevice(0)->getDeviceInfo().maxWorkGroupSize);
-    MockKernelWithInternals mockKernel(*pPlatform->getDevice(0), context);
+    MockKernelWithInternals mockKernel(*pPlatform->getClDevice(0), context);
     Kernel::SimpleKernelArgInfo kernelArgInfo;
 
     if (DebugManager.flags.EnableComputeWorkSizeND.get()) {

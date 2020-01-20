@@ -1,12 +1,12 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
-#include "runtime/memory_manager/deferred_deleter.h"
+#include "core/memory_manager/deferred_deleter.h"
 #include "runtime/os_interface/windows/wddm_memory_manager.h"
 #include "unit_tests/mocks/mock_host_ptr_manager.h"
 #include "unit_tests/mocks/mock_memory_manager.h"
@@ -20,8 +20,10 @@ class MockWddmMemoryManager : public MemoryManagerCreate<WddmMemoryManager> {
     using BaseClass::allocateGraphicsMemoryForNonSvmHostPtr;
     using BaseClass::allocateGraphicsMemoryInDevicePool;
     using BaseClass::allocateGraphicsMemoryWithProperties;
+    using BaseClass::allocateShareableMemory;
     using BaseClass::createGraphicsAllocation;
     using BaseClass::createWddmAllocation;
+    using BaseClass::getWddm;
     using BaseClass::gfxPartitions;
     using BaseClass::localMemorySupported;
     using BaseClass::supportsMultiStorageResources;

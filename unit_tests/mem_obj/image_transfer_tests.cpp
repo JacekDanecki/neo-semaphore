@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -18,7 +18,7 @@ class ImageHostPtrTransferTests : public testing::Test {
 
   public:
     void SetUp() override {
-        device.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(*platformDevices));
+        device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(*platformDevices));
         context.reset(new MockContext(device.get()));
     }
 
@@ -32,7 +32,7 @@ class ImageHostPtrTransferTests : public testing::Test {
         hostPtrRowPitch = image->getHostPtrRowPitch();
         imageSlicePitch = image->getImageDesc().image_slice_pitch;
         imageRowPitch = image->getImageDesc().image_row_pitch;
-        pixelSize = image->getSurfaceFormatInfo().ImageElementSizeInBytes;
+        pixelSize = image->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes;
     }
 
     void setExpectedData(uint8_t *dstPtr, size_t slicePitch, size_t rowPitch, std::array<size_t, 3> copyOrigin, std::array<size_t, 3> copyRegion) {
@@ -51,7 +51,7 @@ class ImageHostPtrTransferTests : public testing::Test {
         }
     }
 
-    std::unique_ptr<MockDevice> device;
+    std::unique_ptr<MockClDevice> device;
     std::unique_ptr<MockContext> context;
     std::unique_ptr<Image> image;
 

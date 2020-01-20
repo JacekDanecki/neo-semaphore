@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -66,7 +66,7 @@ TEST_F(clCreateImageTest, GivenNullHostPtrWhenCreatingImageThenImageIsCreatedAnd
 }
 
 HWTEST_F(clCreateImageTest, GivenDeviceThatDoesntSupportImagesWhenCreatingTiledImageThenInvalidOperationErrorIsReturned) {
-    auto device = static_cast<MockDevice *>(pContext->getDevice(0));
+    auto device = static_cast<MockDevice *>(&pContext->getDevice(0)->getDevice());
     device->deviceInfo.imageSupport = CL_FALSE;
     cl_bool imageSupportInfo = CL_TRUE;
     auto status = clGetDeviceInfo(devices[testedRootDeviceIndex], CL_DEVICE_IMAGE_SUPPORT, sizeof(imageSupportInfo), &imageSupportInfo, nullptr);
@@ -93,7 +93,7 @@ HWTEST_F(clCreateImageTest, GivenDeviceThatDoesntSupportImagesWhenCreatingTiledI
 }
 
 HWTEST_F(clCreateImageTest, GivenDeviceThatDoesntSupportImagesWhenCreatingNonTiledImageThenCreate) {
-    auto device = static_cast<MockDevice *>(pContext->getDevice(0));
+    auto device = static_cast<MockDevice *>(&pContext->getDevice(0)->getDevice());
     device->deviceInfo.imageSupport = CL_FALSE;
     cl_bool imageSupportInfo = CL_TRUE;
     auto status = clGetDeviceInfo(devices[testedRootDeviceIndex], CL_DEVICE_IMAGE_SUPPORT, sizeof(imageSupportInfo), &imageSupportInfo, nullptr);
@@ -409,6 +409,7 @@ static cl_mem_flags validFlags[] = {
     CL_MEM_HOST_READ_ONLY,
     CL_MEM_HOST_NO_ACCESS,
     CL_MEM_NO_ACCESS_INTEL,
+    CL_MEM_FORCE_LINEAR_STORAGE_INTEL,
     CL_MEM_ACCESS_FLAGS_UNRESTRICTED_INTEL,
 };
 

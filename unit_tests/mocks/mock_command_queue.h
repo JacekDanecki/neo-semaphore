@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -32,7 +32,7 @@ class MockCommandQueue : public CommandQueue {
     }
     MockCommandQueue() : CommandQueue(nullptr, nullptr, 0) {}
     MockCommandQueue(Context &context) : MockCommandQueue(&context, context.getDevice(0), nullptr) {}
-    MockCommandQueue(Context *context, Device *device, const cl_queue_properties *props)
+    MockCommandQueue(Context *context, ClDevice *device, const cl_queue_properties *props)
         : CommandQueue(context, device, props) {
     }
 
@@ -80,10 +80,11 @@ class MockCommandQueueHw : public CommandQueueHw<GfxFamily> {
     using BaseClass::obtainCommandStream;
     using BaseClass::obtainNewTimestampPacketNodes;
     using BaseClass::requiresCacheFlushAfterWalker;
+    using BaseClass::throttle;
     using BaseClass::timestampPacketContainer;
 
     MockCommandQueueHw(Context *context,
-                       Device *device,
+                       ClDevice *device,
                        cl_queue_properties *properties) : BaseClass(context, device, properties) {
     }
 

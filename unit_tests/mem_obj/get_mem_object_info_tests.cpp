@@ -1,15 +1,15 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/options.h"
 #include "core/helpers/ptr_math.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "unit_tests/fixtures/buffer_fixture.h"
 #include "unit_tests/fixtures/device_fixture.h"
 #include "unit_tests/fixtures/platform_fixture.h"
@@ -321,7 +321,7 @@ class GetMemObjectInfoLocalMemory : public GetMemObjectInfo {
         GetMemObjectInfo::SetUp();
 
         delete BufferDefaults::context;
-        BufferDefaults::context = new MockContext(pDevice, true);
+        BufferDefaults::context = new MockContext(pClDevice, true);
     }
 
     std::unique_ptr<DebugManagerStateRestore> dbgRestore;

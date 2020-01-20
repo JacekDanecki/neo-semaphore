@@ -1,11 +1,12 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "core/command_stream/preemption.h"
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/address_patch.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
@@ -16,7 +17,6 @@
 #include "runtime/command_stream/csr_definitions.h"
 #include "runtime/helpers/dispatch_info.h"
 #include "runtime/kernel/kernel.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/program/block_kernel_manager.h"
 
 #include <cstring>
@@ -88,8 +88,9 @@ size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredIOH(
     DEBUG_BREAK_IF(nullptr == threadPayload);
 
     auto numChannels = PerThreadDataHelper::getNumLocalIdChannels(*threadPayload);
+    uint32_t grfSize = sizeof(typename GfxFamily::GRF);
     return alignUp((kernel.getCrossThreadDataSize() +
-                    getPerThreadDataSizeTotal(kernel.getKernelInfo().getMaxSimdSize(), numChannels, localWorkSize)),
+                    getPerThreadDataSizeTotal(kernel.getKernelInfo().getMaxSimdSize(), grfSize, numChannels, localWorkSize)),
                    WALKER_TYPE::INDIRECTDATASTARTADDRESS_ALIGN_SIZE);
 }
 
@@ -133,7 +134,7 @@ size_t HardwareCommandsHelper<GfxFamily>::getTotalSizeRequiredSSH(
 }
 
 template <typename GfxFamily>
-size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredForExecutionModel(IndirectHeap::Type heapType, const Kernel &kernel) {
+size_t HardwareCommandsHelper<GfxFamily>::getSshSizeForExecutionModel(const Kernel &kernel) {
     typedef typename GfxFamily::BINDING_TABLE_STATE BINDING_TABLE_STATE;
 
     size_t totalSize = 0;
@@ -141,31 +142,24 @@ size_t HardwareCommandsHelper<GfxFamily>::getSizeRequiredForExecutionModel(Indir
     uint32_t blockCount = static_cast<uint32_t>(blockManager->getCount());
     uint32_t maxBindingTableCount = 0;
 
-    if (heapType == IndirectHeap::SURFACE_STATE) {
-        totalSize = BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE - 1;
+    totalSize = BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE - 1;
 
-        for (uint32_t i = 0; i < blockCount; i++) {
-            const KernelInfo *pBlockInfo = blockManager->getBlockKernelInfo(i);
-            totalSize += pBlockInfo->heapInfo.pKernelHeader->SurfaceStateHeapSize;
-            totalSize = alignUp(totalSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
+    for (uint32_t i = 0; i < blockCount; i++) {
+        const KernelInfo *pBlockInfo = blockManager->getBlockKernelInfo(i);
+        totalSize += pBlockInfo->heapInfo.pKernelHeader->SurfaceStateHeapSize;
+        totalSize = alignUp(totalSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
 
-            maxBindingTableCount = std::max(maxBindingTableCount, pBlockInfo->patchInfo.bindingTableState->Count);
-        }
+        maxBindingTableCount = std::max(maxBindingTableCount, pBlockInfo->patchInfo.bindingTableState->Count);
     }
 
-    if (heapType == IndirectHeap::INDIRECT_OBJECT || heapType == IndirectHeap::SURFACE_STATE) {
-        BuiltIns &builtIns = *kernel.getDevice().getExecutionEnvironment()->getBuiltIns();
-        SchedulerKernel &scheduler = builtIns.getSchedulerKernel(kernel.getContext());
+    BuiltIns &builtIns = *kernel.getDevice().getExecutionEnvironment()->getBuiltIns();
+    SchedulerKernel &scheduler = builtIns.getSchedulerKernel(kernel.getContext());
 
-        if (heapType == IndirectHeap::INDIRECT_OBJECT) {
-            totalSize += getSizeRequiredIOH(scheduler);
-        } else {
-            totalSize += getSizeRequiredSSH(scheduler);
+    totalSize += getSizeRequiredSSH(scheduler);
 
-            totalSize += maxBindingTableCount * sizeof(BINDING_TABLE_STATE) * DeviceQueue::interfaceDescriptorEntries;
-            totalSize = alignUp(totalSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
-        }
-    }
+    totalSize += maxBindingTableCount * sizeof(BINDING_TABLE_STATE) * DeviceQueue::interfaceDescriptorEntries;
+    totalSize = alignUp(totalSize, BINDING_TABLE_STATE::SURFACESTATEPOINTER_ALIGN_SIZE);
+
     return totalSize;
 }
 
@@ -422,23 +416,26 @@ void HardwareCommandsHelper<GfxFamily>::updatePerThreadDataTotal(
     uint32_t &numChannels,
     size_t &sizePerThreadDataTotal,
     size_t &localWorkItems) {
+    uint32_t grfSize = sizeof(typename GfxFamily::GRF);
+    sizePerThreadData = getPerThreadSizeLocalIDs(simd, grfSize, numChannels);
 
-    sizePerThreadData = getPerThreadSizeLocalIDs(simd, numChannels);
-
-    auto localIdSizePerThread = PerThreadDataHelper::getLocalIdSizePerThread(simd, numChannels);
-    localIdSizePerThread = std::max(localIdSizePerThread, sizeof(GRF));
+    uint32_t localIdSizePerThread = PerThreadDataHelper::getLocalIdSizePerThread(simd, grfSize, numChannels);
+    localIdSizePerThread = std::max(localIdSizePerThread, grfSize);
 
     sizePerThreadDataTotal = getThreadsPerWG(simd, localWorkItems) * localIdSizePerThread;
     DEBUG_BREAK_IF(sizePerThreadDataTotal == 0); // Hardware requires at least 1 GRF of perThreadData for each thread in thread group
 }
 
 template <typename GfxFamily>
-void HardwareCommandsHelper<GfxFamily>::programMiSemaphoreWait(LinearStream &commandStream, uint64_t compareAddress, uint32_t compareData) {
+void HardwareCommandsHelper<GfxFamily>::programMiSemaphoreWait(LinearStream &commandStream,
+                                                               uint64_t compareAddress,
+                                                               uint32_t compareData,
+                                                               COMPARE_OPERATION compareMode) {
     using MI_SEMAPHORE_WAIT = typename GfxFamily::MI_SEMAPHORE_WAIT;
 
     auto miSemaphoreCmd = commandStream.getSpaceForCmd<MI_SEMAPHORE_WAIT>();
     *miSemaphoreCmd = GfxFamily::cmdInitMiSemaphoreWait;
-    miSemaphoreCmd->setCompareOperation(MI_SEMAPHORE_WAIT::COMPARE_OPERATION::COMPARE_OPERATION_SAD_NOT_EQUAL_SDD);
+    miSemaphoreCmd->setCompareOperation(compareMode);
     miSemaphoreCmd->setSemaphoreDataDword(compareData);
     miSemaphoreCmd->setSemaphoreGraphicsAddress(compareAddress);
     miSemaphoreCmd->setWaitMode(MI_SEMAPHORE_WAIT::WAIT_MODE::WAIT_MODE_POLLING_MODE);

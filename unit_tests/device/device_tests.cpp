@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,10 +8,10 @@
 #include "core/helpers/hw_helper.h"
 #include "core/helpers/options.h"
 #include "core/indirect_heap/indirect_heap.h"
+#include "core/os_interface/os_context.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/device_helpers.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/platform/platform.h"
 #include "test.h"
 #include "unit_tests/fixtures/device_fixture.h"
@@ -99,15 +99,25 @@ TEST_F(DeviceTest, GivenDebugVariableForcing32BitAllocationsWhenDeviceIsCreatedT
 }
 
 TEST_F(DeviceTest, retainAndRelease) {
-    ASSERT_NE(nullptr, pDevice);
+    ASSERT_NE(nullptr, pClDevice);
 
-    pDevice->retain();
-    pDevice->retain();
-    pDevice->retain();
-    ASSERT_EQ(1, pDevice->getReference());
+    pClDevice->retainApi();
+    pClDevice->retainApi();
+    pClDevice->retainApi();
+    ASSERT_EQ(1, pClDevice->getReference());
 
-    ASSERT_FALSE(pDevice->release().isUnused());
-    ASSERT_EQ(1, pDevice->getReference());
+    ASSERT_FALSE(pClDevice->releaseApi().isUnused());
+    ASSERT_EQ(1, pClDevice->getReference());
+}
+
+TEST_F(DeviceTest, WhenAppendingOsExtensionsThenDeviceInfoIsProperlyUpdated) {
+    EXPECT_NE(nullptr, pDevice);
+    std::string testedValue = "1234!@#$";
+    std::string expectedExtensions = pDevice->deviceExtensions + testedValue;
+
+    pDevice->appendOSExtensions(testedValue);
+    EXPECT_EQ(expectedExtensions, pDevice->deviceExtensions);
+    EXPECT_STREQ(expectedExtensions.c_str(), pDevice->deviceInfo.deviceExtensions);
 }
 
 TEST_F(DeviceTest, getEngineTypeDefault) {
@@ -262,16 +272,17 @@ TEST(DeviceCreation, givenDeviceWhenCheckingEnginesCountThenNumberGreaterThanZer
 
 using DeviceHwTest = ::testing::Test;
 
-HWTEST_F(DeviceHwTest, givenHwHelperInputWhenInitializingCsrThenCreatePageTableManagerIfAllowed) {
+HWTEST_F(DeviceHwTest, givenHwHelperInputWhenInitializingCsrThenCreatePageTableManagerIfNeeded) {
     HardwareInfo localHwInfo = *platformDevices[0];
     localHwInfo.capabilityTable.ftrRenderCompressedBuffers = false;
     localHwInfo.capabilityTable.ftrRenderCompressedImages = false;
 
     ExecutionEnvironment executionEnvironment;
-    executionEnvironment.prepareRootDeviceEnvironments(1);
+    executionEnvironment.prepareRootDeviceEnvironments(3);
     executionEnvironment.incRefInternal();
     executionEnvironment.initializeMemoryManager();
     executionEnvironment.setHwInfo(&localHwInfo);
+    auto defaultEngineType = getChosenEngineType(localHwInfo);
     std::unique_ptr<MockDevice> device;
     device.reset(MockDevice::createWithExecutionEnvironment<MockDevice>(&localHwInfo, &executionEnvironment, 0));
     auto &csr0 = device->getUltCommandStreamReceiver<FamilyType>();
@@ -280,13 +291,13 @@ HWTEST_F(DeviceHwTest, givenHwHelperInputWhenInitializingCsrThenCreatePageTableM
     auto hwInfo = executionEnvironment.getMutableHardwareInfo();
     hwInfo->capabilityTable.ftrRenderCompressedBuffers = true;
     hwInfo->capabilityTable.ftrRenderCompressedImages = false;
-    device.reset(MockDevice::createWithExecutionEnvironment<MockDevice>(&localHwInfo, &executionEnvironment, 0));
+    device.reset(MockDevice::createWithExecutionEnvironment<MockDevice>(&localHwInfo, &executionEnvironment, 1));
     auto &csr1 = device->getUltCommandStreamReceiver<FamilyType>();
-    EXPECT_EQ(UnitTestHelper<FamilyType>::isPageTableManagerSupported(*hwInfo), csr1.createPageTableManagerCalled);
+    EXPECT_EQ(csr1.needsPageTableManager(defaultEngineType), csr1.createPageTableManagerCalled);
 
     hwInfo->capabilityTable.ftrRenderCompressedBuffers = false;
     hwInfo->capabilityTable.ftrRenderCompressedImages = true;
-    device.reset(MockDevice::createWithExecutionEnvironment<MockDevice>(&localHwInfo, &executionEnvironment, 0));
+    device.reset(MockDevice::createWithExecutionEnvironment<MockDevice>(&localHwInfo, &executionEnvironment, 2));
     auto &csr2 = device->getUltCommandStreamReceiver<FamilyType>();
-    EXPECT_EQ(UnitTestHelper<FamilyType>::isPageTableManagerSupported(*hwInfo), csr2.createPageTableManagerCalled);
+    EXPECT_EQ(csr2.needsPageTableManager(defaultEngineType), csr2.createPageTableManagerCalled);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -24,7 +24,7 @@ class TbxStream;
 class TbxMemoryManager : public OsAgnosticMemoryManager {
   public:
     TbxMemoryManager(ExecutionEnvironment &executionEnvironment) : OsAgnosticMemoryManager(executionEnvironment) {}
-    uint64_t getSystemSharedMemory() override {
+    uint64_t getSystemSharedMemory(uint32_t rootDeviceIndex) override {
         return 1 * GB;
     }
 };
@@ -40,8 +40,6 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
     uint32_t getMaskAndValueForPollForCompletion() const;
     bool getpollNotEqualValueForPollForCompletion() const;
 
-    MOCKABLE_VIRTUAL void downloadAllocation(GraphicsAllocation &gfxAllocation);
-
   public:
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::initAdditionalMMIO;
     using CommandStreamReceiverSimulatedCommonHw<GfxFamily>::aubManager;
@@ -52,6 +50,7 @@ class TbxCommandStreamReceiverHw : public CommandStreamReceiverSimulatedHw<GfxFa
     bool flush(BatchBuffer &batchBuffer, ResidencyContainer &allocationsForResidency) override;
 
     void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool useQuickKmdSleep, bool forcePowerSavingMode) override;
+    void downloadAllocation(GraphicsAllocation &gfxAllocation) override;
 
     void processEviction() override;
     void processResidency(const ResidencyContainer &allocationsForResidency) override;

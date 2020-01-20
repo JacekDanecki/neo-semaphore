@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,11 +7,11 @@
 
 #include "runtime/aub/aub_center.h"
 
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/hw_info.h"
 #include "core/helpers/options.h"
 #include "runtime/aub/aub_helper.h"
 #include "runtime/helpers/device_helpers.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 
 #include "third_party/aub_stream/headers/aub_manager.h"
 #include "third_party/aub_stream/headers/aubstream.h"
@@ -30,6 +30,7 @@ AubCenter::AubCenter(const HardwareInfo *pHwInfo, bool localMemoryEnabled, const
 
         aubStreamMode = getAubStreamMode(aubFileName, type);
 
+        AubHelper::setAdditionalMmioList();
         if (DebugManager.flags.AubDumpAddMmioRegistersList.get() != "unk") {
             aub_stream::injectMMIOList(AubHelper::getAdditionalMmioList());
         }

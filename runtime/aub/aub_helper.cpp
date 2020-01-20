@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,9 +7,9 @@
 
 #include "runtime/aub/aub_helper.h"
 
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/basic_math.h"
 #include "runtime/aub_mem_dump/aub_mem_dump.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 
 namespace NEO {
 
@@ -31,6 +31,9 @@ uint32_t AubHelper::getMemType(uint32_t addressSpace) {
 
 uint64_t AubHelper::getMemBankSize(const HardwareInfo *pHwInfo) {
     return getTotalMemBankSize();
+}
+
+void AubHelper::setAdditionalMmioList() {
 }
 
 } // namespace NEO

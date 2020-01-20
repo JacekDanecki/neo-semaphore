@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,10 +13,6 @@ namespace NEO {
 
 bool SpecialUltHelperGen12lp::shouldCompressionBeEnabledAfterConfigureHardwareCustom(const HardwareInfo &hwInfo) {
     return hwInfo.featureTable.ftrE2ECompression;
-}
-
-bool SpecialUltHelperGen12lp::shouldEnableHdcFlush(PRODUCT_FAMILY productFamily) {
-    return true;
 }
 
 bool SpecialUltHelperGen12lp::additionalCoherencyCheck(PRODUCT_FAMILY productFamily, bool coherency) {
@@ -33,18 +29,6 @@ bool SpecialUltHelperGen12lp::shouldTestDefaultImplementationOfSetupHardwareCapa
 
 bool SpecialUltHelperGen12lp::isPipeControlWArequired(PRODUCT_FAMILY productFamily) {
     return true;
-}
-
-bool SpecialUltHelperGen12lp::isPageTableManagerSupported(const HardwareInfo &hwInfo) {
-    return hwInfo.capabilityTable.ftrRenderCompressedBuffers || hwInfo.capabilityTable.ftrRenderCompressedImages;
-}
-
-bool SpecialUltHelperGen12lp::isRenderBufferCompressionPreferred(const HardwareInfo &hwInfo, const std::size_t size) {
-    return false;
-}
-
-bool SpecialUltHelperGen12lp::isAdditionalSurfaceStateParamForCompressionRequired(const HardwareInfo &hwInfo) {
-    return false;
 }
 
 } // namespace NEO

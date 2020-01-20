@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -34,7 +34,7 @@ TYPED_TEST_P(D3DTests, givenSharedResourceBufferAndInteropUserSyncEnabledWhenRel
 
     class MockCmdQ : public CommandQueue {
       public:
-        MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
+        MockCmdQ(Context *context, ClDevice *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
         cl_int finish() override {
             finishCalled++;
             return CL_SUCCESS;
@@ -62,7 +62,7 @@ TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncDisabledWhe
 
     class MockCmdQ : public CommandQueue {
       public:
-        MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
+        MockCmdQ(Context *context, ClDevice *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
         cl_int finish() override {
             finishCalled++;
             return CL_SUCCESS;
@@ -95,7 +95,7 @@ TYPED_TEST_P(D3DTests, givenSharedResourceBufferAndInteropUserSyncDisabledWhenRe
 
     class MockCmdQ : public CommandQueue {
       public:
-        MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
+        MockCmdQ(Context *context, ClDevice *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
         cl_int finish() override {
             finishCalled++;
             return CL_SUCCESS;
@@ -123,7 +123,7 @@ TYPED_TEST_P(D3DTests, givenNonSharedResourceBufferAndInteropUserSyncEnabledWhen
 
     class MockCmdQ : public CommandQueue {
       public:
-        MockCmdQ(Context *context, Device *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
+        MockCmdQ(Context *context, ClDevice *device, const cl_queue_properties *properties) : CommandQueue(context, device, properties){};
         cl_int finish() override {
             finishCalled++;
             return CL_SUCCESS;
@@ -272,7 +272,7 @@ TYPED_TEST_P(D3DTests, givenD3DDeviceParamWhenContextCreationThenSetProperValues
 
     cl_context_properties validProperties[5] = {CL_CONTEXT_PLATFORM, (cl_context_properties)pid[0], param, 0, 0};
     cl_int retVal = CL_SUCCESS;
-    auto ctx = std::unique_ptr<MockContext>(Context::create<MockContext>(validProperties, DeviceVector(&deviceID, 1), nullptr, nullptr, retVal));
+    auto ctx = std::unique_ptr<MockContext>(Context::create<MockContext>(validProperties, ClDeviceVector(&deviceID, 1), nullptr, nullptr, retVal));
 
     EXPECT_EQ(CL_SUCCESS, retVal);
     ASSERT_NE(nullptr, ctx.get());
@@ -396,27 +396,27 @@ TYPED_TEST_P(D3DTests, fillTexture3dDesc) {
 }
 
 TYPED_TEST_P(D3DTests, givenPlaneWhenFindYuvSurfaceCalledThenReturnValidImgFormat) {
-    const SurfaceFormatInfo *surfaceFormat;
+    const ClSurfaceFormatInfo *surfaceFormat;
     DXGI_FORMAT testFormat[] = {DXGI_FORMAT::DXGI_FORMAT_NV12, DXGI_FORMAT::DXGI_FORMAT_P010, DXGI_FORMAT::DXGI_FORMAT_P016};
     int channelDataType[] = {CL_UNORM_INT8, CL_UNORM_INT16, CL_UNORM_INT16};
     for (int n = 0; n < 3; n++) {
-        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], OCLPlane::NO_PLANE, CL_MEM_READ_WRITE);
+        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], ImagePlane::NO_PLANE, CL_MEM_READ_WRITE);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_order == CL_RG);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_data_type == channelDataType[n]);
 
-        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], OCLPlane::PLANE_U, CL_MEM_READ_WRITE);
+        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], ImagePlane::PLANE_U, CL_MEM_READ_WRITE);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_order == CL_RG);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_data_type == channelDataType[n]);
 
-        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], OCLPlane::PLANE_UV, CL_MEM_READ_WRITE);
+        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], ImagePlane::PLANE_UV, CL_MEM_READ_WRITE);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_order == CL_RG);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_data_type == channelDataType[n]);
 
-        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], OCLPlane::PLANE_V, CL_MEM_READ_WRITE);
+        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], ImagePlane::PLANE_V, CL_MEM_READ_WRITE);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_order == CL_RG);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_data_type == channelDataType[n]);
 
-        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], OCLPlane::PLANE_Y, CL_MEM_READ_WRITE);
+        surfaceFormat = D3DTexture<TypeParam>::findYuvSurfaceFormatInfo(testFormat[n], ImagePlane::PLANE_Y, CL_MEM_READ_WRITE);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_order == CL_R);
         EXPECT_TRUE(surfaceFormat->OCLImageFormat.image_channel_data_type == channelDataType[n]);
     }
@@ -482,4 +482,35 @@ REGISTER_TYPED_TEST_CASE_P(D3DTests,
                            givenD3DTexture3dWhenOclImageIsCreatedThenSharedImageAllocationTypeIsSet);
 
 INSTANTIATE_TYPED_TEST_CASE_P(D3DSharingTests, D3DTests, D3DTypes);
+
+using D3D10Test = D3DTests<D3DTypesHelper::D3D10>;
+
+TEST_F(D3D10Test, givenIncompatibleD3DAdapterWhenGettingDeviceIdsThenNoDevicesAreReturned) {
+    cl_device_id deviceID;
+    cl_uint numDevices = 15;
+    auto clAdapterId = context->getDevice(0)->getHardwareInfo().platform.usDeviceID;
+    auto d3dAdapterId = clAdapterId + 1;
+    mockSharingFcns->mockDxgiDesc.DeviceId = d3dAdapterId;
+
+    EXPECT_NE(clAdapterId, d3dAdapterId);
+    auto retVal = clGetDeviceIDsFromD3D10KHR(pPlatform, CL_D3D10_DEVICE_KHR, nullptr, CL_ALL_DEVICES_FOR_D3D10_KHR, 1, &deviceID, &numDevices);
+
+    EXPECT_EQ(CL_DEVICE_NOT_FOUND, retVal);
+    EXPECT_EQ(0, numDevices);
+}
+using D3D11Test = D3DTests<D3DTypesHelper::D3D11>;
+
+TEST_F(D3D11Test, givenIncompatibleD3DAdapterWhenGettingDeviceIdsThenNoDevicesAreReturned) {
+    cl_device_id deviceID;
+    cl_uint numDevices = 15;
+    auto clAdapterId = context->getDevice(0)->getHardwareInfo().platform.usDeviceID;
+    auto d3dAdapterId = clAdapterId + 1;
+    mockSharingFcns->mockDxgiDesc.DeviceId = d3dAdapterId;
+
+    EXPECT_NE(clAdapterId, d3dAdapterId);
+    auto retVal = clGetDeviceIDsFromD3D11KHR(pPlatform, CL_D3D11_DEVICE_KHR, nullptr, CL_ALL_DEVICES_FOR_D3D11_KHR, 1, &deviceID, &numDevices);
+
+    EXPECT_EQ(CL_DEVICE_NOT_FOUND, retVal);
+    EXPECT_EQ(0, numDevices);
+}
 } // namespace NEO

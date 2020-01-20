@@ -1,14 +1,15 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/debug_settings/debug_settings_manager.h"
 #include "runtime/context/context.h"
 #include "runtime/device/device.h"
 #include "runtime/helpers/string_helpers.h"
-#include "runtime/os_interface/debug_settings_manager.h"
+#include "runtime/platform/platform.h"
 #include "runtime/program/program.h"
 
 #include "compiler_options.h"
@@ -81,7 +82,7 @@ template <typename T>
 T *Program::create(
     const char *nullTerminatedString,
     Context *context,
-    Device &device,
+    ClDevice &device,
     bool isBuiltIn,
     cl_int *errcodeRet) {
     cl_int retVal = CL_SUCCESS;
@@ -111,6 +112,16 @@ T *Program::create(
     }
 
     return program;
+}
+
+template <typename T>
+T *Program::create(
+    const char *nullTerminatedString,
+    Context *context,
+    Device &device,
+    bool isBuiltIn,
+    cl_int *errcodeRet) {
+    return Program::create<T>(nullTerminatedString, context, *platform()->clDeviceMap[&device], isBuiltIn, errcodeRet);
 }
 
 template <typename T>

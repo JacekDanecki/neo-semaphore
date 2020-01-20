@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,8 +8,10 @@
 #include "runtime/context/context.h"
 
 #include "core/compiler_interface/compiler_interface.h"
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/helpers/ptr_math.h"
 #include "core/helpers/string.h"
+#include "core/memory_manager/deferred_deleter.h"
 #include "core/memory_manager/unified_memory_manager.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue.h"
@@ -20,9 +22,7 @@
 #include "runtime/helpers/get_info.h"
 #include "runtime/helpers/surface_formats.h"
 #include "runtime/mem_obj/image.h"
-#include "runtime/memory_manager/deferred_deleter.h"
 #include "runtime/memory_manager/memory_manager.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/platform/platform.h"
 #include "runtime/sharings/sharing.h"
 #include "runtime/sharings/sharing_factory.h"
@@ -95,7 +95,7 @@ bool Context::areMultiStorageAllocationsPreferred() {
 }
 
 bool Context::createImpl(const cl_context_properties *properties,
-                         const DeviceVector &inputDevices,
+                         const ClDeviceVector &inputDevices,
                          void(CL_CALLBACK *funcNotify)(const char *, const void *, size_t, void *),
                          void *data, cl_int &errcodeRet) {
 
@@ -257,8 +257,8 @@ size_t Context::getTotalNumDevices() const {
     return numAvailableDevices;
 }
 
-Device *Context::getDevice(size_t deviceOrdinal) {
-    return (Device *)devices[deviceOrdinal];
+ClDevice *Context::getDevice(size_t deviceOrdinal) {
+    return (ClDevice *)devices[deviceOrdinal];
 }
 
 cl_int Context::getSupportedImageFormats(
@@ -272,7 +272,7 @@ cl_int Context::getSupportedImageFormats(
     const bool nv12ExtensionEnabled = device->getDeviceInfo().nv12Extension;
     const bool packedYuvExtensionEnabled = device->getDeviceInfo().packedYuvExtension;
 
-    auto appendImageFormats = [&](ArrayRef<const SurfaceFormatInfo> formats) {
+    auto appendImageFormats = [&](ArrayRef<const ClSurfaceFormatInfo> formats) {
         if (imageFormats) {
             size_t offset = numImageFormats;
             for (size_t i = 0; i < formats.size() && offset < numEntries; ++i) {

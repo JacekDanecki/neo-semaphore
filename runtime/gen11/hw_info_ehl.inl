@@ -1,10 +1,11 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/gen11/hw_cmds.h"
 #include "core/memory_manager/memory_constants.h"
 #include "runtime/aub_mem_dump/aub_services.h"
 
@@ -46,6 +47,7 @@ const RuntimeCapabilityTable EHL::capabilityTable{
     CmdServicesMemTraceVersion::DeviceValues::Ehl, // aubDeviceId
     1,                                             // extraQuantityThreadsPerEU
     64,                                            // slmSize
+    sizeof(EHL::GRF),                              // grfSize
     false,                                         // blitterOperationsSupported
     false,                                         // ftrSupportsInteger64BitAtomics
     false,                                         // ftrSupportsFP64
@@ -199,12 +201,45 @@ void EHL_1x4x8::setupHardwareInfo(HardwareInfo *hwInfo, bool setupFeatureTableAn
     }
 };
 
+const HardwareInfo EHL_1x4x6::hwInfo = {
+    &EHL::platform,
+    &EHL::featureTable,
+    &EHL::workaroundTable,
+    &EHL_1x4x6::gtSystemInfo,
+    EHL::capabilityTable,
+};
+GT_SYSTEM_INFO EHL_1x4x6::gtSystemInfo = {0};
+void EHL_1x4x6::setupHardwareInfo(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable) {
+    GT_SYSTEM_INFO *gtSysInfo = &hwInfo->gtSystemInfo;
+    gtSysInfo->ThreadCount = gtSysInfo->EUCount * EHL::threadsPerEu;
+    gtSysInfo->SliceCount = 1;
+    gtSysInfo->L3CacheSizeInKb = 1280;
+    gtSysInfo->L3BankCount = 4;
+    gtSysInfo->MaxFillRate = 8;
+    gtSysInfo->TotalVsThreads = 168;
+    gtSysInfo->TotalHsThreads = 168;
+    gtSysInfo->TotalDsThreads = 168;
+    gtSysInfo->TotalGsThreads = 168;
+    gtSysInfo->TotalPsThreadsWindowerRange = 64;
+    gtSysInfo->CsrSizeInMb = 8;
+    gtSysInfo->MaxEuPerSubSlice = EHL::maxEuPerSubslice;
+    gtSysInfo->MaxSlicesSupported = EHL::maxSlicesSupported;
+    gtSysInfo->MaxSubSlicesSupported = EHL::maxSubslicesSupported;
+    gtSysInfo->IsL3HashModeEnabled = false;
+    gtSysInfo->IsDynamicallyPopulated = false;
+    if (setupFeatureTableAndWorkaroundTable) {
+        setupFeatureAndWorkaroundTable(hwInfo);
+    }
+};
+
 const HardwareInfo EHL::hwInfo = EHL_1x4x8::hwInfo;
 const std::string EHL::defaultHardwareInfoConfig = "1x4x8";
 
 void setupEHLHardwareInfoImpl(HardwareInfo *hwInfo, bool setupFeatureTableAndWorkaroundTable, const std::string &hwInfoConfig) {
     if (hwInfoConfig == "1x4x8") {
         EHL_1x4x8::setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable);
+    } else if (hwInfoConfig == "1x4x6") {
+        EHL_1x4x6::setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable);
     } else if (hwInfoConfig == "1x4x4") {
         EHL_1x4x4::setupHardwareInfo(hwInfo, setupFeatureTableAndWorkaroundTable);
     } else if (hwInfoConfig == "1x2x4") {

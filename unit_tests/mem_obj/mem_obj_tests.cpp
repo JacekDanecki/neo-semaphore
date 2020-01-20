@@ -1,19 +1,20 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/gmm_helper/gmm.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/device/device.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/memory_properties_flags_helpers.h"
 #include "runtime/helpers/properties_helper.h"
 #include "runtime/mem_obj/mem_obj.h"
 #include "runtime/memory_manager/allocations_list.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/platform/platform.h"
+#include "unit_tests/fixtures/multi_root_device_fixture.h"
 #include "unit_tests/mocks/mock_context.h"
 #include "unit_tests/mocks/mock_deferred_deleter.h"
 #include "unit_tests/mocks/mock_device.h"
@@ -168,7 +169,7 @@ TEST(MemObj, givenNotReadyGraphicsAllocationWhenMemObjDestroysAllocationAsyncThe
 
 TEST(MemObj, givenReadyGraphicsAllocationWhenMemObjDestroysAllocationAsyncThenAllocationIsNotAddedToMemoryManagerAllocationList) {
     ExecutionEnvironment *executionEnvironment = platformImpl->peekExecutionEnvironment();
-    auto device = std::unique_ptr<MockDevice>(MockDevice::create<MockDevice>(executionEnvironment, 0));
+    auto device = std::make_unique<MockClDevice>(MockDevice::create<MockDevice>(executionEnvironment, 0));
     MockContext context(device.get());
     auto memoryManager = executionEnvironment->memoryManager.get();
 
@@ -304,7 +305,7 @@ TEST(MemObj, givenRenderCompressedGmmWhenAskingForMappingOnCpuThenDisallow) {
     context.memoryManager = &memoryManager;
 
     auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
-    allocation->setDefaultGmm(new Gmm(nullptr, 1, false));
+    allocation->setDefaultGmm(new Gmm(context.getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), nullptr, 1, false));
     MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(CL_MEM_READ_WRITE, 0, 0);
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, memoryProperties, CL_MEM_READ_WRITE, 0,
                   1, allocation->getUnderlyingBuffer(), nullptr, allocation, false, false, false);
@@ -338,7 +339,7 @@ TEST(MemObj, givenNonCpuAccessibleMemoryWhenAskingForMappingOnCpuThenDisallow) {
     context.memoryManager = &memoryManager;
 
     auto allocation = memoryManager.allocateGraphicsMemoryWithProperties(MockAllocationProperties{MemoryConstants::pageSize});
-    allocation->setDefaultGmm(new Gmm(nullptr, 1, false));
+    allocation->setDefaultGmm(new Gmm(context.getDevice(0)->getExecutionEnvironment()->getGmmClientContext(), nullptr, 1, false));
     MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(CL_MEM_READ_WRITE, 0, 0);
     MemObj memObj(&context, CL_MEM_OBJECT_BUFFER, memoryProperties, CL_MEM_READ_WRITE, 0,
                   1, allocation->getUnderlyingBuffer(), nullptr, allocation, false, false, false);
@@ -489,4 +490,19 @@ TEST(MemObj, givenMemObjNotUsingHostPtrWhenGettingBasePtrTwiceReturnSameMapPtr) 
     ASSERT_NE(nullptr, mapAllocation);
     EXPECT_EQ(mapPtr, mapAllocation->getUnderlyingBuffer());
     EXPECT_EQ(mapPtr, memObj.getAllocatedMapPtr());
+}
+
+using MemObjMultiRootDeviceTests = MultiRootDeviceFixture;
+
+TEST_F(MemObjMultiRootDeviceTests, memObjMapAllocationHasCorrectRootDeviceIndex) {
+    MemoryPropertiesFlags memoryProperties = MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(CL_MEM_READ_WRITE, 0, 0);
+    MemObj memObj(context.get(), CL_MEM_OBJECT_BUFFER, memoryProperties, CL_MEM_READ_WRITE, 0,
+                  1, nullptr, nullptr, nullptr, true, false, false);
+
+    void *mapPtr = memObj.getBasePtrForMap(device->getRootDeviceIndex());
+    EXPECT_NE(nullptr, mapPtr);
+
+    auto mapAllocation = memObj.getMapAllocation();
+    ASSERT_NE(nullptr, mapAllocation);
+    EXPECT_EQ(expectedRootDeviceIndex, mapAllocation->getRootDeviceIndex());
 }

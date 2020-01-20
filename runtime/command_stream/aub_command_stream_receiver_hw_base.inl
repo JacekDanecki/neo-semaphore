@@ -1,18 +1,21 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/debug_settings/debug_settings_manager.h"
 #include "core/execution_environment/root_device_environment.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/debug_helpers.h"
+#include "core/helpers/engine_node_helper.h"
 #include "core/helpers/hash.h"
 #include "core/helpers/ptr_math.h"
 #include "core/helpers/string.h"
 #include "core/memory_manager/graphics_allocation.h"
 #include "core/memory_manager/memory_constants.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/aub/aub_helper.h"
 #include "runtime/aub_mem_dump/aub_alloc_dump.h"
 #include "runtime/aub_mem_dump/aub_alloc_dump.inl"
@@ -22,13 +25,10 @@
 #include "runtime/command_stream/aub_subcapture.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/helpers/engine_node_helper.h"
 #include "runtime/helpers/hardware_context_controller.h"
 #include "runtime/helpers/neo_driver_version.h"
 #include "runtime/memory_manager/memory_banks.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
-#include "runtime/os_interface/debug_settings_manager.h"
-#include "runtime/os_interface/os_context.h"
 
 #include "driver_version.h"
 #include "third_party/aub_stream/headers/aub_manager.h"
@@ -729,7 +729,7 @@ void AUBCommandStreamReceiverHw<GfxFamily>::processResidency(const ResidencyCont
 
 template <typename GfxFamily>
 void AUBCommandStreamReceiverHw<GfxFamily>::dumpAllocation(GraphicsAllocation &gfxAllocation) {
-    if (isBcs(this->osContext->getEngineType())) {
+    if (EngineHelpers::isBcs(this->osContext->getEngineType())) {
         return;
     }
 

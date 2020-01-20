@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -141,7 +141,7 @@ inline uint64_t readMisalignedUint64(const uint64_t *address) {
     return static_cast<uint64_t>(static_cast<uint64_t>(addressBits[1]) << 32) | addressBits[0];
 }
 
-GraphicsAllocation *allocateGlobalsSurface(NEO::Context *ctx, NEO::Device *device, size_t size, bool constant, bool globalsAreExported, const void *initData) {
+GraphicsAllocation *allocateGlobalsSurface(NEO::Context *ctx, NEO::ClDevice *device, size_t size, bool constant, bool globalsAreExported, const void *initData) {
     UNRECOVERABLE_IF(device == nullptr);
     if (globalsAreExported && (ctx != nullptr) && (ctx->getSVMAllocsManager() != nullptr)) {
         NEO::SVMAllocsManager::SvmAllocationProperties svmProps = {};
@@ -218,19 +218,31 @@ void Program::processProgramScopeMetadata(const PatchTokenBinary::ProgramFromPat
     }
 
     for (const auto &globalConstantPointerToken : decodedProgram.programScopeTokens.constantPointer) {
+        NEO::GraphicsAllocation *srcSurface = this->constantSurface;
+        if (globalConstantPointerToken->BufferType != PROGRAM_SCOPE_CONSTANT_BUFFER) {
+            UNRECOVERABLE_IF(globalConstantPointerToken->BufferType != PROGRAM_SCOPE_GLOBAL_BUFFER);
+            srcSurface = this->globalSurface;
+        }
+        UNRECOVERABLE_IF(srcSurface == nullptr);
         UNRECOVERABLE_IF(this->constantSurface == nullptr);
         auto offset = readMisalignedUint64(&globalConstantPointerToken->ConstantPointerOffset);
         UNRECOVERABLE_IF(this->constantSurface->getUnderlyingBufferSize() < ((offset + constantSurface->is32BitAllocation()) ? 4 : sizeof(uintptr_t)));
         void *patchOffset = ptrOffset(this->constantSurface->getUnderlyingBuffer(), static_cast<size_t>(offset));
-        patchIncrement(patchOffset, constantSurface->is32BitAllocation() ? 4 : sizeof(uintptr_t), constantSurface->getGpuAddressToPatch());
+        patchIncrement(patchOffset, constantSurface->is32BitAllocation() ? 4 : sizeof(uintptr_t), srcSurface->getGpuAddressToPatch());
     }
 
     for (const auto &globalVariablePointerToken : decodedProgram.programScopeTokens.globalPointer) {
+        NEO::GraphicsAllocation *srcSurface = this->globalSurface;
+        if (globalVariablePointerToken->BufferType != PROGRAM_SCOPE_GLOBAL_BUFFER) {
+            UNRECOVERABLE_IF(globalVariablePointerToken->BufferType != PROGRAM_SCOPE_CONSTANT_BUFFER);
+            srcSurface = this->constantSurface;
+        }
+        UNRECOVERABLE_IF(srcSurface == nullptr);
         UNRECOVERABLE_IF(this->globalSurface == nullptr);
         auto offset = readMisalignedUint64(&globalVariablePointerToken->GlobalPointerOffset);
         UNRECOVERABLE_IF(this->globalSurface->getUnderlyingBufferSize() < ((offset + globalSurface->is32BitAllocation()) ? 4 : sizeof(uintptr_t)));
         void *patchOffset = ptrOffset(this->globalSurface->getUnderlyingBuffer(), static_cast<size_t>(offset));
-        patchIncrement(patchOffset, globalSurface->is32BitAllocation() ? 4 : sizeof(uintptr_t), globalSurface->getGpuAddressToPatch());
+        patchIncrement(patchOffset, globalSurface->is32BitAllocation() ? 4 : sizeof(uintptr_t), srcSurface->getGpuAddressToPatch());
     }
 }
 

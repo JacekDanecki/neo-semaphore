@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2017-2019 Intel Corporation
+# Copyright (C) 2017-2020 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -13,6 +13,7 @@ set(PLATFORM_SPECIFIC_TARGETS_FOLDER "${TEST_PROJECTS_FOLDER}/test platforms")
 if(UNIX)
   string(REPLACE "-O2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
   #disable fortify source as this requires optimization to be on
+  string(REPLACE "-Wp,-D_FORTIFY_SOURCE=2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
   string(REPLACE "-D_FORTIFY_SOURCE=2" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O0")
   set(CMAKE_CXX_FLAGS_RELEASEINTERNAL "${CMAKE_CXX_FLAGS_RELEASEINTERNAL} -O0")
@@ -28,6 +29,13 @@ if(WIN32)
   string(REPLACE "/O2" "/Od" CMAKE_C_FLAGS_RELEASEINTERNAL ${CMAKE_C_FLAGS_RELEASEINTERNAL})
 endif()
 
+function(ADD_SUPPORTED_TEST_PRODUCT_FAMILIES_DEFINITION)
+  set(NEO_SUPPORTED_PRODUCT_FAMILIES ${ALL_PRODUCT_FAMILY_LIST})
+  string(REPLACE ";" "," NEO_SUPPORTED_PRODUCT_FAMILIES "${NEO_SUPPORTED_PRODUCT_FAMILIES}")
+  add_definitions(-DSUPPORTED_TEST_PRODUCT_FAMILIES=${NEO_SUPPORTED_PRODUCT_FAMILIES})
+endfunction()
+
+ADD_SUPPORTED_TEST_PRODUCT_FAMILIES_DEFINITION()
 link_libraries(${ASAN_LIBS} ${TSAN_LIBS})
 
 add_custom_target(unit_tests)
@@ -75,6 +83,7 @@ set(NEO_IGDRCL_TESTS__TARGET_OBJECTS
   $<TARGET_OBJECTS:igdrcl_libult>
   $<TARGET_OBJECTS:igdrcl_libult_cs>
   $<TARGET_OBJECTS:igdrcl_libult_env>
+  $<TARGET_OBJECTS:mock_gmm>
   $<TARGET_OBJECTS:${SHARINGS_ENABLE_LIB_NAME}>
   $<TARGET_OBJECTS:${BUILTINS_SOURCES_LIB_NAME}>
   $<TARGET_OBJECTS:${BUILTINS_BINARIES_LIB_NAME}>
@@ -196,8 +205,8 @@ target_include_directories(igdrcl_tests BEFORE PRIVATE ${NEO_SOURCE_DIR}/core/un
 if(WIN32)
   set(cloc_cmd_prefix ocloc)
 else()
-  if(DEFINED IGDRCL__IGC_LIBRARY_PATH)
-    set(cloc_cmd_prefix LD_LIBRARY_PATH=${IGDRCL__IGC_LIBRARY_PATH} $<TARGET_FILE:ocloc>)
+  if(DEFINED NEO__IGC_LIBRARY_PATH)
+    set(cloc_cmd_prefix LD_LIBRARY_PATH=${NEO__IGC_LIBRARY_PATH} $<TARGET_FILE:ocloc>)
   else()
     set(cloc_cmd_prefix LD_LIBRARY_PATH=$<TARGET_FILE_DIR:ocloc> $<TARGET_FILE:ocloc>)
   endif()
@@ -505,8 +514,6 @@ macro(macro_for_each_gen)
 endmacro()
 apply_macro_for_each_gen("TESTED")
 add_subdirectories()
-add_dependencies(unit_tests mock_gmm)
-add_dependencies(igdrcl_tests mock_gmm)
 create_project_source_tree(igdrcl_tests ${NEO_SOURCE_DIR}/runtime)
 
 set(UltPchHeader "${CMAKE_CURRENT_SOURCE_DIR}/igdrcl_tests_pch.h")

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -13,14 +13,14 @@
 using namespace ::testing;
 
 namespace NEO {
-GmmResourceInfo *GmmResourceInfo::create(GMM_RESCREATE_PARAMS *resourceCreateParams) {
+GmmResourceInfo *GmmResourceInfo::create(GmmClientContext *clientContext, GMM_RESCREATE_PARAMS *resourceCreateParams) {
     if (resourceCreateParams->Type == GMM_RESOURCE_TYPE::RESOURCE_INVALID) {
         return nullptr;
     }
     return new ::testing::NiceMock<MockGmmResourceInfo>(resourceCreateParams);
 }
 
-GmmResourceInfo *GmmResourceInfo::create(GMM_RESOURCE_INFO *inputGmmResourceInfo) {
+GmmResourceInfo *GmmResourceInfo::create(GmmClientContext *clientContext, GMM_RESOURCE_INFO *inputGmmResourceInfo) {
     return new ::testing::NiceMock<MockGmmResourceInfo>(inputGmmResourceInfo);
 }
 
@@ -80,11 +80,11 @@ void MockGmmResourceInfo::computeRowPitch() {
 }
 
 void MockGmmResourceInfo::setSurfaceFormat() {
-    auto iterate = [&](ArrayRef<const SurfaceFormatInfo> formats) {
+    auto iterate = [&](ArrayRef<const ClSurfaceFormatInfo> formats) {
         if (!surfaceFormatInfo) {
             for (auto &format : formats) {
-                if (mockResourceCreateParams.Format == format.GMMSurfaceFormat) {
-                    surfaceFormatInfo = &format;
+                if (mockResourceCreateParams.Format == format.surfaceFormat.GMMSurfaceFormat) {
+                    surfaceFormatInfo = &format.surfaceFormat;
                     break;
                 }
             }

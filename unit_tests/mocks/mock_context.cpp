@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,10 +8,10 @@
 #include "unit_tests/mocks/mock_context.h"
 
 #include "core/compiler_interface/compiler_interface.h"
+#include "core/memory_manager/deferred_deleter.h"
 #include "core/memory_manager/unified_memory_manager.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_queue/command_queue.h"
-#include "runtime/memory_manager/deferred_deleter.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/sharings/sharing.h"
 #include "unit_tests/fixtures/device_fixture.h"
@@ -20,7 +20,7 @@
 
 namespace NEO {
 
-MockContext::MockContext(Device *device, bool noSpecialQueue) {
+MockContext::MockContext(ClDevice *device, bool noSpecialQueue) {
     memoryManager = device->getMemoryManager();
     devices.push_back(device);
     svmAllocsManager = new SVMAllocsManager(memoryManager);
@@ -59,7 +59,7 @@ MockContext::~MockContext() {
 }
 
 MockContext::MockContext() {
-    device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr);
+    device = new MockClDevice{MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr)};
     devices.push_back(device);
     memoryManager = device->getMemoryManager();
     svmAllocsManager = new SVMAllocsManager(memoryManager);

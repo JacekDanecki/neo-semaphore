@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,6 +16,7 @@
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/device/device.h"
 #include "runtime/execution_environment/execution_environment.h"
+#include "runtime/helpers/device_helpers.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 #include "runtime/os_interface/os_interface.h"
 #include "runtime/platform/platform.h"
@@ -69,7 +70,7 @@ TEST(ExecutionEnvironment, givenDeviceThatHaveRefferencesAfterPlatformIsDestroye
     std::unique_ptr<Platform> platform(new Platform);
     auto executionEnvironment = platform->peekExecutionEnvironment();
     platform->initialize();
-    auto device = platform->getDevice(0);
+    auto device = platform->getClDevice(0);
     EXPECT_EQ(1, device->getRefInternalCount());
     device->incRefInternal();
     platform.reset(nullptr);
@@ -148,7 +149,7 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWhenInitializeMemoryManagerI
 static_assert(sizeof(ExecutionEnvironment) == sizeof(std::mutex) +
                                                   sizeof(std::unique_ptr<HardwareInfo>) +
                                                   sizeof(std::vector<RootDeviceEnvironment>) +
-                                                  (is64bit ? 80 : 44),
+                                                  (is64bit ? 64 : 36),
               "New members detected in ExecutionEnvironment, please ensure that destruction sequence of objects is correct");
 
 TEST(ExecutionEnvironment, givenExecutionEnvironmentWithVariousMembersWhenItIsDestroyedThenDeleteSequenceIsSpecified) {
@@ -158,16 +159,16 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWithVariousMembersWhenItIsDe
         using ExecutionEnvironment::gmmHelper;
     };
     struct GmmHelperMock : public DestructorCounted<GmmHelper, 7> {
-        GmmHelperMock(uint32_t &destructorId, const HardwareInfo *hwInfo) : DestructorCounted(destructorId, hwInfo) {}
+        GmmHelperMock(uint32_t &destructorId, const HardwareInfo *hwInfo) : DestructorCounted(destructorId, nullptr, hwInfo) {}
     };
-    struct OsInterfaceMock : public DestructorCounted<OSInterface, 6> {
+    struct MemoryMangerMock : public DestructorCounted<MockMemoryManager, 6> {
+        MemoryMangerMock(uint32_t &destructorId, ExecutionEnvironment &executionEnvironment) : DestructorCounted(destructorId, executionEnvironment) {}
+    };
+    struct OsInterfaceMock : public DestructorCounted<OSInterface, 5> {
         OsInterfaceMock(uint32_t &destructorId) : DestructorCounted(destructorId) {}
     };
-    struct MemoryOperationsHandlerMock : public DestructorCounted<MockMemoryOperationsHandler, 5> {
+    struct MemoryOperationsHandlerMock : public DestructorCounted<MockMemoryOperationsHandler, 4> {
         MemoryOperationsHandlerMock(uint32_t &destructorId) : DestructorCounted(destructorId) {}
-    };
-    struct MemoryMangerMock : public DestructorCounted<MockMemoryManager, 4> {
-        MemoryMangerMock(uint32_t &destructorId, ExecutionEnvironment &executionEnvironment) : DestructorCounted(destructorId, executionEnvironment) {}
     };
     struct AubCenterMock : public DestructorCounted<AubCenter, 3> {
         AubCenterMock(uint32_t &destructorId) : DestructorCounted(destructorId, platformDevices[0], false, "", CommandStreamReceiverType::CSR_AUB) {}
@@ -186,8 +187,8 @@ TEST(ExecutionEnvironment, givenExecutionEnvironmentWithVariousMembersWhenItIsDe
     executionEnvironment->setHwInfo(*platformDevices);
     executionEnvironment->prepareRootDeviceEnvironments(1);
     executionEnvironment->gmmHelper = std::make_unique<GmmHelperMock>(destructorId, platformDevices[0]);
-    executionEnvironment->osInterface = std::make_unique<OsInterfaceMock>(destructorId);
-    executionEnvironment->memoryOperationsInterface = std::make_unique<MemoryOperationsHandlerMock>(destructorId);
+    executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OsInterfaceMock>(destructorId);
+    executionEnvironment->rootDeviceEnvironments[0]->memoryOperationsInterface = std::make_unique<MemoryOperationsHandlerMock>(destructorId);
     executionEnvironment->memoryManager = std::make_unique<MemoryMangerMock>(destructorId, *executionEnvironment);
     executionEnvironment->rootDeviceEnvironments[0]->aubCenter = std::make_unique<AubCenterMock>(destructorId);
     executionEnvironment->builtins = std::make_unique<BuiltinsMock>(destructorId);
@@ -217,4 +218,20 @@ TEST(ExecutionEnvironment, givenUnproperSetCsrFlagValueWhenInitializingMemoryMan
     auto executionEnvironment = std::make_unique<MockExecutionEnvironment>(*platformDevices);
     executionEnvironment->initializeMemoryManager();
     EXPECT_NE(nullptr, executionEnvironment->memoryManager);
+}
+
+TEST(ExecutionEnvironment, whenCalculateMaxOsContexCountThenGlobalVariableHasProperValue) {
+    VariableBackup<uint32_t> osContextCountBackup(&MemoryManager::maxOsContextCount);
+    ExecutionEnvironment executionEnvironment;
+    uint32_t numRootDevices = 17u;
+    auto &hwHelper = HwHelper::get(executionEnvironment.getHardwareInfo()->platform.eRenderCoreFamily);
+    auto osContextCount = hwHelper.getGpgpuEngineInstances().size();
+    auto subDevicesCount = DeviceHelper::getSubDevicesCount(executionEnvironment.getHardwareInfo());
+    bool hasRootCsr = subDevicesCount > 1;
+
+    executionEnvironment.prepareRootDeviceEnvironments(numRootDevices);
+    executionEnvironment.calculateMaxOsContextCount();
+
+    auto expectedOsContextCount = numRootDevices * osContextCount * subDevicesCount + hasRootCsr;
+    EXPECT_EQ(expectedOsContextCount, MemoryManager::maxOsContextCount);
 }

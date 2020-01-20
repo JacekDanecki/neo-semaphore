@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -10,12 +10,12 @@
 #include "core/helpers/options.h"
 #include "core/helpers/string.h"
 #include "core/memory_manager/graphics_allocation.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/helpers/flat_batch_buffer_helper_hw.h"
 #include "runtime/helpers/flush_stamp.h"
-#include "runtime/os_interface/os_context.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"
 
 #include "gmock/gmock.h"
@@ -78,17 +78,11 @@ class MockCsrBase : public UltCommandStreamReceiver<GfxFamily> {
         processEvictionCalled = true;
     }
 
-    void waitForTaskCountAndCleanAllocationList(uint32_t requiredTaskCount, uint32_t allocationUsage) override {
-        waitForTaskCountRequiredTaskCount = requiredTaskCount;
-        BaseUltCsrClass::waitForTaskCountAndCleanAllocationList(requiredTaskCount, allocationUsage);
-    }
-
     ResidencyContainer madeResidentGfxAllocations;
     ResidencyContainer madeNonResidentGfxAllocations;
     int32_t *executionStamp;
     int32_t flushTaskStamp;
     bool processEvictionCalled = false;
-    uint32_t waitForTaskCountRequiredTaskCount = 0;
 };
 
 template <typename GfxFamily>
@@ -164,6 +158,7 @@ class MockCsrHw2 : public CommandStreamReceiverHw<GfxFamily> {
     using CommandStreamReceiver::lastSentCoherencyRequest;
     using CommandStreamReceiver::mediaVfeStateDirty;
     using CommandStreamReceiver::nTo1SubmissionModelEnabled;
+    using CommandStreamReceiver::pageTableManagerInitialized;
     using CommandStreamReceiver::requiredScratchSize;
     using CommandStreamReceiver::requiredThreadArbitrationPolicy;
     using CommandStreamReceiver::taskCount;
@@ -249,7 +244,6 @@ class MockFlatBatchBufferHelper : public FlatBatchBufferHelperHw<GfxFamily> {
 class MockCommandStreamReceiver : public CommandStreamReceiver {
   public:
     using CommandStreamReceiver::CommandStreamReceiver;
-    using CommandStreamReceiver::getDeviceIndex;
     using CommandStreamReceiver::internalAllocationStorage;
     using CommandStreamReceiver::latestFlushedTaskCount;
     using CommandStreamReceiver::latestSentTaskCount;
@@ -260,6 +254,7 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
     int *flushBatchedSubmissionsCallCounter = nullptr;
     uint32_t waitForCompletionWithTimeoutCalled = 0;
     bool multiOsContextCapable = false;
+    bool downloadAllocationCalled = false;
 
     ~MockCommandStreamReceiver() {
     }
@@ -290,6 +285,10 @@ class MockCommandStreamReceiver : public CommandStreamReceiver {
     }
 
     void waitForTaskCountWithKmdNotifyFallback(uint32_t taskCountToWait, FlushStamp flushStampToWait, bool quickKmdSleep, bool forcePowerSavingMode) override {
+    }
+
+    void downloadAllocation(GraphicsAllocation &gfxAllocation) override {
+        downloadAllocationCalled = true;
     }
 
     uint32_t blitBuffer(const BlitPropertiesContainer &blitPropertiesContainer, bool blocking) override { return taskCount; };

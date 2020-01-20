@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -56,22 +56,23 @@ class OsAgnosticMemoryManager : public MemoryManager {
     void removeAllocationFromHostPtrManager(GraphicsAllocation *gfxAllocation) override;
     void freeGraphicsMemoryImpl(GraphicsAllocation *gfxAllocation) override;
 
-    AllocationStatus populateOsHandles(OsHandleStorage &handleStorage) override;
+    AllocationStatus populateOsHandles(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex) override;
     void cleanOsHandles(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex) override;
 
-    uint64_t getSystemSharedMemory() override;
-    uint64_t getLocalMemorySize() override;
+    uint64_t getSystemSharedMemory(uint32_t rootDeviceIndex) override;
+    uint64_t getLocalMemorySize(uint32_t rootDeviceIndex) override;
 
     void turnOnFakingBigAllocations();
 
-    void *reserveCpuAddressRange(size_t size) override;
-    void releaseReservedCpuAddressRange(void *reserved, size_t size) override;
+    void *reserveCpuAddressRange(size_t size, uint32_t rootDeviceIndex) override;
+    void releaseReservedCpuAddressRange(void *reserved, size_t size, uint32_t rootDeviceIndex) override;
 
   protected:
     GraphicsAllocation *createGraphicsAllocation(OsHandleStorage &handleStorage, const AllocationData &allocationData) override;
     GraphicsAllocation *allocateGraphicsMemoryForNonSvmHostPtr(const AllocationData &allocationData) override;
     GraphicsAllocation *allocateGraphicsMemoryWithAlignment(const AllocationData &allocationData) override;
     GraphicsAllocation *allocateGraphicsMemory64kb(const AllocationData &allocationData) override;
+    GraphicsAllocation *allocateShareableMemory(const AllocationData &allocationData) override;
     GraphicsAllocation *allocateGraphicsMemoryForImageImpl(const AllocationData &allocationData, std::unique_ptr<Gmm> gmm) override;
 
     void *lockResourceImpl(GraphicsAllocation &graphicsAllocation) override { return graphicsAllocation.getUnderlyingBuffer(); }

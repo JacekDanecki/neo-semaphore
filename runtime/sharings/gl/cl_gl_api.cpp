@@ -1,10 +1,11 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/utilities/api_intercept.h"
 #include "runtime/api/api.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
@@ -22,7 +23,6 @@
 #include "runtime/sharings/gl/gl_sync_event.h"
 #include "runtime/sharings/gl/gl_texture.h"
 #include "runtime/tracing/tracing_notify.h"
-#include "runtime/utilities/api_intercept.h"
 
 #include "CL/cl.h"
 #include "CL/cl_gl.h"
@@ -204,8 +204,8 @@ cl_int CL_API_CALL clGetGLTextureInfo(cl_mem memobj, cl_gl_texture_info paramNam
     cl_int retValue = CL_SUCCESS;
     API_ENTER(&retValue);
     DBG_LOG_INPUTS("memobj", memobj, "paramName", paramName, "paramValueSize", paramValueSize, "paramValueSize",
-                   DebugManager.infoPointerToString(paramValue, paramValueSize), "paramValueSizeRet",
-                   DebugManager.getInput(paramValueSizeRet, 0));
+                   FileLoggerInstance().infoPointerToString(paramValue, paramValueSize), "paramValueSizeRet",
+                   FileLoggerInstance().getInput(paramValueSizeRet, 0));
     retValue = validateObjects(memobj);
     if (retValue == CL_SUCCESS) {
         auto pMemObj = castToObject<MemObj>(memobj);
@@ -224,8 +224,8 @@ cl_int CL_API_CALL clEnqueueAcquireGLObjects(cl_command_queue commandQueue, cl_u
     API_ENTER(&retVal);
     DBG_LOG_INPUTS("commandQueue", commandQueue, "numObjects", numObjects, "memObjects", memObjects, "numEventsInWaitList",
                    numEventsInWaitList, "eventWaitList",
-                   DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList), "event",
-                   DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
+                   FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList), "event",
+                   FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     CommandQueue *pCommandQueue = nullptr;
     retVal = validateObjects(WithCastToInternal(commandQueue, &pCommandQueue), EventWaitList(numEventsInWaitList, eventWaitList));
 
@@ -261,8 +261,8 @@ cl_int CL_API_CALL clEnqueueReleaseGLObjects(cl_command_queue commandQueue, cl_u
     API_ENTER(&retVal);
     DBG_LOG_INPUTS("commandQueue", commandQueue, "numObjects", numObjects, "memObjects", memObjects, "numEventsInWaitList",
                    numEventsInWaitList, "eventWaitList",
-                   DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList), "event",
-                   DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
+                   FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList), "event",
+                   FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
     CommandQueue *pCommandQueue = nullptr;
     retVal = validateObjects(WithCastToInternal(commandQueue, &pCommandQueue), EventWaitList(numEventsInWaitList, eventWaitList));
 
@@ -307,8 +307,8 @@ cl_int CL_API_CALL clGetGLContextInfoKHR(const cl_context_properties *properties
     cl_int retVal = CL_SUCCESS;
     API_ENTER(&retVal);
     DBG_LOG_INPUTS("properties", properties, "paramName", paramName, "paramValueSize", paramValueSize, "paramValue",
-                   DebugManager.infoPointerToString(paramValue, paramValueSize), "paramValueSizeRet",
-                   DebugManager.getInput(paramValueSizeRet, 0));
+                   FileLoggerInstance().infoPointerToString(paramValue, paramValueSize), "paramValueSizeRet",
+                   FileLoggerInstance().getInput(paramValueSizeRet, 0));
     GetInfoHelper info(paramValue, paramValueSize, paramValueSizeRet);
 
     uint32_t GLHGLRCHandle = 0;
@@ -345,7 +345,7 @@ cl_int CL_API_CALL clGetGLContextInfoKHR(const cl_context_properties *properties
     }
 
     if (paramName == CL_DEVICES_FOR_GL_CONTEXT_KHR || paramName == CL_CURRENT_DEVICE_FOR_GL_CONTEXT_KHR) {
-        info.set<cl_device_id>(::platform()->getDevice(0));
+        info.set<cl_device_id>(::platform()->getClDevice(0));
         return retVal;
     }
 

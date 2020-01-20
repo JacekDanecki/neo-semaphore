@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -34,13 +34,13 @@ class MockDevice : public RootDevice {
     using Device::commandStreamReceivers;
     using Device::createDeviceInternals;
     using Device::createEngine;
+    using Device::deviceExtensions;
     using Device::deviceInfo;
     using Device::enabledClVersion;
     using Device::engines;
     using Device::executionEnvironment;
     using Device::initializeCaps;
     using Device::name;
-    using Device::simultaneousInterops;
     using RootDevice::createEngines;
     using RootDevice::subdevices;
 
@@ -98,13 +98,13 @@ class MockDevice : public RootDevice {
     }
 
     template <typename T>
-    static T *createWithNewExecutionEnvironment(const HardwareInfo *pHwInfo) {
+    static T *createWithNewExecutionEnvironment(const HardwareInfo *pHwInfo, uint32_t rootDeviceIndex = 0) {
         ExecutionEnvironment *executionEnvironment = new ExecutionEnvironment();
         auto numRootDevices = DebugManager.flags.CreateMultipleRootDevices.get() ? DebugManager.flags.CreateMultipleRootDevices.get() : 1u;
         executionEnvironment->prepareRootDeviceEnvironments(numRootDevices);
         pHwInfo = pHwInfo ? pHwInfo : platformDevices[0];
         executionEnvironment->setHwInfo(pHwInfo);
-        return createWithExecutionEnvironment<T>(pHwInfo, executionEnvironment, 0u);
+        return createWithExecutionEnvironment<T>(pHwInfo, executionEnvironment, rootDeviceIndex);
     }
     bool initializeRootCommandStreamReceiver() override {
         if (callBaseInitializeRootCommandStreamReceiver) {
@@ -128,8 +128,58 @@ class MockDevice : public RootDevice {
     std::unique_ptr<MemoryManager> mockMemoryManager;
 };
 
+class MockClDevice : public ClDevice {
+  public:
+    using ClDevice::ClDevice;
+    using ClDevice::simultaneousInterops;
+
+    explicit MockClDevice(MockDevice *pMockDevice);
+    ~MockClDevice();
+
+    bool createEngines() { return device.createEngines(); }
+    void setOSTime(OSTime *osTime) { device.setOSTime(osTime); }
+    void setDriverInfo(DriverInfo *driverInfo) { device.setDriverInfo(driverInfo); }
+    bool hasDriverInfo() { return device.hasDriverInfo(); }
+    bool createDeviceImpl() { return device.createDeviceImpl(); }
+    bool getCpuTime(uint64_t *timeStamp) { return device.getCpuTime(timeStamp); }
+    void setPreemptionMode(PreemptionMode mode) { device.setPreemptionMode(mode); }
+    void injectMemoryManager(MemoryManager *pMemoryManager) { device.injectMemoryManager(pMemoryManager); }
+    void setPerfCounters(PerformanceCounters *perfCounters) { device.setPerfCounters(perfCounters); }
+    const char *getProductAbbrev() const { return device.getProductAbbrev(); }
+    template <typename T>
+    UltCommandStreamReceiver<T> &getUltCommandStreamReceiver() { return device.getUltCommandStreamReceiver<T>(); }
+    template <typename T>
+    UltCommandStreamReceiver<T> &getUltCommandStreamReceiverFromIndex(uint32_t index) { return device.getUltCommandStreamReceiverFromIndex<T>(index); }
+    CommandStreamReceiver &getGpgpuCommandStreamReceiver() const { return device.getGpgpuCommandStreamReceiver(); }
+    void resetCommandStreamReceiver(CommandStreamReceiver *newCsr) { device.resetCommandStreamReceiver(newCsr); }
+    void resetCommandStreamReceiver(CommandStreamReceiver *newCsr, uint32_t engineIndex) { device.resetCommandStreamReceiver(newCsr, engineIndex); }
+    void setSourceLevelDebuggerActive(bool active) { device.setSourceLevelDebuggerActive(active); }
+    template <typename T>
+    static T *createWithExecutionEnvironment(const HardwareInfo *pHwInfo, ExecutionEnvironment *executionEnvironment, uint32_t rootDeviceIndex) {
+        return MockDevice::createWithExecutionEnvironment<T>(pHwInfo, executionEnvironment, rootDeviceIndex);
+    }
+    template <typename T>
+    static T *createWithNewExecutionEnvironment(const HardwareInfo *pHwInfo, uint32_t rootDeviceIndex = 0) {
+        return MockDevice::createWithNewExecutionEnvironment<T>(pHwInfo, rootDeviceIndex);
+    }
+    bool initializeRootCommandStreamReceiver() { return device.initializeRootCommandStreamReceiver(); }
+    SubDevice *createSubDevice(uint32_t subDeviceIndex) { return device.createSubDevice(subDeviceIndex); }
+    std::unique_ptr<CommandStreamReceiver> createCommandStreamReceiver() const { return device.createCommandStreamReceiver(); }
+
+    MockDevice &device;
+    DeviceInfo &deviceInfo;
+    ExecutionEnvironment *&executionEnvironment;
+    static bool &createSingleDevice;
+    static decltype(&createCommandStream) &createCommandStreamReceiverFunc;
+    bool &callBaseInitializeRootCommandStreamReceiver;
+    bool &initializeRootCommandStreamReceiverReturnValue;
+    std::vector<SubDevice *> &subdevices;
+    std::unique_ptr<MemoryManager> &mockMemoryManager;
+    std::vector<EngineControl> &engines;
+};
+
 template <>
-inline Device *MockDevice::createWithNewExecutionEnvironment<Device>(const HardwareInfo *pHwInfo) {
+inline Device *MockDevice::createWithNewExecutionEnvironment<Device>(const HardwareInfo *pHwInfo, uint32_t rootDeviceIndex) {
     auto executionEnvironment = new ExecutionEnvironment();
     executionEnvironment->prepareRootDeviceEnvironments(1);
     MockAubCenterFixture::setMockAubCenter(*executionEnvironment->rootDeviceEnvironments[0]);

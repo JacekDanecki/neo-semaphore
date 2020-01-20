@@ -1,15 +1,15 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #include "core/memory_manager/memory_constants.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/mem_obj/image.h"
 #include "runtime/mem_obj/mem_obj_helper.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/os_interface/os_interface.h"
 #include "runtime/platform/platform.h"
 #include "test.h"
@@ -23,9 +23,9 @@
 
 using namespace NEO;
 
-using MemoryManagerMultiDeviceTest = Test<MemoryAllocatorMultiDeviceFixture<10>>;
+using MemoryManagerMultiDeviceTest = MemoryAllocatorMultiDeviceFixture<10>;
 
-TEST_F(MemoryManagerMultiDeviceTest, givenRootDeviceIndexSpecifiedWhenAllocateGraphicsMemoryIsCalledThenGraphicsAllocationHasTheSameRootDeviceIndex) {
+TEST_P(MemoryManagerMultiDeviceTest, givenRootDeviceIndexSpecifiedWhenAllocateGraphicsMemoryIsCalledThenGraphicsAllocationHasTheSameRootDeviceIndex) {
     std::vector<GraphicsAllocation::AllocationType> allocationTypes{GraphicsAllocation::AllocationType::BUFFER,
                                                                     GraphicsAllocation::AllocationType::KERNEL_ISA};
     for (auto allocationType : allocationTypes) {
@@ -52,15 +52,19 @@ TEST_F(MemoryManagerMultiDeviceTest, givenRootDeviceIndexSpecifiedWhenAllocateGr
             EXPECT_EQ(rootDeviceIndex, gfxAllocation->getRootDeviceIndex());
             memoryManager->freeGraphicsMemory(gfxAllocation);
 
-            gfxAllocation = memoryManager->createGraphicsAllocationFromSharedHandle((osHandle)1u, properties, false);
-            ASSERT_NE(gfxAllocation, nullptr);
-            EXPECT_EQ(rootDeviceIndex, gfxAllocation->getRootDeviceIndex());
-            memoryManager->freeGraphicsMemory(gfxAllocation);
+            if (isOsAgnosticMemoryManager) {
+                gfxAllocation = memoryManager->createGraphicsAllocationFromSharedHandle((osHandle)1u, properties, false);
+                ASSERT_NE(gfxAllocation, nullptr);
+                EXPECT_EQ(rootDeviceIndex, gfxAllocation->getRootDeviceIndex());
+                memoryManager->freeGraphicsMemory(gfxAllocation);
 
-            gfxAllocation = memoryManager->createGraphicsAllocationFromSharedHandle((osHandle)1u, properties, true);
-            ASSERT_NE(gfxAllocation, nullptr);
-            EXPECT_EQ(rootDeviceIndex, gfxAllocation->getRootDeviceIndex());
-            memoryManager->freeGraphicsMemory(gfxAllocation);
+                gfxAllocation = memoryManager->createGraphicsAllocationFromSharedHandle((osHandle)1u, properties, true);
+                ASSERT_NE(gfxAllocation, nullptr);
+                EXPECT_EQ(rootDeviceIndex, gfxAllocation->getRootDeviceIndex());
+                memoryManager->freeGraphicsMemory(gfxAllocation);
+            }
         }
     }
 }
+
+INSTANTIATE_TEST_CASE_P(MemoryManagerType, MemoryManagerMultiDeviceTest, ::testing::Bool());

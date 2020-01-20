@@ -1,15 +1,15 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/memory_manager/deferrable_allocation_deletion.h"
+#include "core/memory_manager/deferred_deleter.h"
+#include "core/os_interface/os_context.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/device/device.h"
-#include "runtime/memory_manager/deferrable_allocation_deletion.h"
-#include "runtime/memory_manager/deferred_deleter.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/platform/platform.h"
 #include "test.h"
 #include "unit_tests/libult/ult_command_stream_receiver.h"

@@ -1,10 +1,11 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/helpers/engine_node_helper.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "core/unit_tests/utilities/base_object_utils.h"
 #include "runtime/built_ins/builtins_dispatch_builder.h"
@@ -61,6 +62,9 @@ HWCMDTEST_P(IGFX_GEN8_CORE, ParentKernelEnqueueTest, givenParentKernelWhenEnqueu
 
         auto graphicsAllocation = pKernel->getKernelInfo().getGraphicsAllocation();
         auto kernelIsaAddress = graphicsAllocation->getGpuAddressToPatch();
+        if (EngineHelpers::isCcs(pCmdQ->getGpgpuEngine().osContext->getEngineType()) && HwHelperHw<FamilyType>::isOffsetToSkipSetFFIDGPWARequired(pKernel->getDevice().getHardwareInfo())) {
+            kernelIsaAddress += pKernel->getKernelInfo().patchInfo.threadPayload->OffsetToSkipSetFFIDGP;
+        }
 
         pCmdQ->enqueueKernel(pKernel, 1, globalOffsets, workItems, workItems, 0, nullptr, nullptr);
 
@@ -85,19 +89,26 @@ HWCMDTEST_P(IGFX_GEN8_CORE, ParentKernelEnqueueTest, givenParentKernelWhenEnqueu
             ASSERT_NE(nullptr, pBlockInfo->patchInfo.executionEnvironment);
             ASSERT_NE(nullptr, pBlockInfo->patchInfo.threadPayload);
 
-            const uint32_t sizeCrossThreadData = pBlockInfo->patchInfo.dataParameterStream->DataParameterStreamSize / sizeof(GRF);
+            auto grfSize = pPlatform->getDevice(0)->getDeviceInfo().grfSize;
+
+            const uint32_t sizeCrossThreadData = pBlockInfo->patchInfo.dataParameterStream->DataParameterStreamSize / grfSize;
 
             auto numChannels = PerThreadDataHelper::getNumLocalIdChannels(*pBlockInfo->patchInfo.threadPayload);
             auto sizePerThreadData = getPerThreadSizeLocalIDs(pBlockInfo->patchInfo.executionEnvironment->LargestCompiledSIMDSize, numChannels);
-            uint32_t numGrfPerThreadData = static_cast<uint32_t>(sizePerThreadData / sizeof(GRF));
+            uint32_t numGrfPerThreadData = static_cast<uint32_t>(sizePerThreadData / grfSize);
             numGrfPerThreadData = std::max(numGrfPerThreadData, 1u);
 
             EXPECT_EQ(numGrfPerThreadData, idData[blockFirstIndex + i].getConstantIndirectUrbEntryReadLength());
             EXPECT_EQ(sizeCrossThreadData, idData[blockFirstIndex + i].getCrossThreadConstantDataReadLength());
             EXPECT_NE((uint64_t)0u, ((uint64_t)idData[blockFirstIndex + i].getKernelStartPointerHigh() << 32) | (uint64_t)idData[blockFirstIndex + i].getKernelStartPointer());
 
-            uint64_t kernelAddress = ((uint64_t)idData[blockFirstIndex + i].getKernelStartPointerHigh() << 32) | (uint64_t)idData[blockFirstIndex + i].getKernelStartPointer();
-            EXPECT_EQ(pBlockInfo->getGraphicsAllocation()->getGpuAddressToPatch(), kernelAddress);
+            uint64_t blockKernelAddress = ((uint64_t)idData[blockFirstIndex + i].getKernelStartPointerHigh() << 32) | (uint64_t)idData[blockFirstIndex + i].getKernelStartPointer();
+            uint64_t expectedBlockKernelAddress = pBlockInfo->getGraphicsAllocation()->getGpuAddressToPatch();
+            if (EngineHelpers::isCcs(pCmdQ->getGpgpuEngine().osContext->getEngineType()) && HwHelperHw<FamilyType>::isOffsetToSkipSetFFIDGPWARequired(pKernel->getDevice().getHardwareInfo())) {
+                expectedBlockKernelAddress += pBlockInfo->patchInfo.threadPayload->OffsetToSkipSetFFIDGP;
+            }
+
+            EXPECT_EQ(expectedBlockKernelAddress, blockKernelAddress);
         }
     }
 }
@@ -352,7 +363,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, ParentKernelEnqueueTest, givenBlockedQueueWhenParent
         cl_queue_properties properties[3] = {0};
 
         MockMultiDispatchInfo multiDispatchInfo(pKernel);
-        MockDeviceQueueHw<FamilyType> mockDevQueue(context, pDevice, properties[0]);
+        MockDeviceQueueHw<FamilyType> mockDevQueue(context, pClDevice, properties[0]);
 
         context->setDefaultDeviceQueue(&mockDevQueue);
         // Acquire CS to check if reset queue was called
@@ -554,7 +565,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelEnqueueFixture, ParentKernelEnqueuedWith
         DebugManagerStateRestore dbgRestorer;
         DebugManager.flags.SchedulerSimulationReturnInstance.set(1);
 
-        MockDeviceQueueHw<FamilyType> *mockDeviceQueueHw = new MockDeviceQueueHw<FamilyType>(context, pDevice, DeviceHostQueue::deviceQueueProperties::minimumProperties[0]);
+        MockDeviceQueueHw<FamilyType> *mockDeviceQueueHw = new MockDeviceQueueHw<FamilyType>(context, pClDevice, DeviceHostQueue::deviceQueueProperties::minimumProperties[0]);
         mockDeviceQueueHw->resetDeviceQueue();
 
         context->setDefaultDeviceQueue(mockDeviceQueueHw);
@@ -589,7 +600,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, ParentKernelEnqueueFixture, givenCsrInBatchingModeWh
         size_t offset[3] = {0, 0, 0};
         size_t gws[3] = {1, 1, 1};
 
-        MockContext context(pDevice);
+        MockContext context(pClDevice);
         std::unique_ptr<MockParentKernel> kernelToRun(MockParentKernel::create(context, false, false, false, false, false));
 
         pCmdQ->enqueueKernel(kernelToRun.get(), 1, offset, gws, gws, 0, nullptr, nullptr);

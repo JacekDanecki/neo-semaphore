@@ -1,20 +1,21 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "core/gmm_helper/gmm.h"
 #include "core/helpers/options.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/surface_formats.h"
+#include "runtime/mem_obj/image.h"
 #include "unit_tests/mocks/mock_device.h"
 #include "unit_tests/mocks/mock_gmm_resource_info.h"
 
 namespace NEO {
 namespace MockGmmParams {
-static SurfaceFormatInfo mockSurfaceFormat;
+static ClSurfaceFormatInfo mockSurfaceFormat;
 }
 
 class MockGmm : public Gmm {
@@ -22,22 +23,22 @@ class MockGmm : public Gmm {
     using Gmm::Gmm;
     using Gmm::setupImageResourceParams;
 
-    MockGmm() : Gmm(nullptr, 1, false){};
+    MockGmm() : Gmm(platform()->peekExecutionEnvironment()->getGmmClientContext(), nullptr, 1, false){};
 
-    static std::unique_ptr<Gmm> queryImgParams(ImageInfo &imgInfo) {
-        return std::unique_ptr<Gmm>(new Gmm(imgInfo, {}));
+    static std::unique_ptr<Gmm> queryImgParams(GmmClientContext *clientContext, ImageInfo &imgInfo) {
+        return std::unique_ptr<Gmm>(new Gmm(clientContext, imgInfo, {}));
     }
 
-    static ImageInfo initImgInfo(cl_image_desc &imgDesc, int baseMipLevel, const SurfaceFormatInfo *surfaceFormat) {
-        ImageInfo imgInfo = {0};
+    static ImageInfo initImgInfo(cl_image_desc &imgDesc, int baseMipLevel, const ClSurfaceFormatInfo *surfaceFormat) {
+        ImageInfo imgInfo = {};
         imgInfo.baseMipLevel = baseMipLevel;
-        imgInfo.imgDesc = &imgDesc;
+        imgInfo.imgDesc = Image::convertDescriptor(imgDesc);
         if (!surfaceFormat) {
-            ArrayRef<const SurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
+            ArrayRef<const ClSurfaceFormatInfo> readWriteSurfaceFormats = SurfaceFormats::readWrite();
             MockGmmParams::mockSurfaceFormat = readWriteSurfaceFormats[0]; // any valid format
-            imgInfo.surfaceFormat = &MockGmmParams::mockSurfaceFormat;
+            imgInfo.surfaceFormat = &MockGmmParams::mockSurfaceFormat.surfaceFormat;
         } else {
-            imgInfo.surfaceFormat = surfaceFormat;
+            imgInfo.surfaceFormat = &surfaceFormat->surfaceFormat;
         }
         return imgInfo;
     }

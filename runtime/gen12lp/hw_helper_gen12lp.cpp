@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -16,8 +16,23 @@ namespace NEO {
 typedef TGLLPFamily Family;
 
 template <>
+bool HwHelperHw<Family>::isOffsetToSkipSetFFIDGPWARequired(const HardwareInfo &hwInfo) {
+    return (hwInfo.platform.usRevId < REVISION_B);
+}
+
+template <>
+bool HwHelperHw<Family>::isForceDefaultRCSEngineWARequired(const HardwareInfo &hwInfo) {
+    return ((hwInfo.platform.eProductFamily == IGFX_TIGERLAKE_LP) & (hwInfo.platform.usRevId < REVISION_B));
+}
+
+template <>
+bool HwHelperHw<Family>::isForceEmuInt32DivRemSPWARequired(const HardwareInfo &hwInfo) {
+    return ((hwInfo.platform.eProductFamily == IGFX_TIGERLAKE_LP) & (hwInfo.platform.usRevId < REVISION_B));
+}
+
+template <>
 void HwHelperHw<Family>::adjustDefaultEngineType(HardwareInfo *pHwInfo) {
-    if (!pHwInfo->featureTable.ftrCCSNode || pHwInfo->workaroundTable.waForceDefaultRCSEngine) {
+    if (!pHwInfo->featureTable.ftrCCSNode || isForceDefaultRCSEngineWARequired(*pHwInfo)) {
         pHwInfo->capabilityTable.defaultEngineType = aub_stream::ENGINE_RCS;
     }
 }
@@ -31,23 +46,18 @@ uint32_t HwHelperHw<Family>::getComputeUnitsUsedForScratch(const HardwareInfo *p
 }
 
 template <>
-uint32_t HwHelperHw<Family>::getConfigureAddressSpaceMode() {
-    return 1u;
-}
-
-template <>
 bool HwHelperHw<Family>::isLocalMemoryEnabled(const HardwareInfo &hwInfo) const {
     return Gen12LPHelpers::isLocalMemoryEnabled(hwInfo);
 }
 
 template <>
 bool HwHelperHw<Family>::isPageTableManagerSupported(const HardwareInfo &hwInfo) const {
-    return Gen12LPHelpers::isPageTableManagerSupported(hwInfo);
+    return hwInfo.capabilityTable.ftrRenderCompressedBuffers || hwInfo.capabilityTable.ftrRenderCompressedImages;
 }
 
 template <>
 bool HwHelperHw<Family>::obtainRenderBufferCompressionPreference(const HardwareInfo &hwInfo, const size_t size) const {
-    return Gen12LPHelpers::obtainRenderBufferCompressionPreference(hwInfo, size);
+    return false;
 }
 
 template <>

@@ -1,15 +1,15 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/os_interface/os_context.h"
 #include "core/unit_tests/helpers/debug_manager_state_restore.h"
 #include "runtime/command_stream/command_stream_receiver.h"
 #include "runtime/event/user_event.h"
 #include "runtime/helpers/memory_properties_flags_helpers.h"
-#include "runtime/os_interface/os_context.h"
 #include "test.h"
 #include "unit_tests/command_queue/command_enqueue_fixture.h"
 #include "unit_tests/command_queue/command_queue_fixture.h"
@@ -31,8 +31,8 @@ struct EnqueueMapImageTest : public DeviceFixture,
 
     void SetUp() override {
         DeviceFixture::SetUp();
-        CommandQueueFixture::SetUp(pDevice, 0);
-        context = new MockContext(pDevice);
+        CommandQueueFixture::SetUp(pClDevice, 0);
+        context = new MockContext(pClDevice);
         image = ImageHelper<ImageUseHostPtr<Image2dDefaults>>::create(context);
     }
 
@@ -105,7 +105,7 @@ HWTEST_F(EnqueueMapImageTest, givenAllocatedMapPtrAndMapWithDifferentOriginIsCal
     EXPECT_NE(ptr1, ptr2);
     EXPECT_NE(nullptr, img->getAllocatedMapPtr());
 
-    size_t mapOffset = img->getSurfaceFormatInfo().ImageElementSizeInBytes * origin2[0] +
+    size_t mapOffset = img->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes * origin2[0] +
                        img->getHostPtrRowPitch() * origin2[1];
     EXPECT_EQ(ptr2, ptrOffset(ptr1, mapOffset));
 }
@@ -319,7 +319,7 @@ HWTEST_F(EnqueueMapImageTest, givenNonReadOnlyMapWithOutEventWhenMappedThenSetEv
     size_t imageSlicePitch = 0;
     size_t GWS = 1;
 
-    MockKernelWithInternals kernel(*pDevice);
+    MockKernelWithInternals kernel(*pClDevice);
     *pTagMemory = tagHW;
     auto &commandStreamReceiver = pCmdQ->getGpgpuCommandStreamReceiver();
     auto tag_address = commandStreamReceiver.getTagAddress();
@@ -918,7 +918,7 @@ TEST_F(EnqueueMapImageTest, givenMipMapImageWhenMappedThenReturnHostRowAndSliceP
 TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenReturnRowAndSlicePitchAreEqual) {
     class MockImage : public Image {
       public:
-        MockImage(Context *context, cl_mem_flags flags, GraphicsAllocation *allocation, const SurfaceFormatInfo &surfaceFormat,
+        MockImage(Context *context, cl_mem_flags flags, GraphicsAllocation *allocation, const ClSurfaceFormatInfo &surfaceFormat,
                   const cl_image_format &imageFormat, const cl_image_desc &imageDesc) : Image(context, MemoryPropertiesFlagsParser::createMemoryPropertiesFlags(flags, 0, 0), flags, 0,
                                                                                               0, nullptr,
                                                                                               imageFormat, imageDesc,
@@ -957,7 +957,7 @@ TEST_F(EnqueueMapImageTest, givenImage1DArrayWhenEnqueueMapImageIsCalledThenRetu
     imageFormat.image_channel_order = CL_RGBA;
     imageFormat.image_channel_data_type = CL_UNSIGNED_INT16;
 
-    const SurfaceFormatInfo *surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
+    const ClSurfaceFormatInfo *surfaceFormat = Image::getSurfaceFormatFromTable(flags, &imageFormat);
     auto allocation = context->getMemoryManager()->allocateGraphicsMemoryWithProperties(MockAllocationProperties{imgSize});
     ASSERT_NE(allocation, nullptr);
 

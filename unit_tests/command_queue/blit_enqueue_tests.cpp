@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -21,7 +21,7 @@ using namespace NEO;
 struct BlitAuxTranslationTests : public ::testing::Test {
     class BcsMockContext : public MockContext {
       public:
-        BcsMockContext(Device *device) : MockContext(device) {
+        BcsMockContext(ClDevice *device) : MockContext(device) {
             bcsOsContext.reset(OsContext::create(nullptr, 0, 0, aub_stream::ENGINE_BCS, PreemptionMode::Disabled, false));
             bcsCsr.reset(createCommandStream(*device->getExecutionEnvironment(), device->getRootDeviceIndex()));
             bcsCsr->setupContext(*bcsOsContext);
@@ -32,8 +32,10 @@ struct BlitAuxTranslationTests : public ::testing::Test {
         }
         BlitOperationResult blitMemoryToAllocation(MemObj &memObj, GraphicsAllocation *memory, void *hostPtr, size_t size) const override {
             auto blitProperties = BlitProperties::constructPropertiesForReadWriteBuffer(BlitterConstants::BlitDirection::HostPtrToBuffer,
-                                                                                        *bcsCsr, memory, 0, nullptr,
-                                                                                        hostPtr, 0, 0, size);
+                                                                                        *bcsCsr, memory, nullptr,
+                                                                                        hostPtr,
+                                                                                        memory->getGpuAddress(), 0,
+                                                                                        0, 0, size);
 
             BlitPropertiesContainer container;
             container.push_back(blitProperties);
@@ -55,7 +57,7 @@ struct BlitAuxTranslationTests : public ::testing::Test {
         DebugManager.flags.EnableBlitterOperationsForReadWriteBuffers.set(1);
         DebugManager.flags.ForceAuxTranslationMode.set(1);
         DebugManager.flags.CsrDispatchMode.set(static_cast<int32_t>(DispatchMode::ImmediateDispatch));
-        device.reset(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
+        device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(nullptr));
         auto &capabilityTable = device->getExecutionEnvironment()->getMutableHardwareInfo()->capabilityTable;
         bool createBcsEngine = !capabilityTable.blitterOperationsSupported;
         capabilityTable.blitterOperationsSupported = true;
@@ -66,7 +68,6 @@ struct BlitAuxTranslationTests : public ::testing::Test {
             engine.osContext = bcsOsContext.get();
             engine.commandStreamReceiver->setupContext(*bcsOsContext);
         }
-
         bcsMockContext = std::make_unique<BcsMockContext>(device.get());
         auto mockCmdQueue = new MockCommandQueueHw<FamilyType>(bcsMockContext.get(), device.get(), nullptr);
         commandQueue.reset(mockCmdQueue);
@@ -158,7 +159,7 @@ struct BlitAuxTranslationTests : public ::testing::Test {
     DebugManagerStateRestore restore;
 
     std::unique_ptr<OsContext> bcsOsContext;
-    std::unique_ptr<MockDevice> device;
+    std::unique_ptr<MockClDevice> device;
     std::unique_ptr<BcsMockContext> bcsMockContext;
     std::unique_ptr<CommandQueue> commandQueue;
     std::unique_ptr<MockKernelWithInternals> mockKernel;

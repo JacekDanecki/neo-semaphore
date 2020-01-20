@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2017-2019 Intel Corporation
+# Copyright (C) 2017-2020 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 #
@@ -22,10 +22,9 @@ set(IGDRCL_SRCS_linux_dll_tests
   ${CMAKE_CURRENT_SOURCE_DIR}/drm_wrap.h
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_os_layer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/mock_os_layer.h
-  ${NEO_SOURCE_DIR}/runtime/os_interface/debug_settings_manager.cpp
   ${NEO_SOURCE_DIR}/runtime/dll/linux/allocator_helper.cpp
   ${NEO_SOURCE_DIR}/runtime/dll/linux/drm_neo_create.cpp
-  ${NEO_SOURCE_DIR}/runtime/dll/linux/options.cpp
+  ${NEO_SOURCE_DIR}/runtime/dll/linux/options_linux.cpp
   ${NEO_SOURCE_DIR}/runtime/dll/linux/os_interface.cpp
   ${NEO_SOURCE_DIR}/unit_tests/aub_stream_mocks/aub_stream_interface_mock.cpp
   ${NEO_SOURCE_DIR}/unit_tests/linux${BRANCH_DIR_SUFFIX}/drm_other_requests.cpp
@@ -33,9 +32,9 @@ set(IGDRCL_SRCS_linux_dll_tests
   ${CMAKE_CURRENT_SOURCE_DIR}/test_mode.h
 )
 
-if(IGDRCL__LIBVA_FOUND)
+if(NEO__LIBVA_FOUND)
   list(APPEND IGDRCL_SRCS_linux_dll_tests ${CMAKE_CURRENT_SOURCE_DIR}/va_tests.cpp)
-endif(IGDRCL__LIBVA_FOUND)
+endif(NEO__LIBVA_FOUND)
 
 macro(macro_for_each_platform)
   list(APPEND IGDRCL_SRCS_linux_dll_tests ${NEO_SOURCE_DIR}/runtime/${GEN_TYPE_LOWER}/hw_info_${PLATFORM_IT_LOWER}.inl)
@@ -50,6 +49,7 @@ foreach(target_name linux_tests linux_dll_tests)
     ${IGDRCL_SRCS_${target_name}}
     $<TARGET_OBJECTS:igdrcl_libult>
     $<TARGET_OBJECTS:igdrcl_libult_cs>
+    $<TARGET_OBJECTS:mock_gmm>
   )
   target_link_libraries(igdrcl_${target_name} ${NEO_MOCKABLE_LIB_NAME} igdrcl_mocks ${IGDRCL_EXTRA_LIBS} gmock-gtest)
 

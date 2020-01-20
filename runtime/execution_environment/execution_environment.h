@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -15,10 +15,9 @@
 namespace NEO {
 class BuiltIns;
 class CompilerInterface;
+class GmmClientContext;
 class GmmHelper;
 class MemoryManager;
-class MemoryOperationsHandler;
-class OSInterface;
 class SourceLevelDebugger;
 struct RootDeviceEnvironment;
 struct HardwareInfo;
@@ -39,6 +38,7 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
     void initGmm();
     void initializeMemoryManager();
     void initSourceLevelDebugger();
+    void calculateMaxOsContextCount();
     void setHwInfo(const HardwareInfo *hwInfo);
     const HardwareInfo *getHardwareInfo() const { return hwInfo.get(); }
     HardwareInfo *getMutableHardwareInfo() const { return hwInfo.get(); }
@@ -46,11 +46,10 @@ class ExecutionEnvironment : public ReferenceTrackedObject<ExecutionEnvironment>
     void prepareRootDeviceEnvironments(uint32_t numRootDevices);
 
     GmmHelper *getGmmHelper() const;
+    GmmClientContext *getGmmClientContext() const;
     MOCKABLE_VIRTUAL CompilerInterface *getCompilerInterface();
     BuiltIns *getBuiltIns();
 
-    std::unique_ptr<OSInterface> osInterface;
-    std::unique_ptr<MemoryOperationsHandler> memoryOperationsInterface;
     std::unique_ptr<MemoryManager> memoryManager;
     std::vector<std::unique_ptr<RootDeviceEnvironment>> rootDeviceEnvironments;
     std::unique_ptr<BuiltIns> builtins;

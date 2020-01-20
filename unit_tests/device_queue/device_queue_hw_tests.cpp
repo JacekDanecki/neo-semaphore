@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -464,18 +464,6 @@ HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, getIndirectHeapDSH) {
     delete deviceQueue;
 }
 
-HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, getIndirectHeapNonExistent) {
-    deviceQueue = createQueueObject();
-    ASSERT_NE(deviceQueue, nullptr);
-    auto *devQueueHw = castToObject<DeviceQueueHw<FamilyType>>(deviceQueue);
-
-    auto heap = devQueueHw->getIndirectHeap(IndirectHeap::GENERAL_STATE);
-
-    EXPECT_EQ(nullptr, heap);
-
-    delete deviceQueue;
-}
-
 HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, getDshOffset) {
     using INTERFACE_DESCRIPTOR_DATA = typename FamilyType::INTERFACE_DESCRIPTOR_DATA;
 
@@ -501,11 +489,12 @@ class DeviceQueueHwWithKernel : public ExecutionModelKernelFixture {
             0, 0, 0};
         cl_int errcodeRet = 0;
 
-        device = MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]);
+        clDevice = new MockClDevice{MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0])};
+        device = &clDevice->getDevice();
         context = new MockContext();
         ASSERT_NE(nullptr, context);
 
-        devQueue = DeviceQueue::create(context, device,
+        devQueue = DeviceQueue::create(context, clDevice,
                                        *properties,
                                        errcodeRet);
 
@@ -514,11 +503,12 @@ class DeviceQueueHwWithKernel : public ExecutionModelKernelFixture {
     void TearDown() override {
         delete devQueue;
         delete context;
-        delete device;
+        delete clDevice;
         ExecutionModelKernelFixture::TearDown();
     }
 
     Device *device;
+    ClDevice *clDevice;
     DeviceQueue *devQueue;
     MockContext *context;
 };
@@ -535,7 +525,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectState) {
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
         ASSERT_NE(nullptr, dsh);
 
-        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, const_cast<const Kernel &>(*pKernel));
+        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSshSizeForExecutionModel(const_cast<const Kernel &>(*pKernel));
 
         auto ssh = new IndirectHeap(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
         auto usedBeforeSSH = ssh->getUsed();
@@ -565,7 +555,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectStateSetsCorre
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
         ASSERT_NE(nullptr, dsh);
 
-        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, const_cast<const Kernel &>(*pKernel));
+        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSshSizeForExecutionModel(const_cast<const Kernel &>(*pKernel));
 
         auto ssh = new IndirectHeap(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
 
@@ -590,12 +580,12 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, setupIndirectStateSetsCorre
         pKernel->createReflectionSurface();
 
         MockContext mockContext;
-        MockDeviceQueueHw<FamilyType> *devQueueHw = new MockDeviceQueueHw<FamilyType>(&mockContext, device, deviceQueueProperties::minimumProperties[0]);
+        MockDeviceQueueHw<FamilyType> *devQueueHw = new MockDeviceQueueHw<FamilyType>(&mockContext, clDevice, deviceQueueProperties::minimumProperties[0]);
         ASSERT_NE(nullptr, devQueueHw);
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
         ASSERT_NE(nullptr, dsh);
 
-        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE, const_cast<const Kernel &>(*pKernel));
+        size_t surfaceStateHeapSize = HardwareCommandsHelper<FamilyType>::getSshSizeForExecutionModel(const_cast<const Kernel &>(*pKernel));
 
         auto ssh = new IndirectHeap(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
 
@@ -623,7 +613,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, GivenHasBarriersSetWhenCall
         pKernel->createReflectionSurface();
 
         MockContext mockContext;
-        auto devQueueHw = std::make_unique<MockDeviceQueueHw<FamilyType>>(&mockContext, device, deviceQueueProperties::minimumProperties[0]);
+        auto devQueueHw = std::make_unique<MockDeviceQueueHw<FamilyType>>(&mockContext, clDevice, deviceQueueProperties::minimumProperties[0]);
         auto dsh = devQueueHw->getIndirectHeap(IndirectHeap::DYNAMIC_STATE);
 
         uint32_t parentCount = 1;
@@ -635,8 +625,7 @@ HWCMDTEST_P(IGFX_GEN8_CORE, DeviceQueueHwWithKernel, GivenHasBarriersSetWhenCall
         }
 
         auto surfaceStateHeapSize =
-            HardwareCommandsHelper<FamilyType>::getSizeRequiredForExecutionModel(IndirectHeap::SURFACE_STATE,
-                                                                                 const_cast<const Kernel &>(*pKernel));
+            HardwareCommandsHelper<FamilyType>::getSshSizeForExecutionModel(const_cast<const Kernel &>(*pKernel));
         auto ssh = std::make_unique<IndirectHeap>(alignedMalloc(surfaceStateHeapSize, MemoryConstants::pageSize), surfaceStateHeapSize);
 
         devQueueHw->setupIndirectState(*ssh, *dsh, pKernel, parentCount, false);
@@ -668,7 +657,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, resetDeviceQueueSetEa
 
     DebugManager.flags.SchedulerSimulationReturnInstance.set(3);
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockContext context;
     std::unique_ptr<MockDeviceQueueHw<FamilyType>> mockDeviceQueueHw(new MockDeviceQueueHw<FamilyType>(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
@@ -682,7 +671,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, addMediaStateClearCmd
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MEDIA_VFE_STATE = typename FamilyType::MEDIA_VFE_STATE;
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockContext context;
     std::unique_ptr<MockDeviceQueueHw<FamilyType>> mockDeviceQueueHw(new MockDeviceQueueHw<FamilyType>(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
@@ -717,7 +706,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, addExecutionModelClea
     class MockDeviceQueueWithMediaStateClearRegistering : public MockDeviceQueueHw<FamilyType> {
       public:
         MockDeviceQueueWithMediaStateClearRegistering(Context *context,
-                                                      Device *device,
+                                                      ClDevice *device,
                                                       cl_queue_properties &properties) : MockDeviceQueueHw<FamilyType>(context, device, properties) {
         }
 
@@ -726,7 +715,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, addExecutionModelClea
             addMediaStateClearCmdsCalled = true;
         }
     };
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockContext context(device.get());
     std::unique_ptr<MockDeviceQueueWithMediaStateClearRegistering> mockDeviceQueueHw(new MockDeviceQueueWithMediaStateClearRegistering(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
@@ -743,7 +732,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, getMediaStateClearCmd
     using PIPE_CONTROL = typename FamilyType::PIPE_CONTROL;
     using MEDIA_VFE_STATE = typename FamilyType::MEDIA_VFE_STATE;
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockContext context;
     std::unique_ptr<MockDeviceQueueHw<FamilyType>> mockDeviceQueueHw(new MockDeviceQueueHw<FamilyType>(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
@@ -759,7 +748,7 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, getExecutionModelClea
     using MI_MATH = typename FamilyType::MI_MATH;
     using MI_BATCH_BUFFER_END = typename FamilyType::MI_BATCH_BUFFER_END;
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockContext context;
     std::unique_ptr<MockDeviceQueueHw<FamilyType>> mockDeviceQueueHw(new MockDeviceQueueHw<FamilyType>(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
@@ -784,38 +773,11 @@ HWCMDTEST_F(IGFX_GEN8_CORE, TheSimplestDeviceQueueFixture, getProfilingEndCmdsSi
     using MI_STORE_REGISTER_MEM = typename FamilyType::MI_STORE_REGISTER_MEM;
     using MI_LOAD_REGISTER_IMM = typename FamilyType::MI_LOAD_REGISTER_IMM;
 
-    std::unique_ptr<MockDevice> device(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
+    auto device = std::make_unique<MockClDevice>(MockDevice::createWithNewExecutionEnvironment<MockDevice>(platformDevices[0]));
     MockContext context;
     std::unique_ptr<MockDeviceQueueHw<FamilyType>> mockDeviceQueueHw(new MockDeviceQueueHw<FamilyType>(&context, device.get(), deviceQueueProperties::minimumProperties[0]));
 
     size_t expectedSize = sizeof(PIPE_CONTROL) + sizeof(MI_STORE_REGISTER_MEM) + sizeof(MI_LOAD_REGISTER_IMM);
 
     EXPECT_EQ(expectedSize, MockDeviceQueueHw<FamilyType>::getProfilingEndCmdsSize());
-}
-
-HWCMDTEST_F(IGFX_GEN8_CORE, DeviceQueueHwTest, givenDeviceQueueWhenRunningOnCCsThenFfidSkipOffsetIsAddedToBlockKernelStartPointer) {
-    auto device = pContext->getDevice(0);
-    std::unique_ptr<MockParentKernel> mockParentKernel(MockParentKernel::create(*pContext));
-    KernelInfo *blockInfo = const_cast<KernelInfo *>(mockParentKernel->mockProgram->blockKernelManager->getBlockKernelInfo(0));
-    blockInfo->createKernelAllocation(device->getRootDeviceIndex(), device->getMemoryManager());
-    ASSERT_NE(nullptr, blockInfo->getGraphicsAllocation());
-    const_cast<SPatchThreadPayload *>(blockInfo->patchInfo.threadPayload)->OffsetToSkipSetFFIDGP = 0x1234;
-    const_cast<HardwareInfo &>(device->getHardwareInfo()).workaroundTable.waUseOffsetToSkipSetFFIDGP = true;
-
-    uint64_t expectedOffset = blockInfo->getGraphicsAllocation()->getGpuAddressToPatch() + blockInfo->patchInfo.threadPayload->OffsetToSkipSetFFIDGP;
-    uint64_t offset = MockDeviceQueueHw<FamilyType>::getBlockKernelStartPointer(*device, blockInfo, true);
-    EXPECT_EQ(expectedOffset, offset);
-
-    expectedOffset = blockInfo->getGraphicsAllocation()->getGpuAddressToPatch();
-    offset = MockDeviceQueueHw<FamilyType>::getBlockKernelStartPointer(*device, blockInfo, false);
-    EXPECT_EQ(expectedOffset, offset);
-
-    const_cast<HardwareInfo &>(device->getHardwareInfo()).workaroundTable.waUseOffsetToSkipSetFFIDGP = false;
-
-    expectedOffset = blockInfo->getGraphicsAllocation()->getGpuAddressToPatch();
-    offset = MockDeviceQueueHw<FamilyType>::getBlockKernelStartPointer(*device, blockInfo, true);
-    EXPECT_EQ(expectedOffset, offset);
-
-    offset = MockDeviceQueueHw<FamilyType>::getBlockKernelStartPointer(*device, blockInfo, false);
-    EXPECT_EQ(expectedOffset, offset);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,8 +7,8 @@
 
 #include "runtime/helpers/mipmap.h"
 
-#include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/resource_info.h"
+#include "core/gmm_helper/gmm.h"
+#include "core/gmm_helper/resource_info.h"
 #include "runtime/mem_obj/image.h"
 
 #include <algorithm>
@@ -66,7 +66,7 @@ uint32_t getMipOffset(Image *image, const size_t *origin) {
         return 0;
     }
     UNRECOVERABLE_IF(origin == nullptr);
-    auto bytesPerPixel = image->getSurfaceFormatInfo().ImageElementSizeInBytes;
+    auto bytesPerPixel = image->getSurfaceFormatInfo().surfaceFormat.ImageElementSizeInBytes;
     size_t offset{};
     auto imageType = image->getImageDesc().image_type;
     auto lod = findMipLevel(imageType, origin);

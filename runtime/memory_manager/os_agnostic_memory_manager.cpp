@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,18 +8,19 @@
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
 
 #include "core/execution_environment/root_device_environment.h"
+#include "core/gmm_helper/gmm.h"
 #include "core/gmm_helper/gmm_helper.h"
+#include "core/gmm_helper/resource_info.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/hw_info.h"
 #include "core/helpers/options.h"
 #include "core/helpers/ptr_math.h"
 #include "core/memory_manager/host_ptr_manager.h"
+#include "core/memory_manager/residency.h"
 #include "core/os_interface/os_memory.h"
 #include "runtime/aub/aub_center.h"
 #include "runtime/execution_environment/execution_environment.h"
-#include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/resource_info.h"
 #include "runtime/helpers/surface_formats.h"
 
 #include <cassert>
@@ -61,7 +62,7 @@ GraphicsAllocation *OsAgnosticMemoryManager::allocateGraphicsMemoryWithAlignment
         if (allocationData.type == GraphicsAllocation::AllocationType::SVM_CPU) {
             //add 2MB padding in case mapPtr is not 2MB aligned
             size_t reserveSize = sizeAligned + allocationData.alignment;
-            void *gpuPtr = reserveCpuAddressRange(reserveSize);
+            void *gpuPtr = reserveCpuAddressRange(reserveSize, allocationData.rootDeviceIndex);
             if (!gpuPtr) {
                 delete memoryAllocation;
                 alignedFreeWrapper(ptr);
@@ -157,7 +158,7 @@ GraphicsAllocation *OsAgnosticMemoryManager::createGraphicsAllocationFromSharedH
     graphicsAllocation->set32BitAllocation(requireSpecificBitness);
 
     if (properties.imgInfo) {
-        Gmm *gmm = new Gmm(*properties.imgInfo, createStorageInfoFromProperties(properties));
+        Gmm *gmm = new Gmm(executionEnvironment.getGmmClientContext(), *properties.imgInfo, createStorageInfoFromProperties(properties));
         graphicsAllocation->setDefaultGmm(gmm);
     }
 
@@ -188,7 +189,7 @@ void OsAgnosticMemoryManager::removeAllocationFromHostPtrManager(GraphicsAllocat
 }
 
 void OsAgnosticMemoryManager::freeGraphicsMemoryImpl(GraphicsAllocation *gfxAllocation) {
-    for (auto handleId = 0u; handleId < maxHandleCount; handleId++) {
+    for (auto handleId = 0u; handleId < EngineLimits::maxHandleCount; handleId++) {
         delete gfxAllocation->getGmm(handleId);
     }
 
@@ -214,7 +215,7 @@ void OsAgnosticMemoryManager::freeGraphicsMemoryImpl(GraphicsAllocation *gfxAllo
 
     alignedFreeWrapper(gfxAllocation->getDriverAllocatedCpuPtr());
     if (gfxAllocation->getReservedAddressPtr()) {
-        releaseReservedCpuAddressRange(gfxAllocation->getReservedAddressPtr(), gfxAllocation->getReservedAddressSize());
+        releaseReservedCpuAddressRange(gfxAllocation->getReservedAddressPtr(), gfxAllocation->getReservedAddressSize(), gfxAllocation->getRootDeviceIndex());
     }
 
     auto rootDeviceIndex = gfxAllocation->getRootDeviceIndex();
@@ -228,14 +229,14 @@ void OsAgnosticMemoryManager::freeGraphicsMemoryImpl(GraphicsAllocation *gfxAllo
     delete gfxAllocation;
 }
 
-uint64_t OsAgnosticMemoryManager::getSystemSharedMemory() {
+uint64_t OsAgnosticMemoryManager::getSystemSharedMemory(uint32_t rootDeviceIndex) {
     return 16 * GB;
 }
 
 GraphicsAllocation *OsAgnosticMemoryManager::createGraphicsAllocation(OsHandleStorage &handleStorage, const AllocationData &allocationData) {
     auto allocation = createMemoryAllocation(allocationData.type, nullptr, const_cast<void *>(allocationData.hostPtr),
                                              reinterpret_cast<uint64_t>(allocationData.hostPtr), allocationData.size, counter++,
-                                             MemoryPool::System4KBPages, allocationData.rootDeviceIndex, false, false, false);
+                                             MemoryPool::System4KBPages, allocationData.rootDeviceIndex, false, allocationData.flags.flushL3, false);
 
     allocation->fragmentsStorage = handleStorage;
     return allocation;
@@ -245,7 +246,7 @@ void OsAgnosticMemoryManager::turnOnFakingBigAllocations() {
     this->fakeBigAllocations = true;
 }
 
-MemoryManager::AllocationStatus OsAgnosticMemoryManager::populateOsHandles(OsHandleStorage &handleStorage) {
+MemoryManager::AllocationStatus OsAgnosticMemoryManager::populateOsHandles(OsHandleStorage &handleStorage, uint32_t rootDeviceIndex) {
     for (unsigned int i = 0; i < maxFragmentsCount; i++) {
         if (!handleStorage.fragmentStorageData[i].osHandleStorage && handleStorage.fragmentStorageData[i].cpuPtr) {
             handleStorage.fragmentStorageData[i].osHandleStorage = new OsHandle();
@@ -273,6 +274,25 @@ void OsAgnosticMemoryManager::cleanOsHandles(OsHandleStorage &handleStorage, uin
         }
     }
 }
+
+GraphicsAllocation *OsAgnosticMemoryManager::allocateShareableMemory(const AllocationData &allocationData) {
+    auto gmm = std::make_unique<Gmm>(executionEnvironment.getGmmClientContext(), allocationData.hostPtr, allocationData.size, false);
+    GraphicsAllocation *alloc = nullptr;
+
+    auto ptr = allocateSystemMemory(alignUp(allocationData.size, MemoryConstants::pageSize), MemoryConstants::pageSize);
+    if (ptr != nullptr) {
+        alloc = createMemoryAllocation(allocationData.type, ptr, ptr, reinterpret_cast<uint64_t>(ptr), allocationData.size,
+                                       counter, MemoryPool::SystemCpuInaccessible, allocationData.rootDeviceIndex, allocationData.flags.uncacheable, allocationData.flags.flushL3, false);
+        counter++;
+    }
+
+    if (alloc) {
+        alloc->setDefaultGmm(gmm.release());
+    }
+
+    return alloc;
+}
+
 GraphicsAllocation *OsAgnosticMemoryManager::allocateGraphicsMemoryForImageImpl(const AllocationData &allocationData, std::unique_ptr<Gmm> gmm) {
     GraphicsAllocation *alloc = nullptr;
 
@@ -298,12 +318,12 @@ GraphicsAllocation *OsAgnosticMemoryManager::allocateGraphicsMemoryForImageImpl(
     return alloc;
 }
 
-void *OsAgnosticMemoryManager::reserveCpuAddressRange(size_t size) {
+void *OsAgnosticMemoryManager::reserveCpuAddressRange(size_t size, uint32_t rootDeviceIndex) {
     void *reservePtr = allocateSystemMemory(size, MemoryConstants::preferredAlignment);
     return reservePtr;
 }
 
-void OsAgnosticMemoryManager::releaseReservedCpuAddressRange(void *reserved, size_t size) {
+void OsAgnosticMemoryManager::releaseReservedCpuAddressRange(void *reserved, size_t size, uint32_t rootDeviceIndex) {
     alignedFreeWrapper(reserved);
 }
 

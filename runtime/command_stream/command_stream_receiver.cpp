@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Intel Corporation
+ * Copyright (C) 2018-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -8,9 +8,12 @@
 #include "runtime/command_stream/command_stream_receiver.h"
 
 #include "core/command_stream/preemption.h"
+#include "core/execution_environment/root_device_environment.h"
 #include "core/helpers/cache_policy.h"
+#include "core/helpers/hw_helper.h"
 #include "core/helpers/string.h"
-#include "runtime/aub_mem_dump/aub_services.h"
+#include "core/os_interface/os_context.h"
+#include "core/utilities/cpuintrinsics.h"
 #include "runtime/built_ins/built_ins.h"
 #include "runtime/command_stream/experimental_command_buffer.h"
 #include "runtime/command_stream/scratch_space_controller.h"
@@ -25,7 +28,6 @@
 #include "runtime/memory_manager/internal_allocation_storage.h"
 #include "runtime/memory_manager/memory_manager.h"
 #include "runtime/memory_manager/surface.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/os_interface/os_interface.h"
 #include "runtime/platform/platform.h"
 #include "runtime/utilities/tag_allocator.h"
@@ -116,6 +118,10 @@ void CommandStreamReceiver::waitForTaskCountAndCleanAllocationList(uint32_t requ
     internalAllocationStorage->cleanAllocationList(requiredTaskCount, allocationUsage);
 }
 
+void CommandStreamReceiver::waitForTaskCountAndCleanTemporaryAllocationList(uint32_t requiredTaskCount) {
+    waitForTaskCountAndCleanAllocationList(requiredTaskCount, TEMPORARY_ALLOCATION);
+};
+
 void CommandStreamReceiver::ensureCommandBufferAllocation(LinearStream &commandStream, size_t minimumRequiredSize, size_t additionalAllocationSize) {
     if (commandStream.getAvailableSpace() >= minimumRequiredSize) {
         return;
@@ -126,7 +132,7 @@ void CommandStreamReceiver::ensureCommandBufferAllocation(LinearStream &commandS
     auto allocation = this->getInternalAllocationStorage()->obtainReusableAllocation(allocationSize, allocationType).release();
     if (allocation == nullptr) {
         const AllocationProperties commandStreamAllocationProperties{rootDeviceIndex, true, allocationSize, allocationType,
-                                                                     isMultiOsContextCapable(), false, getDeviceIndex()};
+                                                                     isMultiOsContextCapable(), false, osContext->getDeviceBitfield()};
         allocation = this->getMemoryManager()->allocateGraphicsMemoryWithProperties(commandStreamAllocationProperties);
     }
     DEBUG_BREAK_IF(allocation == nullptr);
@@ -196,7 +202,7 @@ bool CommandStreamReceiver::waitForCompletionWithTimeout(bool enableTimeout, int
     time1 = std::chrono::high_resolution_clock::now();
     while (*getTagAddress() < taskCountToWait && timeDiff <= timeoutMicroseconds) {
         std::this_thread::yield();
-        _mm_pause();
+        CpuIntrinsics::pause();
 
         if (enableTimeout) {
             time2 = std::chrono::high_resolution_clock::now();
@@ -299,10 +305,6 @@ IndirectHeap &CommandStreamReceiver::getIndirectHeap(IndirectHeap::Type heapType
     return *heap;
 }
 
-uint32_t CommandStreamReceiver::getDeviceIndex() const {
-    return osContext->getDeviceBitfield().any() ? static_cast<uint32_t>(Math::log2(static_cast<uint32_t>(osContext->getDeviceBitfield().to_ulong()))) : 0u;
-}
-
 void CommandStreamReceiver::allocateHeapMemory(IndirectHeap::Type heapType,
                                                size_t minRequiredSize, IndirectHeap *&indirectHeap) {
     size_t reservedSize = 0;
@@ -327,7 +329,7 @@ void CommandStreamReceiver::allocateHeapMemory(IndirectHeap::Type heapType,
 
     if (!heapMemory) {
         heapMemory = getMemoryManager()->allocateGraphicsMemoryWithProperties({rootDeviceIndex, true, finalHeapSize, allocationType,
-                                                                               isMultiOsContextCapable(), false, getDeviceIndex()});
+                                                                               isMultiOsContextCapable(), false, osContext->getDeviceBitfield()});
     } else {
         finalHeapSize = std::max(heapMemory->getUnderlyingBufferSize(), finalHeapSize);
     }
@@ -445,9 +447,22 @@ TagAllocator<TimestampPacketStorage> *CommandStreamReceiver::getTimestampPacketA
 cl_int CommandStreamReceiver::expectMemory(const void *gfxAddress, const void *srcAddress,
                                            size_t length, uint32_t compareOperation) {
     auto isMemoryEqual = (memcmp(gfxAddress, srcAddress, length) == 0);
-    auto isEqualMemoryExpected = (compareOperation == CmdServicesMemTraceMemoryCompare::CompareOperationValues::CompareEqual);
+    auto isEqualMemoryExpected = (compareOperation == AubMemDump::CmdServicesMemTraceMemoryCompare::CompareOperationValues::CompareEqual);
 
     return (isMemoryEqual == isEqualMemoryExpected) ? CL_SUCCESS : CL_INVALID_VALUE;
+}
+
+bool CommandStreamReceiver::needsPageTableManager(aub_stream::EngineType engineType) const {
+    auto hwInfo = executionEnvironment.getHardwareInfo();
+    auto defaultEngineType = getChosenEngineType(*hwInfo);
+    if (engineType != defaultEngineType) {
+        return false;
+    }
+    auto rootDeviceEnvironment = executionEnvironment.rootDeviceEnvironments[rootDeviceIndex].get();
+    if (rootDeviceEnvironment->pageTableManager.get() != nullptr) {
+        return false;
+    }
+    return HwHelper::get(hwInfo->platform.eRenderCoreFamily).isPageTableManagerSupported(*hwInfo);
 }
 
 } // namespace NEO

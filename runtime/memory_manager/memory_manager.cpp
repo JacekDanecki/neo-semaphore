@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,32 +7,33 @@
 
 #include "runtime/memory_manager/memory_manager.h"
 
+#include "common/compiler_support.h"
+#include "core/execution_environment/root_device_environment.h"
+#include "core/gmm_helper/gmm.h"
+#include "core/gmm_helper/gmm_helper.h"
+#include "core/gmm_helper/page_table_mngr.h"
+#include "core/gmm_helper/resource_info.h"
 #include "core/helpers/aligned_memory.h"
 #include "core/helpers/basic_math.h"
 #include "core/helpers/hw_helper.h"
 #include "core/helpers/hw_info.h"
 #include "core/helpers/options.h"
+#include "core/helpers/string.h"
+#include "core/helpers/surface_format_info.h"
+#include "core/memory_manager/deferrable_allocation_deletion.h"
+#include "core/memory_manager/deferred_deleter.h"
 #include "core/memory_manager/host_ptr_manager.h"
+#include "core/os_interface/os_context.h"
 #include "core/utilities/stackvec.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/event/event.h"
-#include "runtime/event/hw_timestamps.h"
-#include "runtime/event/perf_counter.h"
-#include "runtime/gmm_helper/gmm.h"
-#include "runtime/gmm_helper/resource_info.h"
-#include "runtime/helpers/hardware_commands_helper.h"
-#include "runtime/mem_obj/image.h"
-#include "runtime/memory_manager/deferrable_allocation_deletion.h"
-#include "runtime/memory_manager/deferred_deleter.h"
 #include "runtime/memory_manager/internal_allocation_storage.h"
-#include "runtime/os_interface/device_factory.h"
-#include "runtime/os_interface/os_context.h"
 #include "runtime/os_interface/os_interface.h"
-#include "runtime/platform/platform.h"
 
 #include <algorithm>
 
 namespace NEO {
+uint32_t MemoryManager::maxOsContextCount = 0u;
+
 MemoryManager::MemoryManager(ExecutionEnvironment &executionEnvironment) : executionEnvironment(executionEnvironment), hostPtrManager(std::make_unique<HostPtrManager>()),
                                                                            multiContextResourceDestructor(std::make_unique<DeferredDeleter>()) {
     auto hwInfo = executionEnvironment.getHardwareInfo();
@@ -104,7 +105,7 @@ GraphicsAllocation *MemoryManager::allocateGraphicsMemoryWithHostPtr(const Alloc
 }
 
 GraphicsAllocation *MemoryManager::allocateGraphicsMemoryForImageFromHostPtr(const AllocationData &allocationData) {
-    bool copyRequired = Image::isCopyRequired(*allocationData.imgInfo, allocationData.hostPtr);
+    bool copyRequired = isCopyRequired(*allocationData.imgInfo, allocationData.hostPtr);
 
     if (allocationData.hostPtr && !copyRequired) {
         return allocateGraphicsMemoryWithHostPtr(allocationData);
@@ -192,7 +193,9 @@ bool MemoryManager::isMemoryBudgetExhausted() const {
 OsContext *MemoryManager::createAndRegisterOsContext(CommandStreamReceiver *commandStreamReceiver, aub_stream::EngineType engineType,
                                                      DeviceBitfield deviceBitfield, PreemptionMode preemptionMode, bool lowPriority) {
     auto contextId = ++latestContextId;
-    auto osContext = OsContext::create(peekExecutionEnvironment().osInterface.get(), contextId, deviceBitfield, engineType, preemptionMode, lowPriority);
+    auto rootDeviceIndex = commandStreamReceiver ? commandStreamReceiver->getRootDeviceIndex() : 0u;
+    auto osContext = OsContext::create(peekExecutionEnvironment().rootDeviceEnvironments[rootDeviceIndex]->osInterface.get(), contextId, deviceBitfield, engineType, preemptionMode, lowPriority);
+    UNRECOVERABLE_IF(!osContext->isInitialized());
     osContext->incRefInternal();
 
     registeredEngines.emplace_back(commandStreamReceiver, osContext);
@@ -284,6 +287,7 @@ bool MemoryManager::getAllocationData(AllocationData &allocationData, const Allo
         break;
     }
 
+    allocationData.flags.shareable = properties.flags.shareable;
     allocationData.flags.requiresCpuAccess = GraphicsAllocation::isCpuAccessRequired(properties.allocationType);
     allocationData.flags.allocateMemory = properties.flags.allocateMemory;
     allocationData.flags.allow32Bit = allow32Bit;
@@ -323,8 +327,16 @@ GraphicsAllocation *MemoryManager::allocateGraphicsMemoryInPreferredPool(const A
     if (!allocation && status == AllocationStatus::RetryInNonDevicePool) {
         allocation = allocateGraphicsMemory(allocationData);
     }
-    DebugManager.logAllocation(allocation);
+    FileLoggerInstance().logAllocation(allocation);
     return allocation;
+}
+
+bool MemoryManager::mapAuxGpuVA(GraphicsAllocation *graphicsAllocation) {
+    auto index = graphicsAllocation->getRootDeviceIndex();
+    if (executionEnvironment.rootDeviceEnvironments[index]->pageTableManager.get()) {
+        return executionEnvironment.rootDeviceEnvironments[index]->pageTableManager->updateAuxTable(graphicsAllocation->getGpuAddress(), graphicsAllocation->getDefaultGmm(), true);
+    }
+    return false;
 }
 
 GraphicsAllocation *MemoryManager::allocateGraphicsMemory(const AllocationData &allocationData) {
@@ -332,8 +344,10 @@ GraphicsAllocation *MemoryManager::allocateGraphicsMemory(const AllocationData &
         UNRECOVERABLE_IF(allocationData.imgInfo == nullptr);
         return allocateGraphicsMemoryForImage(allocationData);
     }
-    if (allocationData.type == GraphicsAllocation::AllocationType::EXTERNAL_HOST_PTR &&
-        (!peekExecutionEnvironment().isFullRangeSvm() || !isHostPointerTrackingEnabled())) {
+    if (allocationData.flags.shareable) {
+        return allocateShareableMemory(allocationData);
+    }
+    if (useNonSvmHostPtrAlloc(allocationData.type)) {
         auto allocation = allocateGraphicsMemoryForNonSvmHostPtr(allocationData);
         if (allocation) {
             allocation->setFlushL3Required(allocationData.flags.flushL3);
@@ -354,7 +368,7 @@ GraphicsAllocation *MemoryManager::allocateGraphicsMemory(const AllocationData &
 }
 
 GraphicsAllocation *MemoryManager::allocateGraphicsMemoryForImage(const AllocationData &allocationData) {
-    auto gmm = std::make_unique<Gmm>(*allocationData.imgInfo, allocationData.storageInfo);
+    auto gmm = std::make_unique<Gmm>(executionEnvironment.getGmmClientContext(), *allocationData.imgInfo, allocationData.storageInfo);
 
     // AllocationData needs to be reconfigured for System Memory paths
     AllocationData allocationDataWithSize = allocationData;
@@ -479,10 +493,49 @@ void *MemoryManager::getReservedMemory(size_t size, size_t alignment) {
 }
 
 bool MemoryManager::isHostPointerTrackingEnabled() {
+
     if (DebugManager.flags.EnableHostPtrTracking.get() != -1) {
         return !!DebugManager.flags.EnableHostPtrTracking.get();
     }
     return (peekExecutionEnvironment().getHardwareInfo()->capabilityTable.hostPtrTrackingEnabled | is32bit);
 }
 
+bool MemoryManager::isCopyRequired(ImageInfo &imgInfo, const void *hostPtr) {
+    if (!hostPtr) {
+        return false;
+    }
+
+    size_t imageWidth = imgInfo.imgDesc.imageWidth;
+    size_t imageHeight = 1;
+    size_t imageDepth = 1;
+    size_t imageCount = 1;
+
+    switch (imgInfo.imgDesc.imageType) {
+    case ImageType::Image3D:
+        imageDepth = imgInfo.imgDesc.imageDepth;
+        CPP_ATTRIBUTE_FALLTHROUGH;
+    case ImageType::Image2D:
+    case ImageType::Image2DArray:
+        imageHeight = imgInfo.imgDesc.imageHeight;
+        break;
+    default:
+        break;
+    }
+
+    auto hostPtrRowPitch = imgInfo.imgDesc.imageRowPitch ? imgInfo.imgDesc.imageRowPitch : imageWidth * imgInfo.surfaceFormat->ImageElementSizeInBytes;
+    auto hostPtrSlicePitch = imgInfo.imgDesc.imageSlicePitch ? imgInfo.imgDesc.imageSlicePitch : hostPtrRowPitch * imgInfo.imgDesc.imageHeight;
+
+    size_t pointerPassedSize = hostPtrRowPitch * imageHeight * imageDepth * imageCount;
+    auto alignedSizePassedPointer = alignSizeWholePage(const_cast<void *>(hostPtr), pointerPassedSize);
+    auto alignedSizeRequiredForAllocation = alignSizeWholePage(const_cast<void *>(hostPtr), imgInfo.size);
+
+    // Passed pointer doesn't have enough memory, copy is needed
+    bool copyRequired = (alignedSizeRequiredForAllocation > alignedSizePassedPointer) |
+                        (imgInfo.rowPitch != hostPtrRowPitch) |
+                        (imgInfo.slicePitch != hostPtrSlicePitch) |
+                        ((reinterpret_cast<uintptr_t>(hostPtr) & (MemoryConstants::cacheLineSize - 1)) != 0) |
+                        !imgInfo.linearStorage;
+
+    return copyRequired;
+}
 } // namespace NEO

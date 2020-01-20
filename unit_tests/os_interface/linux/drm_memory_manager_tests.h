@@ -1,11 +1,12 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "runtime/os_interface/linux/drm_memory_operations_handler.h"
 #include "runtime/os_interface/linux/os_interface.h"
 #include "unit_tests/fixtures/memory_management_fixture.h"
 #include "unit_tests/mocks/linux/mock_drm_memory_manager.h"
@@ -23,9 +24,9 @@ class DrmMemoryManagerBasic : public ::testing::Test {
   public:
     DrmMemoryManagerBasic() : executionEnvironment(*platformDevices){};
     void SetUp() override {
-        executionEnvironment.osInterface = std::make_unique<OSInterface>();
-        executionEnvironment.osInterface->get()->setDrm(Drm::get(0));
-        executionEnvironment.memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
+        executionEnvironment.rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment.rootDeviceEnvironments[0]->osInterface->get()->setDrm(Drm::get(0));
+        executionEnvironment.rootDeviceEnvironments[0]->memoryOperationsInterface = std::make_unique<DrmMemoryOperationsHandler>();
     }
 
     MockExecutionEnvironment executionEnvironment;
@@ -35,7 +36,7 @@ class DrmMemoryManagerFixture : public MemoryManagementFixture {
   public:
     std::unique_ptr<DrmMockCustom> mock;
     TestedDrmMemoryManager *memoryManager = nullptr;
-    MockDevice *device = nullptr;
+    MockClDevice *device = nullptr;
 
     void SetUp() override {
         SetUp(new DrmMockCustom, false);
@@ -46,8 +47,8 @@ class DrmMemoryManagerFixture : public MemoryManagementFixture {
         this->mock = std::unique_ptr<DrmMockCustom>(mock);
         executionEnvironment = new MockExecutionEnvironment(*platformDevices);
         executionEnvironment->incRefInternal();
-        executionEnvironment->osInterface = std::make_unique<OSInterface>();
-        executionEnvironment->osInterface->get()->setDrm(mock);
+        executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->rootDeviceEnvironments[0]->osInterface->get()->setDrm(mock);
 
         memoryManager = new (std::nothrow) TestedDrmMemoryManager(localMemoryEnabled, false, false, *executionEnvironment);
         //assert we have memory manager
@@ -55,7 +56,7 @@ class DrmMemoryManagerFixture : public MemoryManagementFixture {
         if (memoryManager->getgemCloseWorker()) {
             memoryManager->getgemCloseWorker()->close(true);
         }
-        device = MockDevice::createWithExecutionEnvironment<MockDevice>(*platformDevices, executionEnvironment, 0);
+        device = new MockClDevice{MockDevice::createWithExecutionEnvironment<MockDevice>(*platformDevices, executionEnvironment, 0)};
     }
 
     void TearDown() override {
@@ -94,8 +95,8 @@ class DrmMemoryManagerFixtureWithoutQuietIoctlExpectation {
         executionEnvironment->setHwInfo(*platformDevices);
         executionEnvironment->prepareRootDeviceEnvironments(1);
         mock = std::make_unique<DrmMockCustom>();
-        executionEnvironment->osInterface = std::make_unique<OSInterface>();
-        executionEnvironment->osInterface->get()->setDrm(mock.get());
+        executionEnvironment->rootDeviceEnvironments[0]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment->rootDeviceEnvironments[0]->osInterface->get()->setDrm(mock.get());
         memoryManager.reset(new TestedDrmMemoryManager(*executionEnvironment));
 
         ASSERT_NE(nullptr, memoryManager);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,8 +7,9 @@
 
 #ifdef _WIN32
 
+#include "core/debug_settings/debug_settings_manager.h"
+#include "core/execution_environment/root_device_environment.h"
 #include "runtime/device/device.h"
-#include "runtime/os_interface/debug_settings_manager.h"
 #include "runtime/os_interface/device_factory.h"
 #include "runtime/os_interface/windows/os_interface.h"
 #include "runtime/os_interface/windows/wddm/wddm.h"
@@ -31,14 +32,16 @@ bool DeviceFactory::getDevices(size_t &numDevices, ExecutionEnvironment &executi
     executionEnvironment.prepareRootDeviceEnvironments(static_cast<uint32_t>(numRootDevices));
 
     auto hardwareInfo = executionEnvironment.getMutableHardwareInfo();
-    std::unique_ptr<Wddm> wddm(Wddm::createWddm());
-    if (!wddm->init(*hardwareInfo)) {
-        return false;
+    for (auto rootDeviceIndex = 0u; rootDeviceIndex < numRootDevices; rootDeviceIndex++) {
+        std::unique_ptr<Wddm> wddm(Wddm::createWddm(*executionEnvironment.rootDeviceEnvironments[rootDeviceIndex].get()));
+        if (!wddm->init(*hardwareInfo)) {
+            return false;
+        }
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->memoryOperationsInterface = std::make_unique<WddmMemoryOperationsHandler>(wddm.get());
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->osInterface = std::make_unique<OSInterface>();
+        executionEnvironment.rootDeviceEnvironments[rootDeviceIndex]->osInterface->get()->setWddm(wddm.release());
     }
-
-    executionEnvironment.memoryOperationsInterface = std::make_unique<WddmMemoryOperationsHandler>(wddm.get());
-    executionEnvironment.osInterface = std::make_unique<OSInterface>();
-    executionEnvironment.osInterface->get()->setWddm(wddm.release());
+    executionEnvironment.calculateMaxOsContextCount();
 
     numDevices = numRootDevices;
     DeviceFactory::numDevices = numDevices;
@@ -50,8 +53,8 @@ void DeviceFactory::releaseDevices() {
     DeviceFactory::numDevices = 0;
 }
 
-void Device::appendOSExtensions(std::string &deviceExtensions) {
-    deviceExtensions += "cl_intel_simultaneous_sharing ";
+void ClDevice::initializeCaps() {
+    device.appendOSExtensions("cl_intel_simultaneous_sharing ");
 
     simultaneousInterops = {CL_GL_CONTEXT_KHR,
                             CL_WGL_HDC_KHR,
@@ -65,6 +68,7 @@ void Device::appendOSExtensions(std::string &deviceExtensions) {
                             CL_CONTEXT_D3D11_DEVICE_KHR,
                             0};
 }
+
 } // namespace NEO
 
 #endif

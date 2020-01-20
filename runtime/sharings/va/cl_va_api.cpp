@@ -1,10 +1,11 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
+#include "core/utilities/api_intercept.h"
 #include "runtime/api/api.h"
 #include "runtime/command_queue/command_queue.h"
 #include "runtime/context/context.h"
@@ -13,7 +14,6 @@
 #include "runtime/platform/platform.h"
 #include "runtime/sharings/va/va_sharing.h"
 #include "runtime/sharings/va/va_surface.h"
-#include "runtime/utilities/api_intercept.h"
 
 #include "CL/cl.h"
 
@@ -70,7 +70,7 @@ clGetDeviceIDsFromVA_APIMediaAdapterINTEL(cl_platform_id platform, cl_va_api_dev
     if (status != CL_SUCCESS) {
         status = CL_INVALID_PLATFORM;
     } else {
-        cl_device_id device = pPlatform->getDevice(0);
+        cl_device_id device = pPlatform->getClDevice(0);
         GetInfoHelper::set(devices, device);
         GetInfoHelper::set(numDevices, 1u);
     }
@@ -88,10 +88,10 @@ clEnqueueAcquireVA_APIMediaSurfacesINTEL(cl_command_queue commandQueue,
     API_ENTER(&status);
     DBG_LOG_INPUTS("commandQueue", commandQueue,
                    "numObjects", numObjects,
-                   "memObjects", DebugManager.getMemObjects(reinterpret_cast<const uintptr_t *>(memObjects), numObjects),
+                   "memObjects", FileLoggerInstance().getMemObjects(reinterpret_cast<const uintptr_t *>(memObjects), numObjects),
                    "numEventsInWaitList", numEventsInWaitList,
-                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
-                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
+                   "eventWaitList", FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
 
     CommandQueue *pCommandQueue = nullptr;
 
@@ -115,10 +115,10 @@ clEnqueueReleaseVA_APIMediaSurfacesINTEL(cl_command_queue commandQueue,
     API_ENTER(&status);
     DBG_LOG_INPUTS("commandQueue", commandQueue,
                    "numObjects", numObjects,
-                   "memObjects", DebugManager.getMemObjects(reinterpret_cast<const uintptr_t *>(memObjects), numObjects),
+                   "memObjects", FileLoggerInstance().getMemObjects(reinterpret_cast<const uintptr_t *>(memObjects), numObjects),
                    "numEventsInWaitList", numEventsInWaitList,
-                   "eventWaitList", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
-                   "event", DebugManager.getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
+                   "eventWaitList", FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(eventWaitList), numEventsInWaitList),
+                   "event", FileLoggerInstance().getEvents(reinterpret_cast<const uintptr_t *>(event), 1));
 
     CommandQueue *pCommandQueue = nullptr;
 

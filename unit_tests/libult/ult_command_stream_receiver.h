@@ -1,16 +1,16 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
  */
 
 #pragma once
+#include "core/os_interface/os_context.h"
 #include "runtime/command_stream/command_stream_receiver_hw.h"
 #include "runtime/device/device.h"
 #include "runtime/execution_environment/execution_environment.h"
 #include "runtime/memory_manager/os_agnostic_memory_manager.h"
-#include "runtime/os_interface/os_context.h"
 #include "unit_tests/helpers/dispatch_flags_helper.h"
 #include "unit_tests/mocks/mock_experimental_command_buffer.h"
 
@@ -114,6 +114,10 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     }
     void setPreemptionAllocation(GraphicsAllocation *allocation) { this->preemptionAllocation = allocation; }
 
+    void downloadAllocation(GraphicsAllocation &gfxAllocation) override {
+        downloadAllocationCalled = true;
+    }
+
     bool waitForCompletionWithTimeout(bool enableTimeout, int64_t timeoutMicroseconds, uint32_t taskCountToWait) override {
         latestWaitForCompletionWithTimeoutTaskCount.store(taskCountToWait);
         return BaseClass::waitForCompletionWithTimeout(enableTimeout, timeoutMicroseconds, taskCountToWait);
@@ -199,6 +203,7 @@ class UltCommandStreamReceiver : public CommandStreamReceiverHw<GfxFamily>, publ
     bool recordFlusheBatchBuffer = false;
     bool checkAndActivateAubSubCaptureCalled = false;
     bool addAubCommentCalled = false;
+    bool downloadAllocationCalled = false;
     std::vector<std::string> aubCommentMessages;
     bool flushBatchedSubmissionsCalled = false;
     uint32_t makeSurfacePackNonResidentCalled = false;

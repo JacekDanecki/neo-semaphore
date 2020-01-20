@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 Intel Corporation
+ * Copyright (C) 2017-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,10 +7,10 @@
 
 #include "unit_tests/mocks/mock_memory_manager.h"
 
+#include "core/gmm_helper/gmm.h"
+#include "core/memory_manager/deferred_deleter.h"
 #include "runtime/command_stream/command_stream_receiver.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/surface_formats.h"
-#include "runtime/memory_manager/deferred_deleter.h"
 #include "unit_tests/mocks/mock_allocation_properties.h"
 
 #include <cstring>
@@ -50,13 +50,18 @@ GraphicsAllocation *MockMemoryManager::allocateGraphicsMemoryForImage(const Allo
     return allocation;
 }
 
+GraphicsAllocation *MockMemoryManager::allocateShareableMemory(const AllocationData &allocationData) {
+    allocateForShareableCalled = true;
+    return OsAgnosticMemoryManager::allocateShareableMemory(allocationData);
+}
+
 GraphicsAllocation *MockMemoryManager::allocateGraphicsMemory64kb(const AllocationData &allocationData) {
     allocation64kbPageCreated = true;
     preferRenderCompressedFlagPassed = allocationData.flags.preferRenderCompressed;
 
     auto allocation = OsAgnosticMemoryManager::allocateGraphicsMemory64kb(allocationData);
     if (allocation) {
-        allocation->setDefaultGmm(new Gmm(allocation->getUnderlyingBuffer(), allocationData.size, false, preferRenderCompressedFlagPassed, true, {}));
+        allocation->setDefaultGmm(new Gmm(executionEnvironment.getGmmClientContext(), allocation->getUnderlyingBuffer(), allocationData.size, false, preferRenderCompressedFlagPassed, true, {}));
         allocation->getDefaultGmm()->isRenderCompressed = preferRenderCompressedFlagPassed;
     }
     return allocation;

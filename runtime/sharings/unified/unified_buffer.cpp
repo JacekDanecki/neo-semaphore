@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 Intel Corporation
+ * Copyright (C) 2019-2020 Intel Corporation
  *
  * SPDX-License-Identifier: MIT
  *
@@ -7,8 +7,8 @@
 
 #include "unified_buffer.h"
 
+#include "core/gmm_helper/gmm.h"
 #include "runtime/context/context.h"
-#include "runtime/gmm_helper/gmm.h"
 #include "runtime/helpers/get_info.h"
 #include "runtime/mem_obj/buffer.h"
 #include "runtime/memory_manager/memory_manager.h"
@@ -29,15 +29,4 @@ Buffer *UnifiedBuffer::createSharedUnifiedBuffer(Context *context, cl_mem_flags 
     UnifiedSharingFunctions *sharingFunctions = context->getSharing<UnifiedSharingFunctions>();
     auto sharingHandler = new UnifiedBuffer(sharingFunctions, extMem.type);
     return Buffer::createSharedBuffer(context, flags, sharingHandler, graphicsAllocation);
-}
-
-GraphicsAllocation *UnifiedBuffer::createGraphicsAllocation(Context *context, UnifiedSharingMemoryDescription description) {
-    switch (description.type) {
-    case UnifiedSharingHandleType::Win32Nt: {
-        auto graphicsAllocation = context->getMemoryManager()->createGraphicsAllocationFromNTHandle(description.handle, 0u);
-        return graphicsAllocation;
-    }
-    default:
-        return nullptr;
-    }
 }
